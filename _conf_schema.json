@@ -1,0 +1,243 @@
+{
+  "r18_enabled": {
+    "description": "启用 R18（总开关）",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后 R18 仍然只允许私聊，群聊一律拒绝，此限制不可关闭。"
+  },
+  "group_sensitive_enabled": {
+    "description": "允许群聊使用擦边",
+    "type": "bool",
+    "default": false,
+    "hint": "私聊始终可用擦边；群聊需要开启此项。"
+  },
+  "enable_aliases": {
+    "description": "启用便捷别名 /二次元 /三次元 /擦边 /色图",
+    "type": "bool",
+    "default": true
+  },
+  "max_count": {
+    "description": "单次最多图片数",
+    "type": "int",
+    "default": 5
+  },
+  "max_retries": {
+    "description": "单个图源最大重抽轮数",
+    "type": "int",
+    "default": 3,
+    "hint": "结果被分级复核或黑名单丢弃时在同一图源重抽，超过轮数后回退到下一个图源。"
+  },
+  "request_timeout": {
+    "description": "HTTP 请求超时（秒）",
+    "type": "int",
+    "default": 20
+  },
+  "extra_blacklist": {
+    "description": "追加的标签黑名单",
+    "type": "list",
+    "default": [],
+    "hint": "内置基线黑名单（loli、shota、child、female_child、male_child、toddler、萝莉、正太、幼女、幼児、ロリ、ショタ）始终生效且不可删除，这里只能追加。匹配忽略大小写。"
+  },
+  "routes": {
+    "description": "路由表：风格 × 分级 → 图源顺序",
+    "type": "object",
+    "hint": "按列表顺序依次尝试，失败回退到下一个；从列表删除即关闭该图源。可用图源：nekos_best、waifu_im、danbooru、lolicon、wallhaven、yandere、konachan、cn_fallback。",
+    "items": {
+      "anime_general": {
+        "description": "二次元 × 全年龄",
+        "type": "list",
+        "default": ["nekos_best", "waifu_im", "danbooru", "wallhaven"]
+      },
+      "anime_sensitive": {
+        "description": "二次元 × 擦边",
+        "type": "list",
+        "default": ["danbooru", "lolicon", "wallhaven", "yandere"]
+      },
+      "anime_explicit": {
+        "description": "二次元 × R18",
+        "type": "list",
+        "default": ["lolicon", "danbooru", "yandere", "waifu_im", "wallhaven"]
+      },
+      "real_general": {
+        "description": "三次元 × 全年龄",
+        "type": "list",
+        "default": ["wallhaven", "cn_fallback"]
+      },
+      "real_sensitive": {
+        "description": "三次元 × 擦边",
+        "type": "list",
+        "default": ["wallhaven", "cn_fallback"]
+      },
+      "real_explicit": {
+        "description": "三次元 × R18",
+        "type": "list",
+        "default": ["wallhaven"],
+        "hint": "只允许有审核机制的正规图站（目前仅 Wallhaven）。不返回标签的图源会被自动拒绝。"
+      }
+    }
+  },
+  "proxy": {
+    "description": "HTTP 代理",
+    "type": "object",
+    "items": {
+      "url": {
+        "description": "代理地址",
+        "type": "string",
+        "default": "",
+        "hint": "例如 http://127.0.0.1:7890。留空则不使用代理。"
+      },
+      "lolicon": {"description": "Lolicon API 走代理", "type": "bool", "default": true},
+      "danbooru": {"description": "Danbooru（含 fxtwitter）走代理", "type": "bool", "default": true},
+      "yandere": {"description": "yande.re 走代理", "type": "bool", "default": true},
+      "konachan": {"description": "Konachan 走代理", "type": "bool", "default": true},
+      "wallhaven": {"description": "Wallhaven 走代理", "type": "bool", "default": true},
+      "waifu_im": {"description": "waifu.im 走代理", "type": "bool", "default": true},
+      "nekos_best": {"description": "nekos.best 走代理", "type": "bool", "default": true},
+      "cn_fallback": {"description": "国内兜底接口走代理", "type": "bool", "default": false}
+    }
+  },
+  "lolicon": {
+    "description": "Lolicon API",
+    "type": "object",
+    "items": {
+      "proxy_host": {
+        "description": "Pixiv 原图反代域名",
+        "type": "string",
+        "default": "i.pixiv.re",
+        "hint": "填 i.pximg.net 时会自动带上 Pixiv Referer。"
+      },
+      "exclude_ai": {"description": "排除 AI 作品", "type": "bool", "default": true},
+      "aspect_ratio": {
+        "description": "长宽比筛选",
+        "type": "string",
+        "default": "",
+        "hint": "Lolicon aspectRatio 参数，例如 gt1 为横图、lt1 为竖图。留空不限。"
+      }
+    }
+  },
+  "danbooru": {
+    "description": "Danbooru",
+    "type": "object",
+    "items": {
+      "login": {"description": "用户名（可选）", "type": "string", "default": ""},
+      "api_key": {"description": "API key（可选）", "type": "string", "default": "", "secret": true},
+      "tag_limit": {
+        "description": "账号标签额度",
+        "type": "int",
+        "default": 2,
+        "hint": "匿名与 Member 为 2，Gold 为 6，Platinum 为 12。随机排序占 1 个，推特 source 占 1 个，剩余额度优先给用户标签，再追加 -loli -shota。"
+      },
+      "include_questionable": {
+        "description": "R18 包含 rating:q",
+        "type": "bool",
+        "default": false
+      },
+      "fxtwitter": {
+        "description": "推特子模式下用 fxtwitter 补全原推作者和正文",
+        "type": "bool",
+        "default": true
+      }
+    }
+  },
+  "wallhaven": {
+    "description": "Wallhaven",
+    "type": "object",
+    "items": {
+      "api_key": {
+        "description": "API key",
+        "type": "string",
+        "default": "",
+        "secret": true,
+        "hint": "R18（purity=001）必须配置。"
+      }
+    }
+  },
+  "waifu_im": {
+    "description": "waifu.im",
+    "type": "object",
+    "items": {
+      "api_key": {"description": "API key（可选）", "type": "string", "default": "", "secret": true}
+    }
+  },
+  "nekos_best": {
+    "description": "nekos.best",
+    "type": "object",
+    "items": {
+      "categories": {
+        "description": "随机分类",
+        "type": "list",
+        "default": ["neko", "waifu", "husbando", "kitsune"],
+        "hint": "可选 neko、waifu、husbando、kitsune。"
+      }
+    }
+  },
+  "cn_fallback": {
+    "description": "国内三次元兜底接口",
+    "type": "object",
+    "items": {
+      "entries": {
+        "description": "接口列表",
+        "type": "template_list",
+        "hint": "URL 必须直接返回图片或 302 到图片。只能标注全年龄或擦边，永远不用于 R18。",
+        "templates": {
+          "endpoint": {
+            "name": "图片接口",
+            "display_item": "name",
+            "items": {
+              "name": {"description": "名称", "type": "string", "default": ""},
+              "url": {"description": "URL", "type": "string", "default": ""},
+              "rating": {
+                "description": "分级",
+                "type": "string",
+                "default": "全年龄",
+                "options": ["全年龄", "擦边"]
+              }
+            }
+          }
+        },
+        "default": [
+          {
+            "__template_key": "endpoint",
+            "name": "黑丝",
+            "url": "https://v2.api-m.com/api/heisi?return=302",
+            "rating": "擦边"
+          }
+        ]
+      }
+    }
+  },
+  "access": {
+    "description": "访问控制",
+    "type": "object",
+    "items": {
+      "group_whitelist": {
+        "description": "群白名单",
+        "type": "list",
+        "default": [],
+        "hint": "留空表示所有群可用。"
+      },
+      "user_blacklist": {"description": "用户黑名单", "type": "list", "default": []},
+      "cooldown_seconds": {"description": "每人冷却时间（秒）", "type": "int", "default": 10},
+      "daily_limit": {
+        "description": "每人每日图片上限",
+        "type": "int",
+        "default": 0,
+        "hint": "0 表示不限制。"
+      }
+    }
+  },
+  "cache": {
+    "description": "图片缓存",
+    "type": "object",
+    "items": {
+      "max_files": {"description": "最多缓存文件数", "type": "int", "default": 100},
+      "max_total_mb": {"description": "缓存总大小上限（MB）", "type": "int", "default": 200},
+      "max_image_mb": {
+        "description": "单张图片上限（MB）",
+        "type": "int",
+        "default": 10,
+        "hint": "超过时自动降级到 regular / large / sample 尺寸。"
+      }
+    }
+  }
+}
