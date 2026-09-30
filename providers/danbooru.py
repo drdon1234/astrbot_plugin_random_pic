@@ -110,6 +110,6 @@ class DanbooruProvider(Provider):
             if author.get("screen_name"):
                 item.author = f"{author.get('name', '')} (@{author['screen_name']})"
             if tweet.get("text"):
-                item.title = tweet["text"][:200]
+                item.title = " ".join(tweet["text"].split())[:200]
         except Exception as e:
             logger.debug(f"[random_pic] fxtwitter 补全失败: {e!r}")
