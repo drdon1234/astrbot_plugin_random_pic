@@ -6,25 +6,23 @@ ANIME = "anime"
 REAL = "real"
 STYLES = (ANIME, REAL)
 
-GENERAL = "general"
 SENSITIVE = "sensitive"
 EXPLICIT = "explicit"
-RATINGS = (GENERAL, SENSITIVE, EXPLICIT)
-
-# 分级严格程度，数值越大越严格
-RATING_LEVEL = {GENERAL: 0, SENSITIVE: 1, EXPLICIT: 2}
+RATINGS = (SENSITIVE, EXPLICIT)
 
 STYLE_NAMES = {ANIME: "二次元", REAL: "三次元"}
-RATING_NAMES = {GENERAL: "全年龄", SENSITIVE: "擦边", EXPLICIT: "R18"}
+RATING_NAMES = {SENSITIVE: "擦边", EXPLICIT: "R18"}
 
 
 @dataclass
 class PicRequest:
     style: str = ANIME
-    rating: str = GENERAL
-    tags: list[str] = field(default_factory=list)
+    rating: str = SENSITIVE
+    tags: list[str] = field(
+        default_factory=list
+    )  # 追加到 E-Hentai 搜索词，中文名经标签库翻译
     count: int = 1
-    twitter: bool = False  # Danbooru 推特子模式
+    random_character: bool = False  # 每张图先随机抽一个角色，再在该角色的画廊中抽
 
 
 @dataclass
@@ -32,10 +30,14 @@ class ImageItem:
     image_url: str
     rating: str
     style: str
-    provider: str
-    author: str = ""
     title: str = ""
-    source_url: str = ""  # 原始出处（Pixiv / 推特等）
-    post_url: str = ""  # 图站作品页
+    author: str = ""
+    category: str = ""
+    gallery_url: str = ""
+    page_url: str = ""
+    page: int = 0  # 从 1 开始
+    pages: int = 0
+    stars: float = 0.0
     tags: list[str] = field(default_factory=list)
-    alt_url: str = ""  # 原图过大时降级使用的较小尺寸
+    parodies: list[str] = field(default_factory=list)  # 中文名（标签库可用时）
+    characters: list[str] = field(default_factory=list)

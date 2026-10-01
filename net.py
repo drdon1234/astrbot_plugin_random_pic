@@ -2,15 +2,18 @@
 
 import asyncio
 import time
+import urllib.request
 import uuid
 from pathlib import Path
-from urllib.parse import urlparse
 
 import aiohttp
 
 from astrbot.api import logger
 
-USER_AGENT = "astrbot_plugin_random_pic (by drdon1234; AstrBot plugin)"
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+)
 
 IMAGE_EXTS = {
     "image/jpeg": ".jpg",
@@ -25,32 +28,38 @@ class HttpError(Exception):
 
 
 class HttpClient:
-    """所有图源共用一个 aiohttp 会话，所有请求都带超时。"""
+    """共用一个 aiohttp 会话，所有请求都带超时。"""
 
-    def __init__(self, timeout: float):
+    def __init__(self, timeout: float, cookies: dict | None = None):
         self.timeout = aiohttp.ClientTimeout(total=timeout)
+        self.cookies = cookies or {}
         self._session: aiohttp.ClientSession | None = None
 
     @property
     def session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(
-                timeout=self.timeout, headers={"User-Agent": USER_AGENT}
+                timeout=self.timeout,
+                headers={"User-Agent": USER_AGENT},
+                cookies=self.cookies,
             )
         return self._session
 
-    async def get_json(
-        self,
-        url: str,
-        *,
-        params=None,
-        headers: dict | None = None,
-        proxy: str | None = None,
-        auth: aiohttp.BasicAuth | None = None,
-    ):
-        async with self.session.get(
-            url, params=params, headers=headers, proxy=proxy, auth=auth
-        ) as resp:
+    async def get_text(self, url: str, *, params=None, proxy: str | None = None) -> str:
+        async with self.session.get(url, params=params, proxy=proxy) as resp:
+            text = await resp.text(errors="replace")
+            if resp.status != 200:
+                raise HttpError(f"HTTP {resp.status}: {text[:200]}")
+            return text
+
+    async def get_bytes(self, url: str, *, proxy: str | None = None) -> bytes:
+        async with self.session.get(url, proxy=proxy) as resp:
+            if resp.status != 200:
+                raise HttpError(f"HTTP {resp.status}")
+            return await resp.read()
+
+    async def post_json(self, url: str, payload: dict, *, proxy: str | None = None):
+        async with self.session.post(url, json=payload, proxy=proxy) as resp:
             if resp.status != 200:
                 text = (await resp.text(errors="replace"))[:200]
                 raise HttpError(f"HTTP {resp.status}: {text}")
@@ -99,7 +108,6 @@ class ImageCache:
         max_files: int,
         max_total_mb: float,
         max_image_mb: float,
-        pixiv_hosts: set[str],
     ):
         self.http = http
         self.dir = cache_dir
@@ -107,46 +115,54 @@ class ImageCache:
         self.max_files = max(1, max_files)
         self.max_total = int(max_total_mb * 1024 * 1024)
         self.max_image = int(max_image_mb * 1024 * 1024)
-        self.pixiv_hosts = pixiv_hosts
 
-    def _headers(self, url: str) -> dict:
-        host = (urlparse(url).hostname or "").lower()
-        if host.endswith("pximg.net") or host in self.pixiv_hosts:
-            return {"Referer": "https://www.pixiv.net/"}
-        return {}
-
-    async def download(self, urls: list[str], proxy: str | None) -> Path | None:
-        """依次尝试 urls（原图、降级尺寸），返回本地文件路径。"""
-        for url in urls:
-            if not url:
-                continue
+    async def download(self, url: str, proxy: str | None) -> Path | None:
+        """下载单张图片，返回本地文件路径；失败返回 None。"""
+        try:
             try:
-                path = await self._fetch(url, proxy)
-            except (aiohttp.ClientError, asyncio.TimeoutError, HttpError) as e:
-                logger.warning(f"[random_pic] 下载失败 {url}: {e!r}")
-                continue
-            if path:
-                self.cleanup()
-                return path
-        return None
+                fetched = await self._fetch(url, proxy)
+            except aiohttp.ClientPayloadError as e:
+                # 部分 H@H 节点经代理时会不发 TLS close_notify 就断开，asyncio 的 SSL
+                # 层会丢掉最后几 KB，同一地址重试也一样；阻塞式 ssl 能读全，所以退回 urllib
+                logger.info(f"[random_pic] 响应不完整，改用 urllib 重新下载: {e!r}")
+                fetched = await asyncio.to_thread(self._fetch_blocking, url, proxy)
+            if fetched is None:
+                logger.info(f"[random_pic] 图片过大，已跳过: {url}")
+                return None
+            path = self._save(*fetched)
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError, HttpError) as e:
+            logger.warning(f"[random_pic] 下载失败 {url}: {e!r}")
+            return None
+        self.cleanup()
+        return path
 
-    async def _fetch(self, url: str, proxy: str | None) -> Path | None:
-        async with self.http.session.get(
-            url, headers=self._headers(url), proxy=proxy
-        ) as resp:
+    async def _fetch(self, url: str, proxy: str | None) -> tuple[bytes, str] | None:
+        """返回 (图片数据, Content-Type)，超过大小上限时返回 None。"""
+        async with self.http.session.get(url, proxy=proxy) as resp:
             if resp.status != 200:
                 raise HttpError(f"HTTP {resp.status}")
             if resp.content_length and resp.content_length > self.max_image:
-                logger.info(f"[random_pic] 图片过大，尝试降级尺寸: {url}")
                 return None
             data = bytearray()
             async for chunk in resp.content.iter_chunked(64 * 1024):
                 data.extend(chunk)
                 if len(data) > self.max_image:
-                    logger.info(f"[random_pic] 图片过大，尝试降级尺寸: {url}")
                     return None
-            ctype = resp.content_type.lower()
-        ext = sniff_ext(bytes(data[:16])) or IMAGE_EXTS.get(ctype)
+            return bytes(data), resp.content_type.lower()
+
+    def _fetch_blocking(self, url: str, proxy: str | None) -> tuple[bytes, str] | None:
+        proxies = {"http": proxy, "https": proxy} if proxy else {}
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
+        request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with opener.open(request, timeout=self.http.timeout.total) as resp:
+            if resp.status != 200:
+                raise HttpError(f"HTTP {resp.status}")
+            data = resp.read(self.max_image + 1)
+            ctype = resp.headers.get_content_type().lower()
+        return None if len(data) > self.max_image else (data, ctype)
+
+    def _save(self, data: bytes, ctype: str) -> Path:
+        ext = sniff_ext(data[:16]) or IMAGE_EXTS.get(ctype)
         if not ext:
             raise HttpError(f"不是图片（{ctype}）")
         path = self.dir / f"{uuid.uuid4().hex}{ext}"

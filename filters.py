@@ -1,16 +1,19 @@
-"""分级闸门、分级复核与未成年内容标签过滤。
+"""分级闸门、画廊分级判定与未成年内容标签过滤。
 
-这里的规则只依赖 rating 和 tags，与 style 无关。
+这里的判定只依赖 E-Hentai 画廊的分类和标签，属于硬性规则，不开放配置。
 """
 
 import re
 
-from .models import EXPLICIT, RATING_LEVEL, SENSITIVE, ImageItem
+from .models import ANIME, EXPLICIT, REAL, SENSITIVE
 
 # 内置基线黑名单，不可删除，用户只能追加
 BASE_BLACKLIST = (
     "loli",
+    "lolicon",
     "shota",
+    "shotacon",
+    "toddlercon",
     "child",
     "female_child",
     "male_child",
@@ -23,11 +26,30 @@ BASE_BLACKLIST = (
     "ショタ",
 )
 
+# 三次元分类，其余分类一律视为二次元
+REAL_CATEGORIES = frozenset({"Cosplay", "Asian Porn"})
+# 「无性内容」的分类与标签：命中即为擦边
+SENSITIVE_CATEGORIES = frozenset({"Non-H"})
+SENSITIVE_TAGS = frozenset({"other:non-nude"})
+# 裸露或性内容的证据（打码类标签只用于露出性器官的画廊）：
+# 优先级高于上面两项，与 non-nude 矛盾时按 R18 处理
+EXPLICIT_TAGS = frozenset(
+    {
+        "other:nudity only",
+        "other:uncensored",
+        "other:mosaic censorship",
+        "other:full censorship",
+        "other:hardcore",
+        "other:no penetration",
+        "other:object insertion only",
+    }
+)
+
 
 class TagBlacklist:
     """忽略大小写的标签黑名单。
 
-    ASCII 词按单词匹配（下划线、空格、连字符等视为分隔），避免 lolita_fashion
+    ASCII 词按单词匹配（冒号、下划线、空格、连字符等视为分隔），避免 lolita_fashion
     这类误伤；非 ASCII 词（中日文）按子串匹配，覆盖「合法ロリ」「萝莉塔」等变体。
     """
 
@@ -57,6 +79,21 @@ class TagBlacklist:
         return None
 
 
+def classify(category: str, tags: list[str]) -> tuple[str, str | None]:
+    """按画廊分类和标签判定 (风格, 分级)，无法判定分级时为 None。
+
+    二次元 H 分类本身就是 R18；三次元必须有标签证据，两种标签都没有的画廊
+    （实测约 2%）里既有性内容也有穿着完整的写真，无法判定。
+    """
+    style = REAL if category in REAL_CATEGORIES else ANIME
+    tagset = {t.lower() for t in tags}
+    if tagset & EXPLICIT_TAGS:
+        return style, EXPLICIT
+    if category in SENSITIVE_CATEGORIES or tagset & SENSITIVE_TAGS:
+        return style, SENSITIVE
+    return style, (None if style == REAL else EXPLICIT)
+
+
 def request_gate(
     rating: str,
     is_private: bool,
@@ -74,24 +111,28 @@ def request_gate(
     return None
 
 
-def check_item(
-    item: ImageItem,
-    requested_rating: str,
+def check_gallery(
+    category: str,
+    tags: list[str],
+    style: str,
+    rating: str,
     is_private: bool,
     blacklist: TagBlacklist,
 ) -> str | None:
     """结果阶段复核。返回丢弃原因，通过时返回 None。"""
-    if item.rating not in RATING_LEVEL:
-        return f"未知分级 {item.rating!r}"
-    if RATING_LEVEL[item.rating] > RATING_LEVEL[requested_rating]:
-        return f"分级超出请求（请求 {requested_rating}，实际 {item.rating}）"
-    if item.rating == EXPLICIT:
-        # R18 双重闸门的第二道：以图源返回的分级为准复核私聊
-        if not is_private:
-            return "R18 结果出现在非私聊会话"
-        if not item.tags:
-            return "R18 结果缺少标签，无法做未成年过滤"
-    term = blacklist.hit(item.tags)
+    real_style, real_rating = classify(category, tags)
+    if real_style != style:
+        return f"风格不符（{category}）"
+    if real_rating is None:
+        return "缺少可判定分级的标签"
+    if real_rating != rating:
+        return f"分级不符（请求 {rating}，实际 {real_rating}）"
+    # R18 双重闸门的第二道：以画廊实际分级为准复核私聊
+    if real_rating == EXPLICIT and not is_private:
+        return "R18 结果出现在非私聊会话"
+    if not tags:
+        return "画廊缺少标签，无法做未成年过滤"
+    term = blacklist.hit(tags)
     if term:
         return f"命中黑名单标签 {term}"
     return None

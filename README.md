@@ -1,35 +1,43 @@
 # astrbot_plugin_random_pic
 
-AstrBot 随机图片插件。图片按两个正交维度划分：
+AstrBot 的 E-Hentai 随机抽卡插件。每次随机抽一个画廊，再从里面随机取一页发出来。图片按两个维度划分：
 
-- **风格**：二次元 / 三次元
-- **分级**：全年龄 / 擦边 / R18（R18 仅私聊）
+- **风格**：二次元 / 三次元（Cosplay 与真人写真）
+- **分级**：擦边 / R18（R18 仅私聊）
 
-两个维度自由组合，共 6 种。每张图都会附带作者、标题和来源（有来源时）。图源顺序可配置，某个图源失败时自动回退到下一个。
+两个维度组合成 4 个画廊池。不带关键词就是在整个池子里完全随机；每张图都附带画廊标题、作者、作品、角色、分类、页码、评分和画廊链接。
 
 ## 指令
 
 ```
-/随机图 [风格] [分级] [标签...] [数量]
+/随机图 [风格] [分级] [关键词...] [数量]
+/随机角色 [风格] [分级] [关键词...] [数量]
 ```
 
 | 参数 | 可选值 | 默认 |
 |---|---|---|
 | 风格 | `二次元` / `三次元` | 二次元 |
-| 分级 | `全年龄` / `擦边` / `r18`（也接受 `R18`、`色图`） | 全年龄 |
+| 分级 | `擦边` / `r18`（也接受 `R18`、`色图`） | 擦边 |
 | 数量 | 数字 | 1，上限由 `max_count` 控制（默认 5） |
-| 标签 | 其余所有词 | 无 |
+| 关键词 | 其余所有词 | 无 |
 
-参数顺序随意：先识别风格词和分级词，数字当作数量，其余当作标签。
+参数顺序随意：先识别风格词和分级词，数字当作数量，其余作为关键词追加到 E-Hentai 搜索条件里。
+
+关键词可以直接写中文：标签库能识别的中文名（角色、作品、Coser、属性等）会被翻译成 E-Hentai 标签，例如 `芙莉莲` → `character:"frieren$"`、`原神` → `parody:"genshin impact$"`、`兔女郎` → `female:"bunny girl$"`，前面加 `-` 表示排除（`-兔女郎`）。查不到的中文词、英文词和已经写好的 E-Hentai 语法原样搜索。关键词命中黑名单（例如 `萝莉`）时直接拒绝。
+
+同一个中文名对应多个标签时（约 600 个，例如 `胡桃` 既是原神的胡桃也是另一个角色 kurumi），按命名空间顺序（角色 → 作品 → Coser → 属性 → 画师 → 社团）取第一个，结果不一定是你想要的。这时直接写 E-Hentai 标签，例如 `character:"hu tao$"`。
+
+`/随机角色` 的每张图先从标签库约 9,900 个角色中随机抽一个，再在该角色的画廊里抽。和 `/随机图` 的区别是：`/随机图` 每个画廊的概率大致相同，热门作品出现得多；`/随机角色` 每个角色的概率相同，冷门角色也会出现。很多角色在某个池子里没有画廊，每张图最多换 10 个角色，所以会慢一些（实测每张约 3~4 秒）。
 
 示例：
 
 ```
 /随机图
-/随机图 擦边 白发 3
-/随机图 三次元
-/随机图 r18 2          （仅私聊，且需开启 R18）
-/随机图 推特 擦边       （Danbooru 推特子模式）
+/随机图 三次元 3
+/随机图 三次元 原神 2
+/随机图 芙莉莲 -兔女郎
+/随机图 r18 character:"hu tao$"     （仅私聊，且需开启 R18）
+/随机角色 三次元
 ```
 
 便捷别名（`enable_aliases` 开关，默认开启），后面同样可以跟参数：
@@ -41,72 +49,65 @@ AstrBot 随机图片插件。图片按两个正交维度划分：
 | `/擦边` | `/随机图 擦边` |
 | `/色图` | `/随机图 r18` |
 
-回复格式：图片，后面依次附上作者、标题、来源、图站页面和图源名。缺失的字段不显示；既没有来源也没有图站页面时显示“来源未知”。
+## 随机抽卡原理
 
-## 默认路由表
+E-Hentai 没有随机排序，列表页也只能用游标翻页（`next=<gid>` 返回 gid 更小的下一页）。插件的做法：
 
-| 风格 \ 分级 | 全年龄 | 擦边 | R18 |
-|---|---|---|---|
-| 二次元 | nekos_best → waifu_im → danbooru → wallhaven | danbooru → lolicon → wallhaven → yandere | lolicon → danbooru → yandere → waifu_im → wallhaven |
-| 三次元 | wallhaven → cn_fallback | wallhaven → cn_fallback | wallhaven |
+1. 对某个搜索条件，先取第一页得到最新画廊的 gid，再取最后一页（`prev=1`）得到最旧画廊的 gid。这个范围缓存 1 小时。结果只有一页时直接从这一页抽。
+2. 在范围内随机取一个 gid 作为游标跳过去，得到一页（最多 25 个）画廊，随机挑几个候选。
+3. 一轮的所有候选合并成一次官方 API（`gdata`）请求，取得分类和完整标签，然后逐个复核。
+4. 通过复核的画廊里随机取一页（或封面），解析图片地址并下载。R18 画廊通常从穿着完整开始，所以默认跳过前 30% 的页（`ehentai.explicit_skip_ratio`）。图片服务器失败时用页面上的 `nl` 参数换一台服务器再试一次。
 
-在 WebUI 的 `routes` 配置中调整各格的顺序；从列表删除就等于关闭该图源。插件加载时会自动剔除不存在的图源、不支持该组合的图源，以及用于 R18 但不返回标签的图源（日志中会有警告）。
+gid 随上传时间递增，所以这是按时间近似均匀的抽样。每张图大约需要 4 次请求，默认请求间隔 0.5 秒，一张图通常 4~7 秒。
 
-## 图源与分级映射
+## 画廊池
 
-| 图源 | 名称 | 支持组合 | 分级参数 |
-|---|---|---|---|
-| nekos.best v2 | `nekos_best` | 二次元 × 全年龄 | 分类 neko / waifu / husbando / kitsune，标签只能是这些分类名 |
-| waifu.im | `waifu_im` | 二次元 × 全年龄 / R18 | `IsNsfw=False` / `IsNsfw=True` |
-| Danbooru | `danbooru` | 二次元 × 全部 | `rating:g` / `rating:s` / `rating:e`（可选 `rating:q,e`） |
-| Lolicon API | `lolicon` | 二次元 × 擦边 / R18 | `r18=0` / `r18=1`（r18=0 不保证全年龄，所以不用于全年龄） |
-| Wallhaven | `wallhaven` | 二次元 / 三次元 × 全部 | categories `010` / `001`；purity `100` / `010` / `001`（R18 需 API key） |
-| yande.re | `yandere` | 二次元 × 全部 | `rating:s` / `rating:q` / `rating:e` |
-| Konachan | `konachan` | 二次元 × 全部 | 同 yande.re（默认不在路由中，需要时自行加入） |
-| 国内兜底接口 | `cn_fallback` | 三次元 × 全年龄 / 擦边 | 每个 URL 单独标注分级，永远不用于 R18 |
+| 风格 \ 分级 | 擦边 | R18 |
+|---|---|---|
+| 二次元 | Non-H，且带 `artbook` 或 `non-h imageset` 标签 | Artist CG / Game CG / Image Set，排除 `non-nude` |
+| 三次元 | Cosplay / Asian Porn，带 `non-nude`，排除 `nudity only` | Cosplay，带任一裸露 / 性内容标签（见下） |
 
-三次元 R18 只接入有审核机制的正规图站（目前只有 Wallhaven），不接入推特搬运、“福利”聚合类或来源不明的接口。
+全局还会加上 `ehentai` 配置段的条件：最低评分（默认 4 星）、排除 AI 生成画廊（默认开启）、最少页数（默认不限）。
 
-### Danbooru 标签额度（已实测核实）
+为什么三次元按分类区分：抽样统计各分类后，E-Hentai 上的真人内容基本只在 Cosplay 和 Asian Porn 两个分类里（Western、Image Set、Non-H 几乎都是绘画，Misc 七成是 3D 渲染），站上也没有通用的「真人照片」标签。Asian Porn 的无露点画廊以杂志写真为主，所以加进了擦边池；R18 池默认不加 Asian Porn，因为其中有业余和流出内容，真人年龄也无法靠标签过滤。
 
-- 匿名用户和 Member 最多 2 个计数标签；Gold 为 6，Platinum 为 12（配置项 `danbooru.tag_limit`）。
-- `rating:` 是免费元标签，不计数。
-- `order:random` 和 `random=true` 都计数（后者会被改写为 `random:1`），而且 `order:random` 容易超时，所以插件用 `random=true`。
-- `source:` 计数。
-
-因此一次查询的额度分配是：随机排序占 1 个，推特子模式的 `source:*x.com*` / `source:*twitter.com*` 占 1 个，然后是用户标签，最后用剩余额度追加 `-loli -shota`。匿名时如果有用户标签，就没有额度追加负向标签，这时完全依靠本地黑名单过滤。用户标签超出额度时直接跳过 Danbooru，回退到下一个图源。
-
-请求时带自定义 User-Agent（否则会被 Cloudflare 拦截），并限速为每秒最多 10 次。
-
-### 推特子模式
-
-在标签中写 `推特` 进入该模式。只有 Danbooru 支持，其他图源会被跳过。查询时追加 source 条件；可选调用 `api.fxtwitter.com` 补全原推作者和正文（免 key，失败时忽略）。
+每个池的分类和搜索条件都可以在 WebUI 的 `pools` 配置段里改。例如想在二次元 R18 里加入同人志，就在 `anime_explicit_categories` 中加上 `Doujinshi`（随机页多为漫画分镜）。
 
 ## 安全机制（硬性，不可通过配置关闭）
 
-1. **R18 双重闸门**：请求阶段先判断是否私聊，群聊一律拒绝 R18；结果阶段再按图源实际返回的 rating 复核，只要结果是 R18 就必须是私聊。R18 总开关 `r18_enabled` 默认关闭；群聊擦边由 `group_sensitive_enabled` 单独控制，默认关闭。
-2. **分级复核**：图源实际返回的分级高于请求的分级时（例如请求全年龄却拿到 sensitive / explicit），直接丢弃并重抽。
-3. **未成年内容过滤**：所有风格、所有分级都会检查返回的标签，命中黑名单就丢弃并重抽（每个图源最多 `max_retries` 轮，之后回退到下一个图源）。内置基线黑名单不可删除，只能通过 `extra_blacklist` 追加：
-   `loli, shota, child, female_child, male_child, toddler, 萝莉, 正太, 幼女, 幼児, ロリ, ショタ`
-   - 匹配忽略大小写。英文词按整词匹配（`_`、空格等视为分隔，所以 `loli_bait` 会命中，`lolita_fashion` 不会）；中日文词按子串匹配（`合法ロリ` 会命中）。
-   - Lolicon API 没有负向标签参数，完全依靠本地过滤。
-   - 不返回标签的图源（nekos.best、国内兜底接口）不能用于 R18；标签为空的 R18 结果也会被丢弃。
+1. **R18 双重闸门**：请求阶段先判断是否私聊，群聊一律拒绝 R18；结果阶段再按画廊实际分级复核，只要是 R18 就必须是私聊。R18 总开关 `r18_enabled` 默认关闭；群聊擦边由 `group_sensitive_enabled` 单独控制，默认关闭（关闭时群聊里本插件不可用）。
+2. **分级复核**：不管池子怎么配置，抽到的画廊都会按分类和标签重新判定：
+   - 风格：`Cosplay`、`Asian Porn` 为三次元，其余分类为二次元。
+   - 分级：
+     - 带任一裸露 / 性内容标签为 R18：`other:nudity only`、`uncensored`、`mosaic censorship`、`full censorship`、`hardcore`、`no penetration`、`object insertion only`。打码类标签只用于露出性器官的画廊，所以和 `non-nude` 同时出现时以 R18 为准。
+     - 否则 `Non-H` 分类或带 `other:non-nude` 为擦边。
+     - 都不满足时：二次元（H 分类本身就是 R18）为 R18；三次元无法判定，直接丢弃。
+   - 判定结果必须与请求完全一致，否则丢弃并重抽。
+   - 抽样实测（500 个 Cosplay 画廊）：约 78% 带 `non-nude`，约 20% 带裸露 / 性内容标签，约 2% 两者都没有；另有约 0.5% 同时带 `non-nude` 和打码标签。
+   - 标签是画廊级的。R18 画廊里的随机一页可能是还穿着衣服的开头部分；擦边画廊同理不会露出。
+3. **未成年内容过滤**：检查画廊的全部标签，命中黑名单就丢弃并重抽；没有标签的画廊也会被丢弃。内置基线黑名单不可删除，只能通过 `extra_blacklist` 追加：
+   `loli, lolicon, shota, shotacon, toddlercon, child, female_child, male_child, toddler, 萝莉, 正太, 幼女, 幼児, ロリ, ショタ`
+   - 匹配忽略大小写。英文词按整词匹配（`:`、`_`、空格等视为分隔，所以 `female:lolicon` 会命中，`lolita fashion` 不会）；中日文词按子串匹配。
+   - 匿名访问 E-Hentai 表站时，`lolicon`、`shotacon` 等内容本来就搜不到（只在里站），黑名单是第二道保险。
 4. **访问控制**：群白名单（留空表示所有群可用）、用户黑名单、每人冷却时间和每人每日图片上限（按成功发出的张数计）。黑名单用户和白名单以外的群不会收到任何回复。冷却和每日计数保存在内存中，重启插件后清零。
 
 ## 网络与发送
 
-- 支持 HTTP 代理，每个图源可以单独决定是否走代理（`proxy` 配置段）。Pixiv 反代、booru 站和 Wallhaven 在国内通常需要代理。
-- 图片先下载到插件数据目录的缓存（`data/plugin_data/astrbot_plugin_random_pic/cache`），再以本地文件发送，不直接发外链。
-- 缓存有文件数和总大小上限，每次下载后自动清理最旧的文件。
-- 单张图片超过 `cache.max_image_mb` 时自动降级到较小尺寸（Lolicon regular、Danbooru large、Moebooru sample、Wallhaven 缩略图）。
-- Lolicon 的原图域名默认 `i.pixiv.re`，可在 `lolicon.proxy_host` 修改；下载 `*.pximg.net` 或所配置反代域名的图片时会自动带上 Pixiv Referer。
-- 所有 HTTP 请求都有超时（`request_timeout`）。出现异常时回退到下一个图源；全部失败时回复失败原因，不会没有响应。
+- 默认直连 `e-hentai.org`，国内通常需要在 `ehentai.proxy` 配置代理。页面、API 和图片都走这个代理。
+- 所有请求带 `nw=1` Cookie，跳过画廊的内容警告页。
+- 两次 E-Hentai 请求之间至少间隔 `ehentai.request_interval` 秒。IP 被临时封禁或图片额度用尽（509）时直接停止并回复原因。
+- 图片先下载到插件数据目录的缓存（`data/plugin_data/astrbot_plugin_random_pic/cache`），再以本地文件发送。缓存有文件数和总大小上限，每次下载后自动清理最旧的文件。
+- 所有 HTTP 请求都有超时（`request_timeout`）。全部失败时回复失败原因，不会没有响应。
 
-## 国内兜底接口
+## 标签中文库
 
-在 `cn_fallback.entries` 中添加条目，每条包括名称、URL 和分级（只能选全年龄或擦边）。URL 必须直接返回图片，或者 302 跳转到图片，例如 `https://v2.api-m.com/api/heisi?return=302`（默认已添加，标为擦边）。这类接口不带标签，所以不能携带标签查询，也不会用于 R18。
+中文关键词翻译、说明文字中的作品 / 角色中文名和 `/随机角色` 都依赖 [EhTagTranslation 数据库](https://github.com/EhTagTranslation/Database)。插件运行时从 GitHub Release 下载 `db.text.json.gz`（约 1.3 MB）到插件数据目录，默认每 7 天更新一次；下载失败时沿用旧缓存，10 分钟内不重试。GitHub 无法访问时，可以在 `tag_db.url` 填镜像地址，或让下载走 E-Hentai 代理（`tag_db.use_proxy`，默认开启）。
+
+标签库不可用时：关键词原样搜索，说明文字显示英文标签，`/随机角色` 不可用。
+
+数据库内容由 EhTagTranslation 的编辑者共同所有，按 [CC BY-NC-SA 3.0](https://github.com/EhTagTranslation/Database/blob/master/LICENSE.md) 提供，本插件不附带其数据。
 
 ## 依赖
 
 - `aiohttp`（见 `requirements.txt`）
-- AstrBot ≥ 4.10.4（配置中用到了 `template_list`）
+- AstrBot ≥ 4.10.4

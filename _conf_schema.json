@@ -9,7 +9,7 @@
     "description": "允许群聊使用擦边",
     "type": "bool",
     "default": false,
-    "hint": "私聊始终可用擦边；群聊需要开启此项。"
+    "hint": "私聊始终可用擦边；群聊需要开启此项，否则群聊中本插件不可用。"
   },
   "enable_aliases": {
     "description": "启用便捷别名 /二次元 /三次元 /擦边 /色图",
@@ -19,13 +19,14 @@
   "max_count": {
     "description": "单次最多图片数",
     "type": "int",
-    "default": 5
+    "default": 5,
+    "hint": "每张图大约需要 4 次 E-Hentai 请求（/随机角色 更多），数量越多越慢。"
   },
   "max_retries": {
-    "description": "单个图源最大重抽轮数",
+    "description": "最大抽卡轮数",
     "type": "int",
     "default": 3,
-    "hint": "结果被分级复核或黑名单丢弃时在同一图源重抽，超过轮数后回退到下一个图源。"
+    "hint": "画廊被复核或黑名单丢弃、取图失败时重新随机跳转，最多这么多轮。"
   },
   "request_timeout": {
     "description": "HTTP 请求超时（秒）",
@@ -36,173 +37,149 @@
     "description": "追加的标签黑名单",
     "type": "list",
     "default": [],
-    "hint": "内置基线黑名单（loli、shota、child、female_child、male_child、toddler、萝莉、正太、幼女、幼児、ロリ、ショタ）始终生效且不可删除，这里只能追加。匹配忽略大小写。"
+    "hint": "内置基线黑名单（loli、lolicon、shota、shotacon、toddlercon、child、toddler、萝莉、正太、幼女、幼児、ロリ、ショタ 等）始终生效且不可删除，这里只能追加。匹配 E-Hentai 标签，忽略大小写，例如 guro。"
   },
-  "routes": {
-    "description": "路由表：风格 × 分级 → 图源顺序",
-    "type": "object",
-    "hint": "按列表顺序依次尝试，失败回退到下一个；从列表删除即关闭该图源。可用图源：nekos_best、waifu_im、danbooru、lolicon、wallhaven、yandere、konachan、cn_fallback。",
-    "items": {
-      "anime_general": {
-        "description": "二次元 × 全年龄",
-        "type": "list",
-        "default": ["nekos_best", "waifu_im", "danbooru", "wallhaven"]
-      },
-      "anime_sensitive": {
-        "description": "二次元 × 擦边",
-        "type": "list",
-        "default": ["danbooru", "lolicon", "wallhaven", "yandere"]
-      },
-      "anime_explicit": {
-        "description": "二次元 × R18",
-        "type": "list",
-        "default": ["lolicon", "danbooru", "yandere", "waifu_im", "wallhaven"]
-      },
-      "real_general": {
-        "description": "三次元 × 全年龄",
-        "type": "list",
-        "default": ["wallhaven", "cn_fallback"]
-      },
-      "real_sensitive": {
-        "description": "三次元 × 擦边",
-        "type": "list",
-        "default": ["wallhaven", "cn_fallback"]
-      },
-      "real_explicit": {
-        "description": "三次元 × R18",
-        "type": "list",
-        "default": ["wallhaven"],
-        "hint": "只允许有审核机制的正规图站（目前仅 Wallhaven）。不返回标签的图源会被自动拒绝。"
-      }
-    }
-  },
-  "proxy": {
-    "description": "HTTP 代理",
+  "ehentai": {
+    "description": "E-Hentai",
     "type": "object",
     "items": {
-      "url": {
-        "description": "代理地址",
+      "proxy": {
+        "description": "HTTP 代理",
         "type": "string",
         "default": "",
-        "hint": "例如 http://127.0.0.1:7890。留空则不使用代理。"
+        "hint": "例如 http://127.0.0.1:7890。留空则直连。E-Hentai 页面、API 和图片都走这个代理。"
       },
-      "lolicon": {"description": "Lolicon API 走代理", "type": "bool", "default": true},
-      "danbooru": {"description": "Danbooru（含 fxtwitter）走代理", "type": "bool", "default": true},
-      "yandere": {"description": "yande.re 走代理", "type": "bool", "default": true},
-      "konachan": {"description": "Konachan 走代理", "type": "bool", "default": true},
-      "wallhaven": {"description": "Wallhaven 走代理", "type": "bool", "default": true},
-      "waifu_im": {"description": "waifu.im 走代理", "type": "bool", "default": true},
-      "nekos_best": {"description": "nekos.best 走代理", "type": "bool", "default": true},
-      "cn_fallback": {"description": "国内兜底接口走代理", "type": "bool", "default": false}
-    }
-  },
-  "lolicon": {
-    "description": "Lolicon API",
-    "type": "object",
-    "items": {
-      "proxy_host": {
-        "description": "Pixiv 原图反代域名",
-        "type": "string",
-        "default": "i.pixiv.re",
-        "hint": "填 i.pximg.net 时会自动带上 Pixiv Referer。"
-      },
-      "exclude_ai": {"description": "排除 AI 作品", "type": "bool", "default": true},
-      "aspect_ratio": {
-        "description": "长宽比筛选",
-        "type": "string",
-        "default": "",
-        "hint": "Lolicon aspectRatio 参数，例如 gt1 为横图、lt1 为竖图。留空不限。"
-      }
-    }
-  },
-  "danbooru": {
-    "description": "Danbooru",
-    "type": "object",
-    "items": {
-      "login": {"description": "用户名（可选）", "type": "string", "default": ""},
-      "api_key": {"description": "API key（可选）", "type": "string", "default": "", "secret": true},
-      "tag_limit": {
-        "description": "账号标签额度",
+      "min_rating": {
+        "description": "画廊最低评分",
         "type": "int",
-        "default": 2,
-        "hint": "匿名与 Member 为 2，Gold 为 6，Platinum 为 12。随机排序占 1 个，推特 source 占 1 个，剩余额度优先给用户标签，再追加 -loli -shota。"
+        "default": 4,
+        "hint": "2~5 星，低于 2 表示不限。质量的主要开关，评分越高画廊池越小。"
       },
-      "include_questionable": {
-        "description": "R18 包含 rating:q",
+      "exclude_ai": {
+        "description": "排除 AI 生成画廊",
         "type": "bool",
-        "default": false
+        "default": true,
+        "hint": "在搜索中追加 -other:\"ai generated$\"。"
       },
-      "fxtwitter": {
-        "description": "推特子模式下用 fxtwitter 补全原推作者和正文",
+      "min_pages": {
+        "description": "画廊最少页数",
+        "type": "int",
+        "default": 0,
+        "hint": "0 表示不限。"
+      },
+      "page_pick": {
+        "description": "取图位置",
+        "type": "string",
+        "default": "随机页",
+        "options": [
+          "随机页",
+          "封面"
+        ],
+        "hint": "随机页：在画廊中随机抽一页；封面：只取第一页。"
+      },
+      "explicit_skip_ratio": {
+        "description": "R18 跳过前段比例",
+        "type": "float",
+        "default": 0.3,
+        "hint": "R18 画廊通常从穿着完整开始，随机页只从后面这部分中抽。0 表示不跳过，最大 0.9。取封面时不生效。"
+      },
+      "request_interval": {
+        "description": "请求间隔（秒）",
+        "type": "float",
+        "default": 0.5,
+        "hint": "两次 E-Hentai 请求之间的最小间隔，过快可能被临时封禁 IP。"
+      }
+    }
+  },
+  "pools": {
+    "description": "画廊池：风格 × 分级 → 分类 + 搜索条件",
+    "type": "object",
+    "hint": "可选分类：Doujinshi、Manga、Artist CG、Game CG、Image Set、Non-H、Cosplay、Asian Porn、Western、Misc。搜索条件使用 E-Hentai 搜索语法（- 排除、~ 或、$ 精确匹配）。抽到的画廊还会按分类和标签复核：Cosplay / Asian Porn 为三次元，其余为二次元；带 other:nudity only、uncensored、mosaic censorship、full censorship、hardcore、no penetration、object insertion only 任一标签为 R18（即使同时带 non-nude）；否则 Non-H 分类或带 other:non-nude 为擦边；其余二次元为 R18，其余三次元无法判定、直接丢弃。池子条件与复核不一致时画廊会被丢弃。",
+    "items": {
+      "anime_sensitive_categories": {
+        "description": "二次元 × 擦边：分类",
+        "type": "list",
+        "default": [
+          "Non-H"
+        ]
+      },
+      "anime_sensitive_search": {
+        "description": "二次元 × 擦边：搜索条件",
+        "type": "string",
+        "default": "~other:artbook$ ~other:\"non-h imageset$\" -other:\"nudity only$\"",
+        "hint": "默认只取画集和无 H 图集，避免抽到满页文字的漫画。"
+      },
+      "anime_explicit_categories": {
+        "description": "二次元 × R18：分类",
+        "type": "list",
+        "default": [
+          "Artist CG",
+          "Game CG",
+          "Image Set"
+        ],
+        "hint": "需要同人志、漫画时加入 Doujinshi、Manga（随机页多为分镜）。"
+      },
+      "anime_explicit_search": {
+        "description": "二次元 × R18：搜索条件",
+        "type": "string",
+        "default": "-other:\"non-nude$\""
+      },
+      "real_sensitive_categories": {
+        "description": "三次元 × 擦边：分类",
+        "type": "list",
+        "default": [
+          "Cosplay",
+          "Asian Porn"
+        ],
+        "hint": "Asian Porn 的无露点画廊以杂志写真为主。"
+      },
+      "real_sensitive_search": {
+        "description": "三次元 × 擦边：搜索条件",
+        "type": "string",
+        "default": "other:\"non-nude$\" -other:\"nudity only$\""
+      },
+      "real_explicit_categories": {
+        "description": "三次元 × R18：分类",
+        "type": "list",
+        "default": [
+          "Cosplay"
+        ],
+        "hint": "不建议加入 Asian Porn：其中有业余和流出内容，真人年龄也无法靠标签过滤。"
+      },
+      "real_explicit_search": {
+        "description": "三次元 × R18：搜索条件",
+        "type": "string",
+        "default": "~other:\"nudity only$\" ~other:uncensored$ ~other:\"mosaic censorship$\" ~other:\"full censorship$\" ~other:hardcore$ ~other:\"no penetration$\" ~other:\"object insertion only$\"",
+        "hint": "默认只取带裸露或性内容标签的画廊（任一即可）。"
+      }
+    }
+  },
+  "tag_db": {
+    "description": "标签中文库（EhTagTranslation）",
+    "type": "object",
+    "hint": "用于中文关键词翻译、说明文字中的作品 / 角色中文名，以及 /随机角色。数据来自 EhTagTranslation 数据库（CC BY-NC-SA 3.0），运行时下载到插件数据目录。",
+    "items": {
+      "enabled": {
+        "description": "启用标签库",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后关键词原样搜索，/随机角色 不可用。"
+      },
+      "url": {
+        "description": "下载地址",
+        "type": "string",
+        "default": "",
+        "hint": "留空使用 GitHub Release 的 db.text.json.gz；GitHub 无法访问时可以填镜像地址。"
+      },
+      "use_proxy": {
+        "description": "下载走 E-Hentai 代理",
         "type": "bool",
         "default": true
-      }
-    }
-  },
-  "wallhaven": {
-    "description": "Wallhaven",
-    "type": "object",
-    "items": {
-      "api_key": {
-        "description": "API key",
-        "type": "string",
-        "default": "",
-        "secret": true,
-        "hint": "R18（purity=001）必须配置。"
-      }
-    }
-  },
-  "waifu_im": {
-    "description": "waifu.im",
-    "type": "object",
-    "items": {
-      "api_key": {"description": "API key（可选）", "type": "string", "default": "", "secret": true}
-    }
-  },
-  "nekos_best": {
-    "description": "nekos.best",
-    "type": "object",
-    "items": {
-      "categories": {
-        "description": "随机分类",
-        "type": "list",
-        "default": ["neko", "waifu", "husbando", "kitsune"],
-        "hint": "可选 neko、waifu、husbando、kitsune。"
-      }
-    }
-  },
-  "cn_fallback": {
-    "description": "国内三次元兜底接口",
-    "type": "object",
-    "items": {
-      "entries": {
-        "description": "接口列表",
-        "type": "template_list",
-        "hint": "URL 必须直接返回图片或 302 到图片。只能标注全年龄或擦边，永远不用于 R18。",
-        "templates": {
-          "endpoint": {
-            "name": "图片接口",
-            "display_item": "name",
-            "items": {
-              "name": {"description": "名称", "type": "string", "default": ""},
-              "url": {"description": "URL", "type": "string", "default": ""},
-              "rating": {
-                "description": "分级",
-                "type": "string",
-                "default": "全年龄",
-                "options": ["全年龄", "擦边"]
-              }
-            }
-          }
-        },
-        "default": [
-          {
-            "__template_key": "endpoint",
-            "name": "黑丝",
-            "url": "https://v2.api-m.com/api/heisi?return=302",
-            "rating": "擦边"
-          }
-        ]
+      },
+      "refresh_days": {
+        "description": "更新间隔（天）",
+        "type": "int",
+        "default": 7
       }
     }
   },
@@ -216,8 +193,16 @@
         "default": [],
         "hint": "留空表示所有群可用。"
       },
-      "user_blacklist": {"description": "用户黑名单", "type": "list", "default": []},
-      "cooldown_seconds": {"description": "每人冷却时间（秒）", "type": "int", "default": 10},
+      "user_blacklist": {
+        "description": "用户黑名单",
+        "type": "list",
+        "default": []
+      },
+      "cooldown_seconds": {
+        "description": "每人冷却时间（秒）",
+        "type": "int",
+        "default": 10
+      },
       "daily_limit": {
         "description": "每人每日图片上限",
         "type": "int",
@@ -230,13 +215,21 @@
     "description": "图片缓存",
     "type": "object",
     "items": {
-      "max_files": {"description": "最多缓存文件数", "type": "int", "default": 100},
-      "max_total_mb": {"description": "缓存总大小上限（MB）", "type": "int", "default": 200},
+      "max_files": {
+        "description": "最多缓存文件数",
+        "type": "int",
+        "default": 100
+      },
+      "max_total_mb": {
+        "description": "缓存总大小上限（MB）",
+        "type": "int",
+        "default": 200
+      },
       "max_image_mb": {
         "description": "单张图片上限（MB）",
         "type": "int",
         "default": 10,
-        "hint": "超过时自动降级到 regular / large / sample 尺寸。"
+        "hint": "超过时丢弃并重抽。"
       }
     }
   }

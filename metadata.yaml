@@ -1,8 +1,8 @@
 name: astrbot_plugin_random_pic
 display_name: 随机图片
-desc: 随机图片插件，风格（二次元/三次元）× 分级（全年龄/擦边/R18）自由组合，多图源自动回退，标注来源，R18 仅私聊并做未成年内容过滤。
-short_desc: 二次元/三次元 × 全年龄/擦边/R18 随机图，多图源回退并标注来源。
-version: 1.0.0
+desc: E-Hentai 随机抽卡插件，风格（二次元/三次元）× 分级（擦边/R18）组合成 4 个画廊池，随机抽画廊再随机取一页；支持中文关键词与随机角色（EhTagTranslation 标签库），R18 仅私聊并做未成年内容过滤。
+short_desc: E-Hentai 随机抽卡：二次元/三次元 × 擦边/R18，支持中文关键词与随机角色。
+version: 2.0.0
 author: drdon1234
 repo: https://github.com/drdon1234/astrbot_plugin_random_pic
 astrbot_version: ">=4.10.4"
