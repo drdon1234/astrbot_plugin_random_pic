@@ -10,7 +10,7 @@ import aiohttp
 from astrbot.api import logger
 
 from ..filters import ContentFilter, classify, rating_reason
-from ..imagecheck import is_colorful
+from ..images import is_colorful
 from ..models import ANIME, EXPLICIT, RATINGS, STYLES, Album, DrawOptions, GalleryRef
 from ..net import HttpError, ImageCache
 from ..tags import TagIndex, search_term

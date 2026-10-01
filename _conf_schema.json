@@ -117,6 +117,12 @@
         "type": "bool",
         "default": true,
         "hint": "每个图集最后附作者、作品、角色、标签和画廊 / 帖子链接。"
+      },
+      "image_quality": {
+        "description": "图片质量",
+        "type": "int",
+        "default": 85,
+        "hint": "发送的图片和整本 PDF 的每一页都转成这个质量的 JPEG（1~100），图片更小、发送更快；0 表示原图。动图，以及转换后不会更小的 JPEG 保持原样。修改后已打包的 PDF 不会重新生成。"
       }
     }
   },
@@ -201,26 +207,35 @@
     }
   },
   "sources": {
-    "description": "三次元图源权重",
+    "description": "三次元图源比例",
     "type": "object",
-    "hint": "每个三次元图集按权重选一个图源（二次元只有 E-Hentai）。某个图源这次不能用时不参与分配：16K 不能搜索也没有分级，只用于不带关键词、不是 /随机角色 的抽图，开启内容分级时只在私聊且开启 R18 时使用；哔咔需要填写账号，不支持 E-Hentai 标签语法（: $ \"）的关键词和 /随机角色。16K、哔咔没抽够的图集由 E-Hentai 补上。权重都为 0 时全部从 E-Hentai 抽。",
+    "hint": "每个三次元图集从这次能用的图源里选一个（二次元只有 E-Hentai）。16K 不能搜索也没有分级，只用于不带关键词、不是 /随机角色 的抽图，开启内容分级时只在私聊且开启 R18 时使用；哔咔需要填写账号，不支持 E-Hentai 标签语法（: $ \"）的关键词和 /随机角色。16K、哔咔没抽够的图集由 E-Hentai 补上。",
     "items": {
+      "custom_weights": {
+        "description": "手动配置比例",
+        "type": "bool",
+        "default": false,
+        "hint": "关闭时能用的图源均分；开启后按下面的权重分配，不能用的图源不参与，权重都为 0 时全部从 E-Hentai 抽。"
+      },
       "ehentai": {
-        "description": "E-Hentai",
+        "description": "E-Hentai 权重",
         "type": "int",
-        "default": 20
+        "default": 34,
+        "condition": {"custom_weights": true}
       },
       "sixteenk": {
-        "description": "16K",
+        "description": "16K 权重",
         "type": "int",
-        "default": 50,
+        "default": 33,
+        "condition": {"custom_weights": true},
         "hint": "16k.club：服务器端随机的自拍、cosplay、写真（夹杂少量 AI 图），没有标签和分级，只能按标题过滤黑名单。设为 0 即不用。"
       },
       "pica": {
-        "description": "哔咔",
+        "description": "哔咔权重",
         "type": "int",
-        "default": 30,
-        "hint": "哔咔漫画的 Cosplay 分类，需要在「哔咔账号」里填写账号。带「無H內容」标签的算擦边，不带的算 R18。"
+        "default": 33,
+        "condition": {"custom_weights": true},
+        "hint": "哔咔漫画的 Cosplay 分类，需要在「哔咔账号」里填写账号。带「無H內容」标签的算擦边，不带的算 R18。设为 0 即不用。"
       }
     }
   },
@@ -392,7 +407,7 @@
   "pica": {
     "description": "哔咔账号",
     "type": "object",
-    "hint": "填好账号和密码、且「三次元图源权重」里哔咔大于 0 时启用。第一次抽到哔咔时登录，token 有效期约 7 天，保存在插件数据目录，过期自动重新登录；登录失败后 10 分钟内不再尝试。",
+    "hint": "填好账号和密码后启用（手动配置比例时哔咔权重还要大于 0）。第一次抽到哔咔时登录，token 有效期约 7 天，保存在插件数据目录，过期自动重新登录；登录失败后 10 分钟内不再尝试。",
     "items": {
       "email": {
         "description": "账号",

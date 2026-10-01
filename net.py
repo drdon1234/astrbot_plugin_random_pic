@@ -12,6 +12,8 @@ from yarl import URL
 
 from astrbot.api import logger
 
+from .images import compress
+
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
@@ -138,17 +140,20 @@ class ImageCache:
         cache_dir: Path,
         max_total_mb: float,
         max_image_mb: float,
+        quality: int = 0,
     ):
         self.http = http
         self.dir = cache_dir
         self.dir.mkdir(parents=True, exist_ok=True)
         self.max_total = int(max_total_mb * 1024 * 1024)
         self.max_image = int(max_image_mb * 1024 * 1024)
+        self.quality = quality
 
     async def download(self, url: str, dest: Path | None = None) -> Path | None:
         """下载单张图片，返回本地文件路径；失败返回 None。
 
-        dest 为不含扩展名的目标路径（例如整本下载时的「页码」），此时不进缓存、不触发清理。
+        进缓存的图片按 quality 转成 JPEG（0 为原图）。dest 为不含扩展名的目标路径
+        （例如整本下载时的「页码」），此时保留原图、不进缓存、不触发清理。
         """
         try:
             try:
@@ -166,8 +171,17 @@ class ImageCache:
             logger.warning(f"[random_pic] 下载失败 {url}: {e!r}")
             return None
         if dest is None:
+            path = await asyncio.to_thread(self._compress, path)
             self.cleanup()
         return path
+
+    def _compress(self, path: Path) -> Path:
+        try:
+            return compress(path, self.quality)
+        except Exception as e:
+            # 解码失败的图片原样交给后面的流程（彩图检查会把它当黑白页丢弃）
+            logger.warning(f"[random_pic] 图片转换失败，发送原图 {path}: {e!r}")
+            return path
 
     async def _fetch(self, url: str) -> tuple[bytes, str] | None:
         """返回 (图片数据, Content-Type)，超过大小上限时返回 None。"""

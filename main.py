@@ -118,7 +118,11 @@ class RandomPicPlugin(Star):
             s.network.timeout, s.network.proxy, {SITES[site][2]: {"nw": "1", **cookies}}
         )
         cache = ImageCache(
-            self.http, data_dir / "cache", s.network.cache_mb, s.network.max_image_mb
+            self.http,
+            data_dir / "cache",
+            s.network.cache_mb,
+            s.network.max_image_mb,
+            s.send.image_quality,
         )
         self.content = ContentFilter(s.draw.extra_blacklist, s.draw.heavy)
         opts = DrawOptions(
@@ -138,11 +142,17 @@ class RandomPicPlugin(Star):
             min_stars=s.ehentai.min_rating,
             min_pages=s.ehentai.min_pages,
         )
+        source_weights = s.sources.weights
         weights = [
-            (self.ehentai, s.sources.ehentai),
-            (SixteenK(self.http, cache, self.content, opts), s.sources.sixteenk),
+            (self.ehentai, source_weights["ehentai"]),
+            (
+                SixteenK(self.http, cache, self.content, opts),
+                source_weights["sixteenk"],
+            ),
         ]
-        self.pica_enabled = bool(s.pica.email and s.pica.password and s.sources.pica)
+        self.pica_enabled = bool(
+            s.pica.email and s.pica.password and source_weights["pica"]
+        )
         if self.pica_enabled:
             pica = Picacomic(
                 self.http,
@@ -153,7 +163,7 @@ class RandomPicPlugin(Star):
                 s.pica.password,
                 token_path=data_dir / "pica_token.json",
             )
-            weights.append((pica, s.sources.pica))
+            weights.append((pica, source_weights["pica"]))
         self.tagdb = (
             TagDB(self.http, data_dir / "ehtag.json.gz", s.tag_db.url)
             if s.tag_db.enabled
@@ -165,6 +175,7 @@ class RandomPicPlugin(Star):
             data_dir / "pdf_tmp",
             s.pdf.pages_per_file,
             s.pdf.keep_galleries,
+            s.send.image_quality,
         )
         self._preload: asyncio.Task | None = None
 
@@ -431,7 +442,7 @@ class RandomPicPlugin(Star):
             lines.append(
                 f"内容分级已关闭，群聊和私聊内容相同；R18：{on[s.access.r18_enabled]}"
             )
-        if s.sources.sixteenk:
+        if s.sources.weights["sixteenk"]:
             where = "私聊且开启 R18 时，" if s.access.content_rating else ""
             lines.append(
                 f"三次元不带关键词时，{where}部分图集来自 16K（没有分级，擦边和 R18 都可能抽到）"

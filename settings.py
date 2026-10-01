@@ -59,6 +59,10 @@ class Send:
     mode: str
     header: bool
     caption: bool
+    image_quality: int
+
+    def __post_init__(self):
+        self.image_quality = min(max(self.image_quality, 0), 100)
 
 
 @dataclass
@@ -86,14 +90,21 @@ class Draw:
 
 @dataclass
 class Sources:
+    custom_weights: bool
     ehentai: int
     sixteenk: int
     pica: int
 
-    def __post_init__(self):
-        self.ehentai = max(0, self.ehentai)
-        self.sixteenk = max(0, self.sixteenk)
-        self.pica = max(0, self.pica)
+    @property
+    def weights(self) -> dict[str, int]:
+        """各图源的权重：手动配置时用配置值，否则均分。"""
+        if not self.custom_weights:
+            return {"ehentai": 1, "sixteenk": 1, "pica": 1}
+        return {
+            "ehentai": max(0, self.ehentai),
+            "sixteenk": max(0, self.sixteenk),
+            "pica": max(0, self.pica),
+        }
 
 
 @dataclass

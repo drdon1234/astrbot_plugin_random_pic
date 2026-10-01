@@ -1,45 +1,25 @@
 """整本 PDF：把图片按顺序写成 PDF（每张图一页），以及打包结果的复用与清理。
 
-JPEG（RGB / 灰度）原样嵌入不重新编码；其他格式（webp、png、gif 等）逐张用 Pillow
-转为 JPEG。同一时间只有一张图在内存里，几百页的画廊也不会占用太多内存。
+每页按配置的图片质量转成 JPEG 嵌入（见 images.to_jpeg）。同一时间只有一张图在内存里，
+几百页的画廊也不会占用太多内存。
 """
 
 import asyncio
-import io
 import re
 import shutil
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from PIL import Image
-
+from .images import to_jpeg
 from .sources.ehentai_api import Gallery
 from .util import shared
 
-JPEG_QUALITY = 90
+COLOR_SPACES = {"RGB": "DeviceRGB", "L": "DeviceGray"}
 
 
-def jpeg_data(path: Path) -> tuple[bytes, int, int, str]:
-    """返回 (JPEG 数据, 宽, 高, PDF 色彩空间)。"""
-    with Image.open(path) as im:
-        if im.format == "JPEG" and im.mode in ("RGB", "L"):
-            space = "DeviceRGB" if im.mode == "RGB" else "DeviceGray"
-            return path.read_bytes(), im.width, im.height, space
-        im.seek(0)  # 动图只取第一帧
-        if im.mode in ("RGBA", "LA", "P"):
-            rgba = im.convert("RGBA")
-            rgb = Image.new("RGB", rgba.size, (255, 255, 255))
-            rgb.paste(rgba, mask=rgba.split()[-1])
-        else:
-            rgb = im.convert("RGB")
-        buf = io.BytesIO()
-        rgb.save(buf, "JPEG", quality=JPEG_QUALITY)
-        return buf.getvalue(), rgb.width, rgb.height, "DeviceRGB"
-
-
-def write_pdf(images: list[Path], out: Path) -> Path:
-    """按 images 的顺序写 PDF，先写临时文件再改名，返回 out。"""
+def write_pdf(images: list[Path], out: Path, quality: int) -> Path:
+    """按 images 的顺序写 PDF，先写临时文件再改名，返回 out。quality 为 0 表示原图。"""
     if not images:
         raise ValueError("没有图片")
     count = len(images)
@@ -65,13 +45,15 @@ def write_pdf(images: list[Path], out: Path) -> Path:
         kids = " ".join(f"{p} 0 R" for p in page_ids)
         write_obj(2, f"<< /Type /Pages /Kids [{kids}] /Count {count} >>".encode())
         for page_id, path in zip(page_ids, images):
-            data, width, height, space = jpeg_data(path)
+            data, width, height, mode = to_jpeg(path, quality)
+            if data is None:
+                data = path.read_bytes()
             content_id, image_id = page_id + 1, page_id + 2
             write_obj(
                 image_id,
                 stream(
                     f"/Type /XObject /Subtype /Image /Width {width} /Height {height} "
-                    f"/ColorSpace /{space} /BitsPerComponent 8 /Filter /DCTDecode",
+                    f"/ColorSpace /{COLOR_SPACES[mode]} /BitsPerComponent 8 /Filter /DCTDecode",
                     data,
                 ),
             )
@@ -138,11 +120,14 @@ class PdfStore:
     不同用户最多同时打包 PACK_CONCURRENCY 个。
     """
 
-    def __init__(self, out_dir: Path, tmp_dir: Path, pages_per_file: int, keep: int):
+    def __init__(
+        self, out_dir: Path, tmp_dir: Path, pages_per_file: int, keep: int, quality: int
+    ):
         self.dir = out_dir
         self.tmp = tmp_dir
         self.pages_per_file = pages_per_file
         self.keep = keep
+        self.quality = quality
         self._slots = asyncio.Semaphore(PACK_CONCURRENCY)
         # 用户 → (锁, 正在使用的请求数)，没有请求时删除
         self._users: dict[str, tuple[asyncio.Lock, int]] = {}
@@ -222,7 +207,7 @@ class PdfStore:
                 out = self.dir / stored_name(
                     gallery.gid, part, len(chunks), bool(missing)
                 )
-                await asyncio.to_thread(write_pdf, chunk, out)
+                await asyncio.to_thread(write_pdf, chunk, out, self.quality)
                 # 下载的图片以页码命名，分卷文件名标出实际页码范围
                 pages = (int(chunk[0].stem), int(chunk[-1].stem))
                 files.append(
