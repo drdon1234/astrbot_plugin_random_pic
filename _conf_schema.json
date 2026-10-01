@@ -16,6 +16,12 @@
     "type": "bool",
     "default": true
   },
+  "no_prefix_trigger": {
+    "description": "群聊无需 / 也能触发",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后群聊里直接发「抽图」「全集」「二次元 3」等（不带 / 也不用 @ 机器人）也能触发。指令词须在消息开头，后面只能跟空格和参数，「二次元真好」这类普通聊天不会触发。别名关闭时别名也不会无前缀触发。"
+  },
   "default_style": {
     "description": "默认风格",
     "type": "string",
@@ -126,13 +132,6 @@
         "default": "",
         "secret": true,
         "hint": "访问 exhentai.org 后获得，仅里站需要。"
-      },
-      "sk": {
-        "description": "Cookie：sk（可选）",
-        "type": "string",
-        "default": "",
-        "secret": true,
-        "hint": "站点设置的密钥，一般不用填。"
       },
       "min_rating": {
         "description": "画廊最低评分",
@@ -269,7 +268,7 @@
     }
   },
   "pdf": {
-    "description": "整本 PDF（/pdf）",
+    "description": "整本 PDF（/pdf、/全集）",
     "type": "object",
     "hint": "回复抽到的图片（或合并转发消息）发送 /pdf，下载整个画廊并打包成 PDF 发送。分级闸门与抽图相同：R18 画廊只能在私聊打包。",
     "items": {
@@ -278,11 +277,11 @@
         "type": "bool",
         "default": true
       },
-      "max_pages": {
-        "description": "最多页数",
+      "pages_per_file": {
+        "description": "单个 PDF 最多页数",
         "type": "int",
         "default": 200,
-        "hint": "超过此页数的画廊不予打包。每页都要单独下载，页数越多越慢，也越消耗 E-Hentai 图片额度。"
+        "hint": "画廊超过这个页数时分成多个 PDF 依次发送，每个文件名标出页码范围。画廊页数不设上限，但页数越多下载越慢，也越消耗 E-Hentai 图片额度。"
       },
       "output_dir": {
         "description": "PDF 存放目录",
@@ -291,10 +290,10 @@
         "hint": "留空为插件数据目录下的 pdf 文件夹。QQ 机器人（NapCat 等）与 AstrBot 分属不同容器时，必须填两边路径相同的共享目录，例如 /app/sharedFolder/random_pic_pdf，否则文件发不出去。"
       },
       "keep_files": {
-        "description": "保留的 PDF 数量",
+        "description": "保留的画廊数",
         "type": "int",
         "default": 10,
-        "hint": "同一画廊再次请求时直接复用；超出数量时删除最旧的。只清理本插件生成的文件（文件名为画廊号）。"
+        "hint": "打包过的画廊再次请求时直接复用；超出数量时按画廊删除最旧的 PDF（含全部分卷）。只清理本插件生成的文件（文件名以画廊号开头）。"
       },
       "concurrency": {
         "description": "图片并发下载数",

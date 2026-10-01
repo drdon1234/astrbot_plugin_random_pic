@@ -47,7 +47,7 @@ SITES = {
         "exhentai.org",
     ),
 }
-COOKIE_KEYS = ("ipb_member_id", "ipb_pass_hash", "igneous", "sk")
+COOKIE_KEYS = ("ipb_member_id", "ipb_pass_hash", "igneous")
 EX_REQUIRED_COOKIES = ("ipb_member_id", "ipb_pass_hash", "igneous")
 
 STYLE_WORDS = {"二次元": ANIME, "三次元": REAL}
@@ -56,7 +56,11 @@ DEFAULT_RATING_WORDS = {"擦边": SENSITIVE, "R18": EXPLICIT}
 HELP_WORDS = {"help", "帮助"}
 FORWARD = "合并转发"
 FORWARD_PLATFORMS = {"aiocqhttp"}
-OWN_PDF = re.compile(r"\d+(?:-incomplete)?\.pdf")
+# 本插件存储的 PDF：画廊号[-incomplete][-第几卷of共几卷].pdf
+OWN_PDF = re.compile(r"(\d+)(?:-incomplete)?(?:-\d+of\d+)?\.pdf")
+# 群聊不带唤醒前缀时也能触发的指令词（整条消息就是指令词，或后面跟空格和参数）
+NO_PREFIX_RE = r"(?i)^\s*(抽图|随机角色|二次元|三次元|擦边|色图|pdf|全集)(?:\s|$)"
+ALIAS_WORDS = {"二次元", "三次元", "擦边", "色图"}
 UNSAFE_FILENAME = re.compile(r'[\\/:*?"<>|\r\n\t]+')
 
 
@@ -118,8 +122,21 @@ def format_caption(item: ImageItem) -> str:
     return "\n".join(lines)
 
 
-def pdf_filename(title: str, gid: int) -> str:
+def pdf_filename(
+    title: str, gid: int, pages: tuple[int, int] | None = None, parts: int = 1
+) -> str:
+    """发送给用户的文件名；分卷时带上页码范围。"""
     name = UNSAFE_FILENAME.sub(" ", title).strip()[:80] or str(gid)
+    if parts > 1 and pages:
+        name += f" ({pages[0]}-{pages[1]})"
+    return f"{name}.pdf"
+
+
+def pdf_stored_name(gid: int, part: int, parts: int, incomplete: bool = False) -> str:
+    """存储用的文件名，只含画廊号，便于识别缓存和清理。"""
+    name = f"{gid}-incomplete" if incomplete else str(gid)
+    if parts > 1:
+        name += f"-{part}of{parts}"
     return f"{name}.pdf"
 
 
@@ -244,10 +261,34 @@ class RandomPicPlugin(Star):
             async for result in self._handle(event, rating=EXPLICIT):
                 yield result
 
-    @filter.command("pdf", alias={"全本"})
+    @filter.command("pdf", alias={"全集"})
     async def gallery_pdf(self, event: AstrMessageEvent):
         """回复抽到的图片，获取整个画廊的 PDF。也可以 /pdf <画廊链接>"""
         async for result in self._handle_pdf(event):
+            yield result
+
+    @filter.regex(NO_PREFIX_RE)
+    async def no_prefix(self, event: AstrMessageEvent):
+        """群聊里不带 / 也能触发本插件的指令。"""
+        # 带了唤醒前缀、@ 了机器人或私聊时，已经由上面的指令处理
+        if getattr(event, "is_at_or_wake_command", False):
+            return
+        if not self.config.get("no_prefix_trigger", True):
+            return
+        word = event.message_str.split()[0].lower()
+        if word in ALIAS_WORDS and not self.config.get("enable_aliases", True):
+            return
+        handlers = {
+            "抽图": lambda: self._handle(event),
+            "随机角色": lambda: self._handle(event, random_character=True),
+            "二次元": lambda: self._handle(event, style=ANIME),
+            "三次元": lambda: self._handle(event, style=REAL),
+            "擦边": lambda: self._handle(event, rating=SENSITIVE),
+            "色图": lambda: self._handle(event, rating=EXPLICIT),
+            "pdf": lambda: self._handle_pdf(event),
+            "全集": lambda: self._handle_pdf(event),
+        }
+        async for result in handlers[word]():
             yield result
 
     async def _handle(
@@ -373,24 +414,20 @@ class RandomPicPlugin(Star):
         if denied:
             yield event.plain_result(denied)
             return
-        max_pages = int(self.pdf_conf.get("max_pages", 200))
-        if gallery.filecount > max_pages:
-            yield event.plain_result(
-                f"画廊共 {gallery.filecount} 页，超过上限 {max_pages} 页，不予打包。"
-            )
-            return
-
-        out = self.pdf_dir / f"{gallery.gid}.pdf"
-        if not out.exists():
+        files = self._cached_pdfs(gallery)
+        if files is None:
             if self._pdf_lock.locked():
                 yield event.plain_result("正在打包另一个画廊，请稍后再试。")
                 return
             async with self._pdf_lock:
+                per_file = self._pages_per_file()
+                parts = -(-gallery.filecount // per_file)
+                split = f"，分 {parts} 个文件发送" if parts > 1 else ""
                 yield event.plain_result(
-                    f"开始下载《{gallery.title}》共 {gallery.filecount} 页，完成后发送 PDF……"
+                    f"开始下载《{gallery.title}》共 {gallery.filecount} 页{split}，完成后发送 PDF……"
                 )
                 try:
-                    out, missing = await self._build_pdf(gallery)
+                    files, missing = await self._build_pdf(gallery)
                 except EHentaiError as e:
                     yield event.plain_result(f"打包失败：{e}")
                     return
@@ -402,14 +439,8 @@ class RandomPicPlugin(Star):
                     yield event.plain_result(
                         f"有 {missing} 页下载失败，PDF 中缺少这些页。"
                     )
-        yield event.chain_result(
-            [
-                Comp.File(
-                    name=pdf_filename(gallery.title, gallery.gid),
-                    file=str(out.resolve()),
-                )
-            ]
-        )
+        for path, name in files:
+            yield event.chain_result([Comp.File(name=name, file=str(path.resolve()))])
 
     async def _pdf_target(
         self, event: AstrMessageEvent, tokens: list[str]
@@ -459,10 +490,32 @@ class RandomPicPlugin(Star):
             bool(self.config.get("group_sensitive_enabled", False)),
         )
 
-    async def _build_pdf(self, gallery) -> tuple[Path, int]:
-        """下载整个画廊并写成 PDF，返回 (PDF 路径, 失败页数)。
+    def _pages_per_file(self) -> int:
+        return max(1, int(self.pdf_conf.get("pages_per_file", 200)))
 
-        有缺页时文件名带 -incomplete，不会被当成完整缓存复用。
+    def _cached_pdfs(self, gallery) -> list[tuple[Path, str]] | None:
+        """完整打包过的画廊直接复用；缺任何一个分卷都视为没有缓存。"""
+        per_file = self._pages_per_file()
+        ranges = [
+            (start, min(start + per_file - 1, gallery.filecount))
+            for start in range(1, gallery.filecount + 1, per_file)
+        ]
+        files = [
+            (self.pdf_dir / pdf_stored_name(gallery.gid, i, len(ranges)), r)
+            for i, r in enumerate(ranges, 1)
+        ]
+        if not files or not all(path.exists() for path, _ in files):
+            return None
+        return [
+            (path, pdf_filename(gallery.title, gallery.gid, r, len(files)))
+            for path, r in files
+        ]
+
+    async def _build_pdf(self, gallery) -> tuple[list[tuple[Path, str]], int]:
+        """下载整个画廊，每 pages_per_file 页写成一个 PDF。
+
+        返回 ([(PDF 路径, 发送文件名)], 失败页数)。有缺页时存储名带 -incomplete，
+        不会被当成完整缓存复用。
         """
         tmp = self.pdf_tmp / str(gallery.gid)
         shutil.rmtree(tmp, ignore_errors=True)
@@ -474,25 +527,40 @@ class RandomPicPlugin(Star):
             if not paths:
                 raise EHentaiError("没有下载到任何图片")
             self.pdf_dir.mkdir(parents=True, exist_ok=True)
-            suffix = "-incomplete" if missing else ""
-            out = self.pdf_dir / f"{gallery.gid}{suffix}.pdf"
-            await asyncio.to_thread(write_pdf, paths, out)
+            per_file = self._pages_per_file()
+            chunks = [paths[i : i + per_file] for i in range(0, len(paths), per_file)]
+            files = []
+            for i, chunk in enumerate(chunks, 1):
+                stored = pdf_stored_name(gallery.gid, i, len(chunks), bool(missing))
+                out = self.pdf_dir / stored
+                await asyncio.to_thread(write_pdf, chunk, out)
+                # 下载的图片以页码命名，分卷文件名标出实际页码范围
+                pages = (int(chunk[0].stem), int(chunk[-1].stem))
+                files.append(
+                    (out, pdf_filename(gallery.title, gallery.gid, pages, len(chunks)))
+                )
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
-        self._prune_pdfs(keep=out)
-        return out, missing
+        self._prune_pdfs(keep=gallery.gid)
+        return files, missing
 
-    def _prune_pdfs(self, keep: Path):
-        """只清理本插件生成的 PDF（文件名为画廊号），输出目录可能是共享目录。"""
+    def _prune_pdfs(self, keep: int):
+        """按画廊清理旧 PDF，只动本插件生成的文件（输出目录可能是共享目录）。"""
         limit = max(1, int(self.pdf_conf.get("keep_files", 10)))
-        ours = [
-            p
-            for p in self.pdf_dir.glob("*.pdf")
-            if OWN_PDF.fullmatch(p.name) and p != keep
-        ]
-        ours.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        for path in ours[limit - 1 :]:
-            path.unlink(missing_ok=True)
+        groups: dict[int, list[Path]] = {}
+        for path in self.pdf_dir.glob("*.pdf"):
+            match = OWN_PDF.fullmatch(path.name)
+            if match:
+                groups.setdefault(int(match.group(1)), []).append(path)
+        newest = {
+            gid: max(p.stat().st_mtime for p in paths) for gid, paths in groups.items()
+        }
+        others = sorted(
+            (gid for gid in groups if gid != keep), key=newest.get, reverse=True
+        )
+        for gid in others[limit - 1 :]:
+            for path in groups[gid]:
+                path.unlink(missing_ok=True)
 
     def help_text(self) -> str:
         on_off = {True: "已开启", False: "未开启"}
@@ -506,8 +574,8 @@ class RandomPicPlugin(Star):
         ]
         if self.pdf_conf.get("enabled", True):
             lines.append(
-                "/pdf：回复抽到的图片，获取整个画廊的 PDF（合并转发可加序号，如 /pdf 2；"
-                "也可以 /pdf <画廊链接>）"
+                f"/pdf 或 /全集：回复抽到的图片，获取整个画廊的 PDF，每 {self._pages_per_file()} 页一个文件"
+                "（合并转发可加序号，如 /pdf 2；也可以 /pdf <画廊链接>）"
             )
         if self.config.get("enable_aliases", True):
             lines.append("别名：/二次元 /三次元 /擦边 /色图")
