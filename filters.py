@@ -24,6 +24,7 @@ BASE_BLACKLIST = (
     "kindergarten uniform",
     "age regression",
     "萝莉",
+    "蘿莉",  # 哔咔的标签是繁体
     "正太",
     "幼女",
     "幼児",

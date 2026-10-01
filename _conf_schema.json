@@ -254,6 +254,38 @@
       }
     }
   },
+  "pica": {
+    "description": "哔咔（三次元图源）",
+    "type": "object",
+    "hint": "哔咔漫画（PicACG）的 Cosplay 分类，约 9400 本写真，需要哔咔账号。填好账号和密码才会启用。只用于不带关键词的三次元抽图（/随机角色 也不用），没抽到的张数由 E-Hentai 补上。分级按「無H內容」标签判定：带这个标签的算擦边，不带的算 R18，群聊擦边也能用。哔咔的图片不支持 /pdf。",
+    "items": {
+      "email": {
+        "description": "账号",
+        "type": "string",
+        "default": "",
+        "hint": "哔咔登录用的账号（用户名或邮箱）。"
+      },
+      "password": {
+        "description": "密码",
+        "type": "string",
+        "default": "",
+        "secret": true,
+        "hint": "插件启动后第一次抽到哔咔时登录，token 有效期约 7 天，过期自动重新登录；登录失败后 10 分钟内不再尝试。"
+      },
+      "ratio": {
+        "description": "三次元使用哔咔的比例（%）",
+        "type": "int",
+        "default": 30,
+        "hint": "每张图按这个概率从哔咔抽，与 16K 的比例一起分配，剩下的从 E-Hentai 抽；两者之和超过 100 时按比例分配。16K 不能用时（开启内容分级的群聊）它的份额归 E-Hentai。「多张图从同一画廊抽取」开启时整次抽卡只用一个图源，抽到哔咔时从同一本里按页码顺序取。"
+      },
+      "use_proxy": {
+        "description": "走 E-Hentai 代理",
+        "type": "bool",
+        "default": true,
+        "hint": "哔咔的接口和图片使用「E-Hentai / ExHentai」配置段里的 HTTP 代理。"
+      }
+    }
+  },
   "pools": {
     "description": "画廊池：风格 × 分级 → 分类 + 搜索条件",
     "type": "object",

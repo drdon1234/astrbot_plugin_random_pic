@@ -21,6 +21,7 @@ from .filters import TagBlacklist, check_gallery, heavy_hit, heavy_search_term
 from .imagecheck import is_colorful
 from .models import ANIME, EXPLICIT, RATINGS, REAL, STYLES, ImageItem, PicRequest
 from .net import HttpError, ImageCache
+from .picacomic import Picacomic
 from .sixteenk import SixteenK
 from .tags import TagDB, TagIndex, search_term
 
@@ -172,6 +173,8 @@ class Drawer:
         rating_enabled: bool = True,
         sixteenk: SixteenK | None = None,
         sixteenk_ratio: int = 0,
+        pica: Picacomic | None = None,
+        pica_ratio: int = 0,
     ):
         self.eh = eh
         self.pools = pools
@@ -190,6 +193,8 @@ class Drawer:
         self.rating_enabled = rating_enabled
         self.sixteenk = sixteenk
         self.sixteenk_ratio = min(max(sixteenk_ratio, 0), 100)
+        self.pica = pica
+        self.pica_ratio = min(max(pica_ratio, 0), 100)
 
     def _params(self, pool: Pool, terms: list[str]) -> dict:
         return build_search(
@@ -201,34 +206,49 @@ class Drawer:
             min_pages=self.min_pages,
         )
 
-    def _sixteenk_share(self, req: PicRequest, allow_unrated: bool) -> int:
-        """这次抽卡里交给 16K 的张数。16K 不能搜索，带关键词或随机角色时不用。"""
-        if (
-            self.sixteenk is None
-            or not allow_unrated
-            or req.style != REAL
-            or req.tags
-            or req.random_character
-        ):
-            return 0
+    def _source_counts(self, req: PicRequest, allow_unrated: bool) -> tuple[int, int]:
+        """这次抽卡里交给 (16K, 哔咔) 的张数，其余由 E-Hentai 抽。
+
+        两个图源都不能搜索，带关键词或随机角色时不用。每张图按比例选图源；两个比例之和
+        超过 100 时按比例分配，不给 E-Hentai 留份额。16K 不能用时（未分级）它的份额归 E-Hentai，
+        不挪给哔咔。
+        """
+        if req.style != REAL or req.tags or req.random_character:
+            return 0, 0
+        sk = self.sixteenk_ratio if self.sixteenk is not None else 0
+        pk = self.pica_ratio if self.pica is not None else 0
+        if not sk and not pk:
+            return 0, 0
+        weights = (sk, pk, max(0, 100 - sk - pk))
+        # 同一画廊模式整次抽卡只用一个图源，避免把画廊的连续几页和别处的散图混在一起
+        picks = random.choices(
+            ("16k", "pica", "eh"), weights, k=1 if self.same_gallery else req.count
+        )
         if self.same_gallery:
-            # 同一画廊模式整次抽卡只用一个图源，避免把画廊的连续几页和 16K 的散图混在一起
-            return req.count if random.randrange(100) < self.sixteenk_ratio else 0
-        return sum(random.randrange(100) < self.sixteenk_ratio for _ in range(req.count))
+            picks *= req.count
+        sixteenk = picks.count("16k") if allow_unrated else 0
+        return sixteenk, picks.count("pica")
 
     async def draw(
         self, req: PicRequest, is_private: bool, allow_unrated: bool = False
     ) -> FetchResult:
         """allow_unrated：本次请求能否使用没有分级的图源（见 filters.unrated_allowed）。
 
-        16K 没抽够的张数由 E-Hentai 补上；两个图源的图片打乱顺序发送
+        16K、哔咔没抽够的张数由 E-Hentai 补上；各图源的图片打乱顺序发送
         （同一画廊模式不打乱，保证画廊的几页按页码顺序）。
         """
-        share = self._sixteenk_share(req, allow_unrated)
-        if not share:
+        sixteenk, pica = self._source_counts(req, allow_unrated)
+        if not sixteenk and not pica:
             return await self._draw_ehentai(req, is_private)
         result = FetchResult()
-        result.images, result.errors = await self.sixteenk.draw(share, req.rating)
+        if sixteenk:
+            images, errors = await self.sixteenk.draw(sixteenk, req.rating)
+            result.images.extend(images)
+            result.errors.extend(errors)
+        if pica:
+            images, errors = await self.pica.draw(pica, req.rating, self.same_gallery)
+            result.images.extend(images)
+            result.errors.extend(errors)
         need = req.count - len(result.images)
         if need > 0:
             rest = await self._draw_ehentai(replace(req, count=need), is_private)

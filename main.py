@@ -1,4 +1,4 @@
-"""E-Hentai / 16K 随机抽卡插件：指令与参数解析。"""
+"""E-Hentai / 16K / 哔咔随机抽卡插件：指令与参数解析。"""
 
 import asyncio
 import re
@@ -36,6 +36,7 @@ from .models import (
 )
 from .net import HttpClient, HttpError, ImageCache
 from .pdf import write_pdf
+from .picacomic import SOURCE as PICA, Picacomic
 from .refs import Unit, gallery_from_text, message_units, pick, resolve_units
 from .registry import GalleryRef, SentRegistry
 from .sixteenk import SOURCE as SIXTEENK, SixteenK
@@ -69,6 +70,8 @@ OWN_PDF = re.compile(r"(\d+)(?:-incomplete)?(?:-\d+of\d+)?\.pdf")
 # 群聊不带唤醒前缀时也能触发的指令词（整条消息就是指令词，或后面跟空格和参数）
 NO_PREFIX_RE = r"(?i)^\s*(抽图|随机角色|二次元|三次元|擦边|色图|pdf|全集)(?:\s|$)"
 ALIAS_WORDS = {"二次元", "三次元", "擦边", "色图"}
+# 哔咔说明文字里最多列出的标签数
+MAX_CAPTION_TAGS = 4
 UNSAFE_FILENAME = re.compile(r'[\\/:*?"<>|\r\n\t]+')
 
 
@@ -113,6 +116,15 @@ def parse_args(
 
 
 def format_caption(item: ImageItem) -> str:
+    if item.source == PICA:
+        # 哔咔没有公开的网页地址，不附链接
+        lines = [f"标题：{item.title}"] if item.title else []
+        if item.author:
+            lines.append(f"作者：{item.author}")
+        if item.characters:
+            lines.append(f"标签：{'、'.join(item.characters[:MAX_CAPTION_TAGS])}")
+        lines.append(f"{item.category} · 第 {item.page}/{item.pages} 张")
+        return "\n".join(lines)
     if item.source == SIXTEENK:
         lines = [f"标题：{item.title}"] if item.title else []
         if item.pages > 1:
@@ -217,6 +229,23 @@ class RandomPicPlugin(Star):
             proxy if sk_conf.get("use_proxy", True) else None,
             blacklist,
         )
+        pica_conf = config.get("pica", {})
+        pica_email = str(pica_conf.get("email") or "").strip()
+        pica_password = str(pica_conf.get("password") or "")
+        pica = None
+        self.pica_ratio = 0
+        if pica_email and pica_password:
+            self.pica_ratio = min(max(int(pica_conf.get("ratio", 30)), 0), 100)
+            pica = Picacomic(
+                self.http,
+                cache,
+                proxy if pica_conf.get("use_proxy", True) else None,
+                blacklist,
+                pica_email,
+                pica_password,
+                rating_enabled=self.rating_enabled,
+                explicit_skip=float(eh_conf.get("explicit_skip_ratio", 0.3)),
+            )
         eh = EHentai(
             self.http,
             site_url,
@@ -253,6 +282,8 @@ class RandomPicPlugin(Star):
             rating_enabled=self.rating_enabled,
             sixteenk=sixteenk,
             sixteenk_ratio=self.sixteenk_ratio,
+            pica=pica,
+            pica_ratio=self.pica_ratio,
         )
 
     async def initialize(self):
@@ -442,7 +473,9 @@ class RandomPicPlugin(Star):
             yield event.plain_result(hint)
             return
         if not ref.gid:
-            yield event.plain_result("16K 的图片没有画廊，不支持整本 PDF。")
+            yield event.plain_result(
+                "16K、哔咔的图片没有 E-Hentai 画廊，不支持整本 PDF。"
+            )
             return
         try:
             gallery = await self.drawer.eh.gallery(ref.gid, ref.token)
@@ -644,6 +677,8 @@ class RandomPicPlugin(Star):
             lines.append(
                 f"三次元不带关键词时，{where}部分图片来自 16K（没有分级，擦边和 R18 都可能抽到）"
             )
+        if self.pica_ratio:
+            lines.append("三次元不带关键词时，部分图片来自哔咔的 Cosplay 分类")
         lines += [
             "示例：/抽图 原神 2　/抽图 二次元 芙莉莲",
             "/抽图 帮助：显示本说明",

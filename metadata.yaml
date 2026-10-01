@@ -1,8 +1,8 @@
 name: astrbot_plugin_random_pic
 display_name: 随机图片
-desc: E-Hentai / ExHentai 随机抽卡插件（三次元可混入 16K 随机图），风格（二次元/三次元）× 分级（擦边/R18）组合成 4 个画廊池，随机抽画廊再随机取一页；支持中文关键词与随机角色（EhTagTranslation 标签库），支持合并转发、同画廊连抽与回复图片获取整本 PDF，R18 仅私聊并做未成年内容过滤。
+desc: E-Hentai / ExHentai 随机抽卡插件（三次元可混入 16K 和哔咔 Cosplay 的随机图），风格（二次元/三次元）× 分级（擦边/R18）组合成 4 个画廊池，随机抽画廊再随机取一页；支持中文关键词与随机角色（EhTagTranslation 标签库），支持合并转发、同画廊连抽与回复图片获取整本 PDF，R18 仅私聊并做未成年内容过滤。
 short_desc: E-Hentai 随机抽卡：二次元/三次元 × 擦边/R18，支持中文关键词与随机角色。
-version: 2.5.1
+version: 2.6.0
 author: drdon1234
 repo: https://github.com/drdon1234/astrbot_plugin_random_pic
 astrbot_version: ">=4.10.4"
