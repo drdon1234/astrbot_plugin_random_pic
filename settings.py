@@ -88,7 +88,6 @@ class Draw:
 class Sources:
     custom_weights: bool
     ehentai: int
-    sixteenk: int
     pica: int
     cosplaytele: int
     xiuren: int
@@ -96,7 +95,7 @@ class Sources:
     @property
     def weights(self) -> dict[str, int]:
         """各图源的权重：手动配置时用配置值，否则均分。"""
-        names = ("ehentai", "sixteenk", "pica", "cosplaytele", "xiuren")
+        names = ("ehentai", "pica", "cosplaytele", "xiuren")
         if not self.custom_weights:
             return dict.fromkeys(names, 1)
         return {name: max(0, getattr(self, name)) for name in names}

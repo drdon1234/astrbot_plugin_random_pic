@@ -34,10 +34,6 @@ class AccessControl:
             return "本群未开启擦边内容。"
         return None
 
-    def unrated_allowed(self, is_private: bool) -> bool:
-        """没有分级的图源（16K）能否使用：开启内容分级时按 R18 对待。"""
-        return not self.conf.content_rating or (is_private and self.conf.r18_enabled)
-
     def take(self, user_id: str, req: DrawRequest) -> str | None:
         """检查冷却和每日额度，通过时开始冷却。额度不够时缩小请求：先减图集数，再减每集张数。"""
         now = time.monotonic()

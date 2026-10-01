@@ -54,9 +54,7 @@ class Drawer:
             counts[source] += 1
         return {s: n for s, n in counts.items() if n}
 
-    async def draw(
-        self, req: DrawRequest, is_private: bool, allow_unrated: bool
-    ) -> DrawResult:
+    async def draw(self, req: DrawRequest, is_private: bool) -> DrawResult:
         """抽 req.albums 个图集，图集之间打乱顺序。"""
         index = await self.tagdb.get() if self.tagdb else None
         terms = (
@@ -68,7 +66,7 @@ class Drawer:
         if req.random_character and (index is None or not index.characters):
             return DrawResult(errors=["标签库不可用，无法随机角色"])
 
-        ctx = DrawContext(req, is_private, allow_unrated, terms, index)
+        ctx = DrawContext(req, is_private, terms, index)
 
         async def run(source, n: int) -> tuple[list[Album], list[str]]:
             """抽一个图源；其他图源没抽够时马上由 E-Hentai 补，不等别的图源。"""

@@ -34,12 +34,11 @@ from .models import (
 )
 from .net import HttpClient, HttpError, ImageCache
 from .pdf import PdfError, PdfStore
-from .sender import Composer, resolve_mode, send_direct
+from .sender import Composer, SendFailed, resolve_mode, send_direct
 from .settings import Settings
 from .sources.ehentai import EHentaiSource, build_pools
 from .sources.ehentai_api import EH_NAMES, SITES, EHentai, EHentaiError, resolve_site
 from .sources.pica import Picacomic
-from .sources.sixteenk import SixteenK
 from .sources.wordpress import SITES as WP_SITES
 from .sources.wordpress import WordPressSource
 from .tags import TagDB
@@ -144,13 +143,7 @@ class RandomPicPlugin(Star):
             min_pages=s.ehentai.min_pages,
         )
         source_weights = s.sources.weights
-        weights = [
-            (self.ehentai, source_weights["ehentai"]),
-            (
-                SixteenK(self.http, cache, self.content, opts),
-                source_weights["sixteenk"],
-            ),
-        ]
+        weights = [(self.ehentai, source_weights["ehentai"])]
         self.pica_enabled = bool(
             s.pica.email and s.pica.password and source_weights["pica"]
         )
@@ -290,9 +283,7 @@ class RandomPicPlugin(Star):
             yield event.plain_result(denied)
             return
 
-        result = await self.drawer.draw(
-            req, is_private, self.access.unrated_allowed(is_private)
-        )
+        result = await self.drawer.draw(req, is_private)
         if not result.albums:
             detail = "；".join(result.errors[:6]) or "未知原因"
             logger.warning(f"[random_pic] 获取失败 {req}: {detail}")
@@ -311,18 +302,34 @@ class RandomPicPlugin(Star):
             self.settings.send.mode, event.get_platform_name(), len(result.albums)
         )
         messages = self.composer.compose(result.albums, mode, str(event.get_self_id()))
+        failed = 0
         for i, (chain, idxs) in enumerate(messages):
             if i:
                 await asyncio.sleep(SEND_INTERVAL)
-            delivered, message_id = await send_direct(event, chain)
+            try:
+                delivered, message_id = await send_direct(event, chain)
+            except SendFailed:
+                failed += 1
+                continue
             if message_id:
                 self.history.record_message(message_id, [sent[idx - 1] for idx in idxs])
             if not delivered:
                 yield event.chain_result(chain)
+        if failed:
+            yield event.plain_result(
+                self._send_failed_text(failed, len(messages), is_private)
+            )
         if len(result.albums) < req.albums:
             yield event.plain_result(
                 f"仅获取到 {len(result.albums)}/{req.albums} 个图集。"
             )
+
+    def _send_failed_text(self, failed: int, total: int, is_private: bool) -> str:
+        what = "这条消息" if total == 1 else f"其中 {failed}/{total} 条消息"
+        text = f"发送失败：QQ 拒发了{what}。"
+        if not is_private and not self.settings.access.content_rating:
+            return text + "目前没有开启内容分级，裸露较多的结果会被 QQ 拒发，建议私聊重新抽图。"
+        return text + "可能是图片内容被 QQ 拦截，可换个关键词或稍后重试。"
 
     async def _pdf(self, event: AstrMessageEvent):
         ok, tokens, wants_help = self._entry(event)
@@ -449,11 +456,6 @@ class RandomPicPlugin(Star):
         else:
             lines.append(
                 f"内容分级已关闭，群聊和私聊内容相同；R18：{on[s.access.r18_enabled]}"
-            )
-        if s.sources.weights["sixteenk"]:
-            where = "私聊且开启 R18 时，" if s.access.content_rating else ""
-            lines.append(
-                f"三次元不带关键词时，{where}部分图集来自 16K（没有分级，擦边和 R18 都可能抽到）"
             )
         if self.pica_enabled:
             lines.append("三次元部分图集来自哔咔的 Cosplay 分类（可搜普通关键词）")

@@ -100,10 +100,15 @@ class Composer:
         return messages
 
 
+class SendFailed(Exception):
+    """OneBot 发送接口报错（通常是 QQ 拒发），交给 AstrBot 重发也会同样失败。"""
+
+
 async def send_direct(event: AstrMessageEvent, chain: list) -> tuple[bool, str | None]:
     """QQ（OneBot）上直接调用发送接口，拿到消息 ID 供 /pdf 按回复查图集。
 
-    返回 (是否已发送, 消息 ID)。其他平台或发送出错时返回未发送，由 AstrBot 照常发送。
+    返回 (是否已发送, 消息 ID)。其他平台或组装消息出错时返回未发送，由 AstrBot 照常发送；
+    发送接口本身报错时抛出 SendFailed。
     """
     bot = getattr(event, "bot", None)
     if event.get_platform_name() != ONEBOT or bot is None:
@@ -128,16 +133,21 @@ async def send_direct(event: AstrMessageEvent, chain: list) -> tuple[bool, str |
             action = (
                 "send_group_forward_msg" if group_id else "send_private_forward_msg"
             )
-            ret = await bot.call_action(action, **payload, **target)
         else:
-            message = await AiocqhttpMessageEvent._parse_onebot_json(
-                MessageChain(chain)
-            )
+            payload = {
+                "message": await AiocqhttpMessageEvent._parse_onebot_json(
+                    MessageChain(chain)
+                )
+            }
             action = "send_group_msg" if group_id else "send_private_msg"
-            ret = await bot.call_action(action, message=message, **target)
     except Exception as e:
-        logger.warning(f"[random_pic] 直接发送失败，改由 AstrBot 发送: {e!r}")
+        logger.warning(f"[random_pic] 组装消息失败，改由 AstrBot 发送: {e!r}")
         return False, None
+    try:
+        ret = await bot.call_action(action, **payload, **target)
+    except Exception as e:
+        logger.warning(f"[random_pic] 发送失败（{action}）: {e!r}")
+        raise SendFailed(str(e)) from e
     event._has_send_oper = True  # 避免 AstrBot 认为插件没有回复
     message_id = ret.get("message_id") if isinstance(ret, dict) else None
     if message_id is None:

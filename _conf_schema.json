@@ -8,7 +8,7 @@
         "description": "内容分级",
         "type": "bool",
         "default": true,
-        "hint": "开启：R18 仅限私聊，群聊擦边需要开启下面的「群聊擦边」，抽到的作品按分类和标签复核分级；没有分级的 16K 按 R18 对待。关闭：不再区分分级，群聊和私聊可用的内容相同（R18 仍需开启「R18」），只复核风格。未成年内容过滤不受影响。"
+        "hint": "开启：R18 仅限私聊，群聊擦边需要开启下面的「群聊擦边」，抽到的作品按分类和标签复核分级。关闭：不再区分分级，群聊和私聊可用的内容相同（R18 仍需开启「R18」），只复核风格。未成年内容过滤不受影响。"
       },
       "r18_enabled": {
         "description": "R18",
@@ -74,7 +74,7 @@
         "description": "默认每集张数",
         "type": "int",
         "default": 1,
-        "hint": "作品页数不够时（16K 的帖子大多只有一张）这个图集少发几张。"
+        "hint": "作品页数不够时这个图集少发几张。"
       },
       "max_images": {
         "description": "单次最多图片数",
@@ -148,7 +148,7 @@
         "description": "追加的标签黑名单",
         "type": "list",
         "default": [],
-        "hint": "只能在内置黑名单上追加。匹配标签、16K 和哔咔的标题，忽略大小写，例如 guro。关键词命中黑名单时直接拒绝。"
+        "hint": "只能在内置黑名单上追加。匹配 E-Hentai 的标签和其他图源的标题，忽略大小写，例如 guro。关键词命中黑名单时直接拒绝。"
       },
       "block_heavy": {
         "description": "屏蔽重口画廊",
@@ -203,7 +203,7 @@
   "sources": {
     "description": "三次元图源比例",
     "type": "object",
-    "hint": "每个三次元图集从这次能用的图源里选一个（二次元只有 E-Hentai）。16K 不能搜索也没有分级，只用于不带关键词、不是 /随机角色 的抽图，开启内容分级时只在私聊且开启 R18 时使用；哔咔需要填写账号，不支持 E-Hentai 标签语法（: $ \"）的关键词和 /随机角色；CosplayTele、XiuRen 不支持 /随机角色，XiuRen 只有擦边。E-Hentai 以外的图源没抽够的图集由 E-Hentai 补上。",
+    "hint": "每个三次元图集从这次能用的图源里选一个（二次元只有 E-Hentai）。哔咔需要填写账号，不支持 E-Hentai 标签语法（: $ \"）的关键词和 /随机角色；CosplayTele、XiuRen 不支持 /随机角色，XiuRen 只有擦边。E-Hentai 以外的图源没抽够的图集由 E-Hentai 补上。",
     "items": {
       "custom_weights": {
         "description": "手动配置比例",
@@ -216,13 +216,6 @@
         "type": "int",
         "default": 34,
         "condition": {"custom_weights": true}
-      },
-      "sixteenk": {
-        "description": "16K 权重",
-        "type": "int",
-        "default": 33,
-        "condition": {"custom_weights": true},
-        "hint": "16k.club：服务器端随机的自拍、cosplay、写真（夹杂少量 AI 图），没有标签和分级，只能按标题过滤黑名单。设为 0 即不用。"
       },
       "pica": {
         "description": "哔咔权重",
@@ -255,7 +248,7 @@
         "description": "HTTP 代理",
         "type": "string",
         "default": "",
-        "hint": "例如 http://127.0.0.1:7890，留空则直连。E-Hentai、16K、哔咔和标签库下载都走这个代理。"
+        "hint": "例如 http://127.0.0.1:7890，留空则直连。E-Hentai、哔咔、CosplayTele、XiuRen 和标签库下载都走这个代理。"
       },
       "timeout": {
         "description": "请求超时（秒）",
@@ -453,7 +446,7 @@
   "pdf": {
     "description": "整本 PDF（/pdf）",
     "type": "object",
-    "hint": "回复抽图消息发送 /pdf（或 /全集），下载整个 E-Hentai 画廊打包成 PDF 发送。分级闸门与抽图相同。16K、哔咔的图集不支持。",
+    "hint": "回复抽图消息发送 /pdf（或 /全集），下载整个 E-Hentai 画廊打包成 PDF 发送。分级闸门与抽图相同。哔咔、CosplayTele、XiuRen 的图集不支持。",
     "items": {
       "enabled": {
         "description": "启用 /pdf",
