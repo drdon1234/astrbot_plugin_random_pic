@@ -143,6 +143,19 @@ class ContentFilter:
             return f"带重口标签 {heavy}"
         return None
 
+    def plain_tags_reason(self, tags: list[str]) -> str | None:
+        """不带命名空间的标签（Danbooru）：下划线视为空格，重口按标签名匹配。"""
+        if not tags:
+            return "缺少标签，无法做未成年过滤"
+        names = [t.strip().lower().replace("_", " ") for t in tags]
+        term = self.blacklist.hit(names)
+        if term:
+            return f"命中黑名单 {term}"
+        heavy = next((n for n in names if n in self.heavy), None)
+        if heavy:
+            return f"带重口标签 {heavy}"
+        return None
+
     def text_reason(self, texts: list[str]) -> str | None:
         """没有标签的图源只能检查标题、简介等文字。"""
         term = self.blacklist.hit(texts)

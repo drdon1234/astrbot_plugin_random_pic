@@ -1,4 +1,4 @@
-"""抽卡调度：翻译并检查关键词，按权重给每个图集分配图源，各图源并发抽取。"""
+"""抽卡调度：翻译并检查关键词，二次元交给 Danbooru，三次元按权重给每个图集分配图源，各图源并发抽取。"""
 
 import asyncio
 import random
@@ -7,8 +7,9 @@ from dataclasses import dataclass, field
 from astrbot.api import logger
 
 from .filters import ContentFilter
-from .models import Album, DrawRequest
+from .models import ANIME, Album, DrawRequest
 from .sources import DrawContext
+from .sources.danbooru import DanbooruSource
 from .sources.ehentai import EHentaiSource
 from .tags import TagDB
 
@@ -27,21 +28,25 @@ class Drawer:
     def __init__(
         self,
         ehentai: EHentaiSource,
+        danbooru: DanbooruSource,
         weights: list[tuple[object, int]],
         content: ContentFilter,
         tagdb: TagDB | None,
     ):
-        """weights：[(图源, 三次元权重)]，必须包含 ehentai。其他图源没抽够时由 E-Hentai 补。"""
+        """weights：[(图源, 三次元权重)]，必须包含 ehentai。其他三次元图源没抽够时由 E-Hentai 补。"""
         self.ehentai = ehentai
+        self.danbooru = danbooru
         self.weights = [(s, w) for s, w in weights if w > 0 or s is ehentai]
         self.content = content
         self.tagdb = tagdb
 
     def assign(self, ctx: DrawContext) -> dict:
-        """每个图集按权重选一个这次能用的图源，返回 {图源: 图集数}。
+        """二次元全部由 Danbooru 抽；三次元每个图集按权重选一个这次能用的图源。返回 {图源: 图集数}。
 
-        能用的图源权重全为 0 时全部由 E-Hentai 抽。
+        能用的三次元图源权重全为 0 时全部由 E-Hentai 抽。
         """
+        if ctx.req.style == ANIME:
+            return {self.danbooru: ctx.req.albums}
         usable = [
             (s, w) for s, w in self.weights if s is self.ehentai or s.accepts(ctx)
         ]
@@ -63,13 +68,18 @@ class Drawer:
         reason = self.content.keyword_reason(req.keywords, terms)
         if reason:
             return DrawResult(errors=[reason])
-        if req.random_character and (index is None or not index.characters):
+        # 二次元的随机角色来自 Danbooru 的角色列表，三次元的来自标签库
+        if (
+            req.random_character
+            and req.style != ANIME
+            and (index is None or not index.characters)
+        ):
             return DrawResult(errors=["标签库不可用，无法随机角色"])
 
         ctx = DrawContext(req, is_private, terms, index)
 
         async def run(source, n: int) -> tuple[list[Album], list[str]]:
-            """抽一个图源；其他图源没抽够时马上由 E-Hentai 补，不等别的图源。"""
+            """抽一个图源；其他三次元图源没抽够时马上由 E-Hentai 补，不等别的图源。"""
             try:
                 albums, errors = await source.draw(ctx, n)
             except asyncio.CancelledError:
@@ -78,7 +88,7 @@ class Drawer:
                 logger.error(f"[random_pic] {source.name} 抽取出错: {e!r}", exc_info=e)
                 albums, errors = [], [f"{source.name} 出错：{e!r}"]
             short = n - len(albums)
-            if source is not self.ehentai and short > 0:
+            if short > 0 and source is not self.ehentai and self.ehentai.accepts(ctx):
                 more, more_errors = await self.ehentai.draw(ctx, short)
                 albums, errors = albums + more, errors + more_errors
             return albums, errors

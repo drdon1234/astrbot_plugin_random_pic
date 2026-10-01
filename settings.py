@@ -62,10 +62,23 @@ class Send:
 
 
 @dataclass
+class Push:
+    enabled: bool
+    interval_minutes: int
+    targets: list[str]
+    command: str
+
+    def __post_init__(self):
+        self.interval_minutes = min(max(self.interval_minutes, 1), 24 * 60)
+        self.command = (
+            self.command.strip() or SCHEMA["push"]["items"]["command"]["default"]
+        )
+
+
+@dataclass
 class Draw:
     page_pick: str
     explicit_skip: float
-    color_only: bool
     extra_blacklist: list[str]
     block_heavy: bool
     heavy_tags: list[str]
@@ -99,6 +112,15 @@ class Sources:
         if not self.custom_weights:
             return dict.fromkeys(names, 1)
         return {name: max(0, getattr(self, name)) for name in names}
+
+
+@dataclass
+class DanbooruConf:
+    min_score: int
+    exclude_tags: list[str]
+
+    def __post_init__(self):
+        self.min_score = max(0, self.min_score)
 
 
 @dataclass
@@ -180,9 +202,11 @@ class Settings:
     access: Access
     command: Command
     send: Send
+    push: Push
     draw: Draw
     sources: Sources
     network: Network
+    danbooru: DanbooruConf
     ehentai: EHentaiConf
     pools: dict
     pica: Pica

@@ -1,4 +1,4 @@
-"""E-Hentai 图源：风格 × 分级 → 画廊池，随机跳转、复核过滤后取随机几页。"""
+"""E-Hentai 图源（只用于三次元）：分级 → 画廊池，随机跳转、复核过滤后取随机几页。"""
 
 import asyncio
 import random
@@ -10,8 +10,7 @@ import aiohttp
 from astrbot.api import logger
 
 from ..filters import ContentFilter, classify, rating_reason
-from ..images import is_colorful
-from ..models import ANIME, EXPLICIT, RATINGS, STYLES, Album, DrawOptions, GalleryRef
+from ..models import EXPLICIT, RATINGS, REAL, Album, DrawOptions, Work, WorkRef
 from ..net import HttpError, ImageCache
 from ..tags import TagIndex, search_term
 from ..util import fill, pick_pages
@@ -31,8 +30,6 @@ MAX_ROUNDS = 3
 # 画廊池有本地标签要求时多取一些（一页最多 25 个，一次元数据请求就能查完）
 CANDIDATES_PER_JUMP = 3
 CANDIDATES_WITH_REQUIRE = 10
-# 二次元黑白页被丢弃时，同一画廊里最多多试这么多页
-COLOR_RETRIES = 4
 AUTHOR_NAMESPACES = ("artist", "cosplayer", "group")
 # 随机角色模式下，每个图集最多换这么多个角色（没有画廊的角色每个只花一次请求）
 CHARACTER_TRIES = 10
@@ -63,27 +60,17 @@ class Pool:
         return True
 
 
-def build_pools(conf: dict) -> dict[tuple[str, str], Pool]:
-    """conf 为配置的 pools 段，键为 <风格>_<分级>_categories / _search / _require。"""
+def build_pools(conf: dict) -> dict[str, Pool]:
+    """conf 为配置的 pools 段，键为 real_<分级>_categories / _search / _require。"""
     pools = {}
-    for style in STYLES:
-        for rating in RATINGS:
-            key = f"{style}_{rating}"
-            pools[(style, rating)] = Pool(
-                list(conf[f"{key}_categories"]),
-                conf[f"{key}_search"].strip(),
-                [t.lower() for t in conf[f"{key}_require"]],
-            )
+    for rating in RATINGS:
+        key = f"{REAL}_{rating}"
+        pools[rating] = Pool(
+            list(conf[f"{key}_categories"]),
+            conf[f"{key}_search"].strip(),
+            [t.lower() for t in conf[f"{key}_require"]],
+        )
     return pools
-
-
-def colorful(path: Path) -> bool:
-    """图片损坏无法判断时按黑白处理（丢弃换页）。"""
-    try:
-        return is_colorful(path)
-    except Exception as e:
-        logger.warning(f"[random_pic] 无法判断是否彩图 {path}: {e!r}")
-        return False
 
 
 def gallery_author(gallery: Gallery) -> str:
@@ -104,10 +91,12 @@ def gallery_names(
 
 
 class EHentaiSource:
+    key = "ehentai"  # 图源键，ExHentai 也用它
+
     def __init__(
         self,
         api: EHentai,
-        pools: dict[tuple[str, str], Pool],
+        pools: dict[str, Pool],
         cache: ImageCache,
         content: ContentFilter,
         opts: DrawOptions,
@@ -127,7 +116,7 @@ class EHentaiSource:
         self.min_pages = min_pages
 
     def accepts(self, ctx: DrawContext) -> bool:
-        return True
+        return ctx.req.style == REAL
 
     def _params(self, pool: Pool, terms: list[str]) -> dict:
         return build_search(
@@ -142,7 +131,9 @@ class EHentaiSource:
     async def draw(self, ctx: DrawContext, n: int) -> tuple[list[Album], list[str]]:
         albums: list[Album] = []
         errors: list[str] = []
-        pool = self.pools[(ctx.req.style, ctx.req.rating)]
+        if not self.accepts(ctx):
+            return albums, [f"{self.name} 只用于三次元"]
+        pool = self.pools[ctx.req.rating]
         try:
             self._params(pool, ctx.terms)
         except ValueError as e:
@@ -299,22 +290,17 @@ class EHentaiSource:
             total=gallery.filecount,
             pictures=pictures,
             details=details,
-            gallery=GalleryRef(gallery.gid, gallery.token),
+            work=WorkRef(self.key, str(gallery.gid), gallery.token),
         )
 
     async def _pictures(self, gallery: Gallery, ctx: DrawContext) -> list[Picture]:
-        """从画廊取 ctx.req.per_album 张（多张时并发），按页码排序。
-
-        二次元只要彩图时，黑白页（线稿、黑白漫画）丢弃后换一页，最多多试 COLOR_RETRIES 页。
-        """
+        """从画廊取 ctx.req.per_album 张（多张时并发），按页码排序。"""
         n = ctx.req.per_album
-        check_color = self.opts.color_only and ctx.req.style == ANIME
-        tries = n + (COLOR_RETRIES if check_color else 0)
         explicit = classify(gallery.category, gallery.tags)[1] == EXPLICIT
         candidates = iter(
             pick_pages(
                 gallery.filecount,
-                tries,
+                n,
                 from_start=self.opts.from_start,
                 skip=self.opts.explicit_skip if explicit else 0.0,
             )
@@ -322,21 +308,10 @@ class EHentaiSource:
 
         async def attempt() -> Picture | None:
             index = next(candidates, None)
-            if index is None:
-                return None
-            picture = await self._picture(gallery, index)
-            if (
-                picture
-                and check_color
-                and not await asyncio.to_thread(colorful, picture[1])
-            ):
-                logger.info(f"[random_pic] 丢弃黑白页 {gallery.gid}-{picture[0]}")
-                picture[1].unlink(missing_ok=True)
-                return None
-            return picture
+            return None if index is None else await self._picture(gallery, index)
 
         pictures: list[Picture] = []
-        await fill(pictures, n, tries, self.opts.concurrency, attempt)
+        await fill(pictures, n, n, self.opts.concurrency, attempt)
         return sorted(pictures)
 
     async def _picture(self, gallery: Gallery, index: int) -> Picture | None:
@@ -362,8 +337,22 @@ class EHentaiSource:
             path = await self.cache.download(image, dest)
         return path
 
-    async def gallery(self, ref: GalleryRef) -> Gallery | None:
-        return await self.api.gallery(ref.gid, ref.token)
+    async def work(self, ref: WorkRef) -> Work | None:
+        """查询画廊，不存在或已被删除时返回 None。分级和过滤与抽图相同，没有标签的不予打包。"""
+        gallery = await self.api.gallery(int(ref.id), ref.token)
+        if gallery is None or gallery.expunged:
+            return None
+        return Work(
+            ref=WorkRef(self.key, str(gallery.gid), gallery.token),
+            title=gallery.title,
+            pages=gallery.filecount,
+            rating=classify(gallery.category, gallery.tags)[1],
+            blocked=self.content.tags_reason(gallery.tags),
+            data=gallery,
+        )
+
+    async def download_work(self, work: Work, dest: Path) -> tuple[list[Path], int]:
+        return await self.download_gallery(work.data, dest)
 
     async def download_gallery(
         self, gallery: Gallery, dest: Path

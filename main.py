@@ -2,25 +2,26 @@
 
 import asyncio
 import re
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import aiohttp
 
 import astrbot.api.message_components as Comp
 from astrbot.api import AstrBotConfig, logger
-from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.star import Context, Star, StarTools
 
 from .access import AccessControl
 from .drawer import Drawer
-from .filters import ContentFilter, classify
+from .filters import ContentFilter
 from .history import (
     History,
     SentAlbum,
     albums_from_text,
     clean_title,
-    gallery_from_text,
     pick,
+    work_from_text,
 )
 from .models import (
     ANIME,
@@ -31,13 +32,23 @@ from .models import (
     STYLE_NAMES,
     DrawOptions,
     DrawRequest,
+    Work,
 )
 from .net import HttpClient, HttpError, ImageCache
 from .pdf import PdfError, PdfStore
-from .sender import Composer, SendFailed, resolve_mode, send_direct
+from .push import PushScheduler, Target, parse_target
+from .sender import (
+    ONEBOT,
+    Composer,
+    SendFailed,
+    resolve_mode,
+    send_direct,
+    send_onebot,
+)
 from .settings import Settings
+from .sources.danbooru import DanbooruSource
 from .sources.ehentai import EHentaiSource, build_pools
-from .sources.ehentai_api import EH_NAMES, SITES, EHentai, EHentaiError, resolve_site
+from .sources.ehentai_api import SITES, EHentai, EHentaiError, resolve_site
 from .sources.pica import Picacomic
 from .sources.wordpress import SITES as WP_SITES
 from .sources.wordpress import WordPressSource
@@ -62,6 +73,14 @@ DRAW_COMMANDS = {
 }
 ALIASES = {"二次元", "三次元", "擦边", "色图"}
 PDF_COMMANDS = ("pdf", "全集")
+# 图源键 → 显示名，图源没有启用时提示用
+SOURCE_NAMES = {
+    "ehentai": "E-Hentai",
+    "pica": "哔咔",
+    "cosplaytele": "CosplayTele",
+    "xiuren": "XiuRen",
+    "danbooru": "Danbooru",
+}
 # 群聊不带唤醒前缀时也能触发的指令词（整条消息就是指令词，或后面跟空格和参数）
 NO_PREFIX_RE = rf"(?i)^\s*({'|'.join([*DRAW_COMMANDS, *PDF_COMMANDS])})(?:\s|$)"
 
@@ -77,6 +96,7 @@ def parse_args(
     """宽松解析：风格词、分级词、数量可任意顺序，其余当作关键词。
 
     数量写一个数字是图集数，写成「图集数x每集张数」（如 3x4）同时指定每集张数。
+    二次元来自单图站，每集固定 1 张。
     总张数不超过 max_images：超出时先减少每集张数，再减少图集数。
     """
     req = DrawRequest(style, rating, albums=albums, per_album=per_album)
@@ -92,9 +112,19 @@ def parse_args(
             req.albums, req.per_album = int(match.group(1)), int(match.group(2))
         else:
             req.keywords.append(token)
+    if req.style == ANIME:
+        req.per_album = 1
     req.per_album = max(1, min(req.per_album, max_images))
     req.albums = max(1, min(req.albums, max_images // req.per_album))
     return req
+
+
+def parse_push_command(text: str) -> tuple[str, list[str]]:
+    """定时推送内容：开头是抽图指令词（可带 /）时按该指令，否则整条当作 /抽图 的参数。"""
+    tokens = text.split()
+    if tokens and tokens[0].lstrip("/") in DRAW_COMMANDS:
+        return tokens[0].lstrip("/"), tokens[1:]
+    return "抽图", tokens
 
 
 class RandomPicPlugin(Star):
@@ -130,7 +160,6 @@ class RandomPicPlugin(Star):
             from_start=s.draw.from_start,
             explicit_skip=s.draw.explicit_skip,
             concurrency=s.network.concurrency,
-            color_only=s.draw.color_only,
         )
         self.ehentai = EHentaiSource(
             EHentai(self.http, site, s.ehentai.request_interval),
@@ -144,6 +173,8 @@ class RandomPicPlugin(Star):
         )
         source_weights = s.sources.weights
         weights = [(self.ehentai, source_weights["ehentai"])]
+        # 图源键 → 图源，/pdf 按作品所属的图源查询和下载
+        self.work_sources: dict = {self.ehentai.key: self.ehentai}
         self.pica_enabled = bool(
             s.pica.email and s.pica.password and source_weights["pica"]
         )
@@ -158,19 +189,28 @@ class RandomPicPlugin(Star):
                 token_path=data_dir / "pica_token.json",
             )
             weights.append((pica, source_weights["pica"]))
-        weights += [
-            (
-                WordPressSource(site, self.http, cache, self.content, opts),
-                source_weights[site.key],
-            )
+            self.work_sources[pica.key] = pica
+        wordpress = [
+            WordPressSource(site, self.http, cache, self.content, opts)
             for site in WP_SITES
         ]
+        weights += [(source, source_weights[source.key]) for source in wordpress]
         self.tagdb = (
             TagDB(self.http, data_dir / "ehtag.json.gz", s.tag_db.url)
             if s.tag_db.enabled
             else None
         )
-        self.drawer = Drawer(self.ehentai, weights, self.content, self.tagdb)
+        danbooru = DanbooruSource(
+            self.http,
+            cache,
+            self.content,
+            opts,
+            min_score=s.danbooru.min_score,
+            exclude_tags=s.danbooru.exclude_tags,
+        )
+        self.drawer = Drawer(self.ehentai, danbooru, weights, self.content, self.tagdb)
+        for source in [*wordpress, danbooru]:
+            self.work_sources[source.key] = source
         self.pdf = PdfStore(
             Path(s.pdf.output_dir) if s.pdf.output_dir else data_dir / "pdf",
             data_dir / "pdf_tmp",
@@ -179,15 +219,36 @@ class RandomPicPlugin(Star):
             s.pdf.quality,
         )
         self._preload: asyncio.Task | None = None
+        self.push_targets = self._push_targets()
+        self.push_command = parse_push_command(s.push.command)
+        self.push = (
+            PushScheduler(s.push.interval_minutes, self._push_all)
+            if s.push.enabled and self.push_targets
+            else None
+        )
+
+    def _push_targets(self) -> list[Target]:
+        targets = []
+        for umo in dict.fromkeys(self.settings.push.targets):
+            target = parse_target(umo)
+            if target is None:
+                logger.warning(f"[random_pic] 定时推送：会话 ID 无效，已忽略：{umo}")
+            else:
+                targets.append(target)
+        return targets
 
     async def initialize(self):
         # 后台预加载标签库，避免第一次抽卡时等待下载
         if self.tagdb:
             self._preload = asyncio.create_task(self.tagdb.get())
+        if self.push:
+            self.push.start()
 
     async def terminate(self):
         if self._preload and not self._preload.done():
             self._preload.cancel()
+        if self.push:
+            self.push.stop()
         await self.http.close()
 
     @filter.command("抽图")
@@ -228,7 +289,7 @@ class RandomPicPlugin(Star):
 
     @filter.command("pdf", alias={"全集"})
     async def gallery_pdf(self, event: AstrMessageEvent):
-        """回复抽到的图片，获取整个画廊的 PDF。也可以 /pdf <画廊链接>"""
+        """回复抽到的图片，获取整个作品的 PDF。也可以 /pdf <作品链接>"""
         async for result in self._pdf(event):
             yield result
 
@@ -264,16 +325,7 @@ class RandomPicPlugin(Star):
         if wants_help:
             yield event.plain_result(self.help_text())
             return
-        preset = DRAW_COMMANDS[word]
-        req = parse_args(
-            tokens,
-            command.max_images,
-            preset.get("style", self.default_style),
-            preset.get("rating", self.default_rating),
-            command.album_count,
-            command.images_per_album,
-        )
-        req.random_character = preset.get("random_character", False)
+        req = self._request(word, tokens)
         is_private = event.is_private_chat()
         user_id = str(event.get_sender_id())
         denied = self.access.gate(req.rating, is_private) or self.access.take(
@@ -293,42 +345,151 @@ class RandomPicPlugin(Star):
             return
 
         self.access.used(user_id, result.images)
-        sent = [
-            SentAlbum(idx, clean_title(album.title), album.source, album.gallery)
-            for idx, album in enumerate(result.albums, 1)
-        ]
-        self.history.record_draw(event.unified_msg_origin, sent)
-        mode = resolve_mode(
-            self.settings.send.mode, event.get_platform_name(), len(result.albums)
-        )
-        messages = self.composer.compose(result.albums, mode, str(event.get_self_id()))
-        failed = 0
-        for i, (chain, idxs) in enumerate(messages):
-            if i:
-                await asyncio.sleep(SEND_INTERVAL)
-            try:
-                delivered, message_id = await send_direct(event, chain)
-            except SendFailed:
-                failed += 1
-                continue
-            if message_id:
-                self.history.record_message(message_id, [sent[idx - 1] for idx in idxs])
+        # 插件发不出去的（其他平台、组装出错）交给 AstrBot 发
+        fallback = []
+
+        async def send(chain: list) -> str | None:
+            delivered, message_id = await send_direct(event, chain)
             if not delivered:
-                yield event.chain_result(chain)
+                fallback.append(chain)
+            return message_id
+
+        failed, total = await self._deliver(
+            result.albums,
+            event.unified_msg_origin,
+            event.get_platform_name(),
+            str(event.get_self_id()),
+            send,
+        )
+        for chain in fallback:
+            yield event.chain_result(chain)
         if failed:
-            yield event.plain_result(
-                self._send_failed_text(failed, len(messages), is_private)
-            )
+            yield event.plain_result(self._send_failed_text(failed, total, is_private))
         if len(result.albums) < req.albums:
             yield event.plain_result(
                 f"仅获取到 {len(result.albums)}/{req.albums} 个图集。"
             )
 
+    def _request(self, word: str, tokens: list[str]) -> DrawRequest:
+        """按抽图指令词和参数生成请求。"""
+        command = self.settings.command
+        preset = DRAW_COMMANDS[word]
+        req = parse_args(
+            tokens,
+            command.max_images,
+            preset.get("style", self.default_style),
+            preset.get("rating", self.default_rating),
+            command.album_count,
+            command.images_per_album,
+        )
+        req.random_character = preset.get("random_character", False)
+        return req
+
+    async def _deliver(
+        self,
+        albums: list,
+        session: str,
+        platform: str,
+        self_id: str,
+        send: Callable[[list], Awaitable[str | None]],
+    ) -> tuple[int, int]:
+        """登记并逐条发送抽到的图集。send 发送一条消息、返回消息 ID，失败时抛出 SendFailed。
+
+        返回 (失败条数, 总条数)。
+        """
+        sent = [
+            SentAlbum(idx, clean_title(album.title), album.source, album.work)
+            for idx, album in enumerate(albums, 1)
+        ]
+        self.history.record_draw(session, sent)
+        mode = resolve_mode(self.settings.send.mode, platform, len(albums))
+        messages = self.composer.compose(albums, mode, self_id)
+        failed = 0
+        for i, (chain, idxs) in enumerate(messages):
+            if i:
+                await asyncio.sleep(SEND_INTERVAL)
+            try:
+                message_id = await send(chain)
+            except SendFailed:
+                failed += 1
+                continue
+            if message_id:
+                self.history.record_message(message_id, [sent[idx - 1] for idx in idxs])
+        return failed, len(messages)
+
+    async def _push_all(self):
+        """定时推送：每个会话单独抽一次，依次推送。"""
+        for target in self.push_targets:
+            try:
+                await self._push(target)
+            except Exception:
+                logger.exception(f"[random_pic] 定时推送到 {target.umo} 出错")
+
+    async def _push(self, target: Target):
+        word, tokens = self.push_command
+        req = self._request(word, tokens)
+        is_private = not target.is_group
+        denied = self.access.gate(req.rating, is_private)
+        if denied:
+            logger.warning(f"[random_pic] 定时推送到 {target.umo} 被拒绝：{denied}")
+            return
+        platform = self.context.get_platform_inst(target.platform_id)
+        if platform is None:
+            logger.warning(f"[random_pic] 定时推送：找不到平台 {target.platform_id}")
+            return
+        result = await self.drawer.draw(req, is_private)
+        if not result.albums:
+            detail = "；".join(result.errors[:6]) or "未知原因"
+            logger.warning(
+                f"[random_pic] 定时推送到 {target.umo} 抽图失败 {req}: {detail}"
+            )
+            return
+
+        platform_name = platform.meta().name
+        bot = getattr(platform, "bot", None) if platform_name == ONEBOT else None
+        group_id = target.chat_id if target.is_group else ""
+
+        async def send(chain: list) -> str | None:
+            if bot is not None:
+                delivered, message_id = await send_onebot(
+                    bot, chain, group_id, target.chat_id
+                )
+                if delivered:
+                    return message_id
+            try:
+                await self.context.send_message(target.umo, MessageChain(chain))
+            except Exception as e:
+                logger.warning(f"[random_pic] 定时推送到 {target.umo} 发送失败: {e!r}")
+                raise SendFailed(str(e)) from e
+            return None
+
+        failed, total = await self._deliver(
+            result.albums, target.umo, platform_name, await self._self_id(bot), send
+        )
+        if failed:
+            logger.warning(
+                f"[random_pic] 定时推送到 {target.umo}：{failed}/{total} 条消息发送失败"
+            )
+
+    async def _self_id(self, bot) -> str:
+        """机器人自己的 QQ 号，用作合并转发节点的发送者；拿不到时用 0。"""
+        if bot is None:
+            return "0"
+        try:
+            info = await bot.call_action("get_login_info")
+            return str(info["user_id"])
+        except Exception as e:
+            logger.warning(f"[random_pic] 获取机器人 QQ 号失败: {e!r}")
+            return "0"
+
     def _send_failed_text(self, failed: int, total: int, is_private: bool) -> str:
         what = "这条消息" if total == 1 else f"其中 {failed}/{total} 条消息"
         text = f"发送失败：QQ 拒发了{what}。"
         if not is_private and not self.settings.access.content_rating:
-            return text + "目前没有开启内容分级，裸露较多的结果会被 QQ 拒发，建议私聊重新抽图。"
+            return (
+                text
+                + "目前没有开启内容分级，裸露较多的结果会被 QQ 拒发，建议私聊重新抽图。"
+            )
         return text + "可能是图片内容被 QQ 拦截，可换个关键词或稍后重试。"
 
     async def _pdf(self, event: AstrMessageEvent):
@@ -346,50 +507,54 @@ class RandomPicPlugin(Star):
         if album is None:
             yield event.plain_result(hint)
             return
-        if album.gallery is None:
+        ref = album.work
+        if ref is None:
             yield event.plain_result(
-                f"第 {album.idx} 个图集没有识别到画廊，请改用 /pdf <画廊链接>。"
-                if album.source in EH_NAMES
-                else f"第 {album.idx} 个图集来自 {album.source}，只有 E-Hentai 画廊支持整本 PDF。"
+                f"第 {album.idx} 个图集没有识别到作品，请回复抽图发出的那条消息，"
+                "或使用 /pdf <作品链接>。"
             )
             return
+        source = self.work_sources.get(ref.source)
+        if source is None:
+            name = SOURCE_NAMES.get(ref.source, ref.source)
+            yield event.plain_result(f"{name} 没有启用，无法打包。")
+            return
         try:
-            gallery = await self.ehentai.gallery(album.gallery)
-        except (
-            EHentaiError,
-            HttpError,
-            aiohttp.ClientError,
-            asyncio.TimeoutError,
-        ) as e:
-            logger.warning(f"[random_pic] 查询画廊 {album.gallery.gid} 失败: {e!r}")
-            yield event.plain_result(f"查询画廊失败：{e}")
+            work = await source.work(ref)
+        except (HttpError, aiohttp.ClientError, asyncio.TimeoutError) as e:
+            logger.warning(f"[random_pic] 查询作品 {ref} 失败: {e!r}")
+            yield event.plain_result(f"查询作品失败：{e!r}")
             return
-        if gallery is None or gallery.expunged:
-            yield event.plain_result("画廊不存在或已被删除。")
+        except Exception as e:  # 各图源自己的错误（登录失败、返回格式不对等）
+            logger.warning(f"[random_pic] 查询作品 {ref} 失败: {e!r}")
+            yield event.plain_result(f"查询作品失败：{e}")
             return
-        denied = self._pdf_gate(gallery, event.is_private_chat())
+        if work is None:
+            yield event.plain_result("作品不存在或已被删除。")
+            return
+        denied = self._pdf_gate(work, event.is_private_chat())
         if denied:
             yield event.plain_result(denied)
             return
 
-        files = self.pdf.cached(gallery)
+        files = self.pdf.cached(work)
         if files is None:
-            # 排队等待不提示；同一画廊已在打包时直接等它的结果
-            if not self.pdf.building(gallery.gid):
-                parts = self.pdf.parts(gallery.filecount)
+            # 排队等待不提示；同一作品已在打包时直接等它的结果
+            if not self.pdf.building(work):
+                parts = self.pdf.parts(work.pages)
                 split = f"，分 {parts} 个文件发送" if parts > 1 else ""
                 yield event.plain_result(
-                    f"《{gallery.title}》共 {gallery.filecount} 页{split}，打包完成后发送 PDF……"
+                    f"《{work.title or '无标题'}》共 {work.pages} 页{split}，打包完成后发送 PDF……"
                 )
             try:
                 files, missing = await self.pdf.get(
-                    gallery, str(event.get_sender_id()), self.ehentai.download_gallery
+                    work, str(event.get_sender_id()), source.download_work
                 )
             except (PdfError, EHentaiError) as e:
                 yield event.plain_result(f"打包失败：{e}")
                 return
             except Exception as e:
-                logger.exception(f"[random_pic] 画廊 {gallery.gid} 打包失败")
+                logger.exception(f"[random_pic] 作品 {ref} 打包失败")
                 yield event.plain_result(f"打包失败：{e!r}")
                 return
             if missing:
@@ -400,14 +565,14 @@ class RandomPicPlugin(Star):
     def _pdf_target(
         self, event: AstrMessageEvent, tokens: list[str]
     ) -> tuple[SentAlbum | None, str]:
-        """依次看参数里的画廊链接、被回复的消息、本会话上一次抽卡。
+        """依次看参数里的作品链接、被回复的消息、本会话上一次抽卡。
 
         回复的消息里有多个图集时必须带序号，不带就列出来提示。
         """
         for token in tokens:
-            ref = gallery_from_text(token)
+            ref = work_from_text(token)
             if ref:
-                return SentAlbum(0, "", self.ehentai.name, ref), ""
+                return SentAlbum(0, "", SOURCE_NAMES[ref.source], ref), ""
         index = next((int(t) for t in tokens if t.isdigit()), None)
         reply = next(
             (c for c in event.message_obj.message if isinstance(c, Comp.Reply)), None
@@ -419,13 +584,11 @@ class RandomPicPlugin(Star):
             return pick(albums, index, strict=True)
         return pick(self.history.last(event.unified_msg_origin), index, strict=False)
 
-    def _pdf_gate(self, gallery, is_private: bool) -> str | None:
+    def _pdf_gate(self, work: Work, is_private: bool) -> str | None:
         """整本打包和抽图走同样的过滤和分级闸门；无法判定分级的按 R18 处理。"""
-        reason = self.content.tags_reason(gallery.tags)
-        if reason:
-            return f"画廊{reason}，不予打包。"
-        _, rating = classify(gallery.category, gallery.tags)
-        return self.access.gate(rating or EXPLICIT, is_private)
+        if work.blocked:
+            return f"作品{work.blocked}，不予打包。"
+        return self.access.gate(work.rating or EXPLICIT, is_private)
 
     def help_text(self) -> str:
         s = self.settings
@@ -438,13 +601,14 @@ class RandomPicPlugin(Star):
             f"{RATING_NAMES[self.default_rating]}、{command.album_count} 个图集、每集 "
             f"{command.images_per_album} 张，每次最多 {command.max_images} 张",
             "· 一个图集是同一画廊 / 帖子 / 本子里的几张图；例如 /抽图 3x4 抽 3 个图集、每集 4 张",
-            "· 关键词可写中文角色、作品名（如 芙莉莲、原神）或 E-Hentai 标签，前缀 - 表示排除",
+            "· 二次元来自 Danbooru，一张图就是一个图集；三次元来自 E-Hentai 等写真图源",
+            "· 关键词可写中文角色、作品名（如 芙莉莲、原神）或标签，前缀 - 表示排除；二次元最多 2 个关键词",
             "/随机角色 [同上]：每个图集先随机抽一个角色",
         ]
         if s.pdf.enabled:
             lines.append(
-                f"/pdf 或 /全集：回复抽到的图片，获取整个画廊的 PDF，每 {s.pdf.pages_per_file} 页一个文件"
-                "（回复的消息里有多个图集时加序号，即【】里的数字，如 /pdf 2；也可以 /pdf <画廊链接>）"
+                f"/pdf 或 /全集：回复抽到的图片，获取整个作品（画廊、帖子、本子）的 PDF，每 {s.pdf.pages_per_file} 页一个文件"
+                "（回复的消息里有多个图集时加序号，即【】里的数字，如 /pdf 2；也可以 /pdf <作品链接>）"
             )
         if command.aliases:
             lines.append("别名：/二次元 /三次元 /擦边 /色图")

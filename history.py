@@ -5,7 +5,7 @@
 - 每个会话最近一次抽卡的全部图集。
 
 /pdf 回复某条消息时按消息 ID 查；查不到（AstrBot 代发、其他平台）时解析被回复消息的文字，
-按【序号】标题行分段，每段里找画廊链接（说明文字附带）。
+按【序号】标题行分段，每段里找作品链接（说明文字附带；哔咔没有公开链接，只能按消息 ID 查）。
 """
 
 import json
@@ -15,14 +15,30 @@ from pathlib import Path
 
 from astrbot.api import logger
 
-from .models import GalleryRef
+from .models import WorkRef
 
 MAX_MESSAGES = 1000
 MAX_SESSIONS = 500
 # 提示选序号时最多列出的条数
 MAX_LISTED = 30
-GALLERY_URL_RE = re.compile(
-    r"https?://(?:e-hentai|exhentai)\.org/g/(\d+)/([0-9a-f]{10})"
+# 各图源的作品链接：(图源键, 正则)，第一个分组是作品 id，E-Hentai 的第二个分组是 token
+WORK_URLS = (
+    (
+        "ehentai",
+        re.compile(r"https?://(?:e-hentai|exhentai)\.org/g/(\d+)/([0-9a-f]{10})"),
+    ),
+    ("danbooru", re.compile(r"https?://danbooru\.donmai\.us/posts/(\d+)")),
+    # WordPress 帖子是一级路径的 slug（非 ASCII 字符是 %xx），分类、标签页是两级路径
+    (
+        "cosplaytele",
+        re.compile(
+            r"https?://(?:www\.)?cosplaytele\.com/([\w%-]+)/?(?![\w%/-])", re.ASCII
+        ),
+    ),
+    (
+        "xiuren",
+        re.compile(r"https?://(?:www\.)?xiuren\.biz/([\w%-]+)/?(?![\w%/-])", re.ASCII),
+    ),
 )
 # 图集标题行：「【序号】标题」换行「第 x/y 张 · 来源」
 HEADER_RE = re.compile(r"(?m)^【(\d+)】(.*)\n第 \d+/\d+ 张 · (.*)$")
@@ -33,20 +49,23 @@ class SentAlbum:
     idx: int
     title: str
     source: str
-    gallery: GalleryRef | None = None
+    work: WorkRef | None = None
 
     def to_json(self) -> dict:
         data = {"idx": self.idx, "title": self.title, "source": self.source}
-        if self.gallery:
-            data["gid"], data["token"] = self.gallery.gid, self.gallery.token
+        if self.work:
+            data["work"] = [self.work.source, self.work.id, self.work.token]
         return data
 
     @classmethod
     def from_json(cls, data: dict) -> "SentAlbum":
-        gallery = (
-            GalleryRef(int(data["gid"]), data["token"]) if data.get("gid") else None
-        )
-        return cls(int(data["idx"]), data["title"], data["source"], gallery)
+        if data.get("work"):
+            work = WorkRef(*map(str, data["work"]))
+        elif data.get("gid"):  # 3.3.0 以前只记 E-Hentai 画廊
+            work = WorkRef("ehentai", str(data["gid"]), data["token"])
+        else:
+            work = None
+        return cls(int(data["idx"]), data["title"], data["source"], work)
 
 
 def clean_title(title: str) -> str:
@@ -63,20 +82,29 @@ def page_text(page: int, total: int) -> str:
     return f"第 {page}/{total} 张"
 
 
-def gallery_from_text(text: str) -> GalleryRef | None:
-    match = GALLERY_URL_RE.search(text or "")
-    return GalleryRef(int(match.group(1)), match.group(2)) if match else None
+def works_in_text(text: str) -> list[WorkRef]:
+    """文字里的作品链接，按出现顺序去重。"""
+    found = []
+    for source, pattern in WORK_URLS:
+        for match in pattern.finditer(text or ""):
+            token = match.group(2) if pattern.groups > 1 else ""
+            found.append((match.start(), WorkRef(source, match.group(1), token)))
+    return list(dict.fromkeys(ref for _, ref in sorted(found, key=lambda f: f[0])))
+
+
+def work_from_text(text: str) -> WorkRef | None:
+    works = works_in_text(text)
+    return works[0] if works else None
 
 
 def albums_from_text(text: str) -> list[SentAlbum]:
-    """从消息文字里认出图集：有标题行时按【序号】分段，否则每个画廊链接算一个图集。"""
+    """从消息文字里认出图集：有标题行时按【序号】分段，否则每个作品链接算一个图集。"""
     headers = list(HEADER_RE.finditer(text or ""))
     if not headers:
-        links = dict.fromkeys(
-            GalleryRef(int(gid), token)
-            for gid, token in GALLERY_URL_RE.findall(text or "")
-        )
-        return [SentAlbum(i, "", "E-Hentai", ref) for i, ref in enumerate(links, 1)]
+        return [
+            SentAlbum(i, "", ref.source, ref)
+            for i, ref in enumerate(works_in_text(text), 1)
+        ]
     albums = []
     for i, match in enumerate(headers):
         end = headers[i + 1].start() if i + 1 < len(headers) else len(text)
@@ -85,7 +113,7 @@ def albums_from_text(text: str) -> list[SentAlbum]:
                 int(match.group(1)),
                 match.group(2).strip(),
                 match.group(3).strip(),
-                gallery_from_text(text[match.end() : end]),
+                work_from_text(text[match.end() : end]),
             )
         )
     return albums
@@ -95,8 +123,8 @@ def _listing(albums: list[SentAlbum], intro: str) -> str:
     lines = [intro]
     for album in albums[:MAX_LISTED]:
         name = album.title or "（无标题）"
-        if album.gallery is None:
-            name += f"（{album.source}，不支持）"
+        if album.work is None:
+            name += f"（{album.source}，找不到作品）"
         lines.append(f"{album.idx}. {name}")
     if len(albums) > MAX_LISTED:
         lines.append(f"……共 {len(albums)} 个图集")
@@ -109,10 +137,10 @@ def pick(
     """选出要打包的图集；选不出时返回提示文字。
 
     strict（回复的是某条消息）时，消息里有多个图集就必须带序号；否则（本会话上一次抽卡）
-    所有能打包的图集都来自同一个画廊时可以不带序号。选中的图集不是 E-Hentai 画廊时由调用方提示。
+    所有能打包的图集都来自同一个作品时可以不带序号。选中的图集找不到作品时由调用方提示。
     """
     if not albums:
-        return None, "没有找到图集：请回复抽图发出的消息，或使用 /pdf <画廊链接>。"
+        return None, "没有找到图集：请回复抽图发出的消息，或使用 /pdf <作品链接>。"
     if index is not None:
         chosen = next((a for a in albums if a.idx == index), None)
         if chosen is None:
@@ -123,10 +151,10 @@ def pick(
     if len(albums) == 1:
         return albums[0], ""
     if not strict:
-        galleries = {a.gallery for a in albums if a.gallery}
-        if len(galleries) == 1:
-            return next(a for a in albums if a.gallery), ""
-    example = next((a.idx for a in albums if a.gallery), albums[0].idx)
+        works = {a.work for a in albums if a.work}
+        if len(works) == 1:
+            return next(a for a in albums if a.work), ""
+    example = next((a.idx for a in albums if a.work), albums[0].idx)
     where = "引用的消息里" if strict else "上一次抽卡"
     return None, _listing(
         albums,

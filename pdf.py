@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from .images import to_jpeg
-from .sources.ehentai_api import Gallery
+from .models import Work
 from .util import shared
 
 COLOR_SPACES = {"RGB": "DeviceRGB", "L": "DeviceGray"}
@@ -79,13 +79,17 @@ def write_pdf(images: list[Path], out: Path, quality: int) -> Path:
     return out
 
 
-# 不同用户最多同时打包这么多个画廊（同一用户的请求依次进行）。打包时每页都要请求一次
-# E-Hentai，所有打包和抽图共用同一个请求限速，同时打包太多只会互相拖慢、更快耗尽图片额度
+# 不同用户最多同时打包这么多个作品（同一用户的请求依次进行）。打包 E-Hentai 画廊时每页都要
+# 请求一次，所有打包和抽图共用同一个请求限速，同时打包太多只会互相拖慢、更快耗尽图片额度
 PACK_CONCURRENCY = 2
 # 这么多秒内生成的 PDF 不清理：可能是另一个打包刚完成、还没发出去的文件
 FRESH_SECONDS = 600
-# 本插件存储的 PDF：画廊号[-incomplete][-第几卷of共几卷].pdf
-OWN_PDF = re.compile(r"(\d+)(?:-incomplete)?(?:-\d+of\d+)?\.pdf")
+# 本插件存储的 PDF：作品键[-incomplete][-第几卷of共几卷].pdf，作品键是 E-Hentai 画廊号或
+# 「图源_id」（id 是数字，哔咔是十六进制）。只认这些名字，不会误删共享目录里的其他 PDF
+OWN_PDF = re.compile(
+    r"(\d+|(?:pica|cosplaytele|xiuren|danbooru)_[0-9a-f]+)"
+    r"(?:-incomplete)?(?:-\d+of\d+)?\.pdf"
+)
 UNSAFE_FILENAME = re.compile(r'[\\/:*?"<>|\r\n\t]+')
 
 
@@ -93,21 +97,21 @@ class PdfError(Exception):
     pass
 
 
-# 下载整个画廊：(画廊, 目标目录) → (按页码排序、以页码命名的图片, 失败页数)
-Download = Callable[[Gallery, Path], Awaitable[tuple[list[Path], int]]]
+# 下载整个作品：(作品, 目标目录) → (按页码排序、以页码命名的图片, 失败页数)
+Download = Callable[[Work, Path], Awaitable[tuple[list[Path], int]]]
 
 
-def display_name(title: str, gid: int, pages: tuple[int, int], parts: int) -> str:
+def display_name(title: str, key: str, pages: tuple[int, int], parts: int) -> str:
     """发送给用户的文件名；分卷时带上页码范围。"""
-    name = UNSAFE_FILENAME.sub(" ", title).strip()[:80] or str(gid)
+    name = UNSAFE_FILENAME.sub(" ", title).strip()[:80] or key
     if parts > 1:
         name += f" ({pages[0]}-{pages[1]})"
     return f"{name}.pdf"
 
 
-def stored_name(gid: int, part: int, parts: int, incomplete: bool = False) -> str:
-    """存储用的文件名，只含画廊号，便于识别缓存和清理。"""
-    name = f"{gid}-incomplete" if incomplete else str(gid)
+def stored_name(key: str, part: int, parts: int, incomplete: bool = False) -> str:
+    """存储用的文件名，只含作品键，便于识别缓存和清理。"""
+    name = f"{key}-incomplete" if incomplete else key
     if parts > 1:
         name += f"-{part}of{parts}"
     return f"{name}.pdf"
@@ -116,7 +120,7 @@ def stored_name(gid: int, part: int, parts: int, incomplete: bool = False) -> st
 class PdfStore:
     """整本 PDF 的生成、复用与清理。
 
-    打包请求排队进行：同一画廊正在打包时等它完成、共用结果；同一用户的请求依次进行；
+    打包请求排队进行：同一作品正在打包时等它完成、共用结果；同一用户的请求依次进行；
     不同用户最多同时打包 PACK_CONCURRENCY 个。
     """
 
@@ -131,34 +135,34 @@ class PdfStore:
         self._slots = asyncio.Semaphore(PACK_CONCURRENCY)
         # 用户 → (锁, 正在使用的请求数)，没有请求时删除
         self._users: dict[str, tuple[asyncio.Lock, int]] = {}
-        # 画廊号 → 正在进行的打包
-        self._builds: dict[int, asyncio.Future] = {}
+        # 作品键 → 正在进行的打包
+        self._builds: dict[str, asyncio.Future] = {}
 
-    def building(self, gid: int) -> bool:
-        return gid in self._builds
+    def building(self, work: Work) -> bool:
+        return work.ref.key in self._builds
 
     async def get(
-        self, gallery: Gallery, user_id: str, download: Download
+        self, work: Work, user_id: str, download: Download
     ) -> tuple[list[tuple[Path, str]], int]:
-        """返回画廊的 PDF：(文件列表, 失败页数)。没有完整的缓存时排队打包。"""
+        """返回作品的 PDF：(文件列表, 失败页数)。没有完整的缓存时排队打包。"""
         return await shared(
             self._builds,
-            gallery.gid,
-            lambda: self._queued(gallery, user_id, download),
+            work.ref.key,
+            lambda: self._queued(work, user_id, download),
         )
 
     async def _queued(
-        self, gallery: Gallery, user_id: str, download: Download
+        self, work: Work, user_id: str, download: Download
     ) -> tuple[list[tuple[Path, str]], int]:
         lock, users = self._users.get(user_id, (asyncio.Lock(), 0))
         self._users[user_id] = (lock, users + 1)
         try:
             async with lock, self._slots:
                 # 排队期间可能已经有人打包好了
-                files = self.cached(gallery)
+                files = self.cached(work)
                 if files is not None:
                     return files, 0
-                return await self.build(gallery, download)
+                return await self.build(work, download)
         finally:
             lock, users = self._users[user_id]
             if users > 1:
@@ -166,35 +170,35 @@ class PdfStore:
             else:
                 del self._users[user_id]
 
-    def parts(self, filecount: int) -> int:
-        return -(-filecount // self.pages_per_file)
+    def parts(self, pages: int) -> int:
+        return -(-pages // self.pages_per_file)
 
-    def cached(self, gallery: Gallery) -> list[tuple[Path, str]] | None:
-        """完整打包过的画廊直接复用；缺任何一个分卷都视为没有缓存。"""
-        parts = self.parts(gallery.filecount)
+    def cached(self, work: Work) -> list[tuple[Path, str]] | None:
+        """完整打包过的作品直接复用；缺任何一个分卷都视为没有缓存。"""
+        key = work.ref.key
+        parts = self.parts(work.pages)
         files = []
         for part in range(1, parts + 1):
-            path = self.dir / stored_name(gallery.gid, part, parts)
+            path = self.dir / stored_name(key, part, parts)
             if not path.exists():
                 return None
             start = (part - 1) * self.pages_per_file + 1
-            end = min(start + self.pages_per_file - 1, gallery.filecount)
-            files.append(
-                (path, display_name(gallery.title, gallery.gid, (start, end), parts))
-            )
+            end = min(start + self.pages_per_file - 1, work.pages)
+            files.append((path, display_name(work.title, key, (start, end), parts)))
         return files or None
 
     async def build(
-        self, gallery: Gallery, download: Download
+        self, work: Work, download: Download
     ) -> tuple[list[tuple[Path, str]], int]:
-        """下载整个画廊，每 pages_per_file 页写成一个 PDF。
+        """下载整个作品，每 pages_per_file 页写成一个 PDF。
 
         返回 ([(PDF 路径, 发送文件名)], 失败页数)。有缺页时存储名带 -incomplete，不会被当成缓存复用。
         """
-        tmp = self.tmp / str(gallery.gid)
+        key = work.ref.key
+        tmp = self.tmp / key
         shutil.rmtree(tmp, ignore_errors=True)
         try:
-            paths, missing = await download(gallery, tmp)
+            paths, missing = await download(work, tmp)
             if not paths:
                 raise PdfError("没有下载到任何图片")
             self.dir.mkdir(parents=True, exist_ok=True)
@@ -204,36 +208,32 @@ class PdfStore:
             ]
             files = []
             for part, chunk in enumerate(chunks, 1):
-                out = self.dir / stored_name(
-                    gallery.gid, part, len(chunks), bool(missing)
-                )
+                out = self.dir / stored_name(key, part, len(chunks), bool(missing))
                 await asyncio.to_thread(write_pdf, chunk, out, self.quality)
                 # 下载的图片以页码命名，分卷文件名标出实际页码范围
                 pages = (int(chunk[0].stem), int(chunk[-1].stem))
-                files.append(
-                    (out, display_name(gallery.title, gallery.gid, pages, len(chunks)))
-                )
+                files.append((out, display_name(work.title, key, pages, len(chunks))))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
-        self._prune(keep=gallery.gid)
+        self._prune(keep=key)
         return files, missing
 
-    def _prune(self, keep: int):
-        """按画廊清理旧 PDF，只动本插件生成的文件（输出目录可能是共享目录）。"""
-        groups: dict[int, list[Path]] = {}
+    def _prune(self, keep: str):
+        """按作品清理旧 PDF，只动本插件生成的文件（输出目录可能是共享目录）。"""
+        groups: dict[str, list[Path]] = {}
         for path in self.dir.glob("*.pdf"):
             match = OWN_PDF.fullmatch(path.name)
             if match:
-                groups.setdefault(int(match.group(1)), []).append(path)
+                groups.setdefault(match.group(1), []).append(path)
         newest = {
-            gid: max(p.stat().st_mtime for p in paths) for gid, paths in groups.items()
+            key: max(p.stat().st_mtime for p in paths) for key, paths in groups.items()
         }
         others = sorted(
-            (gid for gid in groups if gid != keep), key=newest.get, reverse=True
+            (key for key in groups if key != keep), key=newest.get, reverse=True
         )
         fresh_after = time.time() - FRESH_SECONDS
-        for gid in others[self.keep - 1 :]:
-            if newest[gid] > fresh_after or gid in self._builds:
+        for key in others[self.keep - 1 :]:
+            if newest[key] > fresh_after or key in self._builds:
                 continue
-            for path in groups[gid]:
+            for path in groups[key]:
                 path.unlink(missing_ok=True)

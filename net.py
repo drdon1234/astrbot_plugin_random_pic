@@ -78,15 +78,15 @@ class HttpClient:
     def request(self, method: str, url, **kwargs):
         return self.session.request(method, url, proxy=self.proxy, **kwargs)
 
-    async def get_text(self, url: str, *, params=None) -> str:
-        text, _ = await self.get_text_headers(url, params=params)
+    async def get_text(self, url: str, *, params=None, headers=None) -> str:
+        text, _ = await self.get_text_headers(url, params=params, headers=headers)
         return text
 
     async def get_text_headers(
-        self, url: str, *, params=None
+        self, url: str, *, params=None, headers=None
     ) -> tuple[str, dict[str, str]]:
-        """返回 (响应文本, 响应头)，响应头的键为小写。"""
-        async with self.request("GET", url, params=params) as resp:
+        """返回 (响应文本, 响应头)，响应头的键为小写。headers 覆盖默认请求头。"""
+        async with self.request("GET", url, params=params, headers=headers) as resp:
             text = await resp.text(errors="replace")
             if resp.status != 200:
                 raise HttpError(f"HTTP {resp.status}: {text[:200]}", resp.status)
@@ -154,19 +154,22 @@ class ImageCache:
         self.max_total = int(max_total_mb * 1024 * 1024)
         self.max_image = int(max_image_mb * 1024 * 1024)
 
-    async def download(self, url: str, dest: Path | None = None) -> Path | None:
+    async def download(
+        self, url: str, dest: Path | None = None, headers: dict | None = None
+    ) -> Path | None:
         """下载单张图片，返回本地文件路径；失败返回 None。
 
         dest 为不含扩展名的目标路径（例如整本下载时的「页码」），此时不进缓存、不触发清理。
+        headers 覆盖默认请求头（例如图床只认特定的 User-Agent）。
         """
         try:
             try:
-                fetched = await self._fetch(url)
+                fetched = await self._fetch(url, headers)
             except aiohttp.ClientPayloadError as e:
                 # 部分 H@H 节点经代理时会不发 TLS close_notify 就断开，asyncio 的 SSL
                 # 层会丢掉最后几 KB，同一地址重试也一样；阻塞式 ssl 能读全，所以退回 urllib
                 logger.info(f"[random_pic] 响应不完整，改用 urllib 重新下载: {e!r}")
-                fetched = await asyncio.to_thread(self._fetch_blocking, url)
+                fetched = await asyncio.to_thread(self._fetch_blocking, url, headers)
             if fetched is None:
                 logger.info(f"[random_pic] 图片过大，已跳过: {url}")
                 return None
@@ -178,9 +181,11 @@ class ImageCache:
             self.cleanup()
         return path
 
-    async def _fetch(self, url: str) -> tuple[bytes, str] | None:
+    async def _fetch(
+        self, url: str, headers: dict | None = None
+    ) -> tuple[bytes, str] | None:
         """返回 (图片数据, Content-Type)，超过大小上限时返回 None。"""
-        async with self.http.request("GET", url) as resp:
+        async with self.http.request("GET", url, headers=headers) as resp:
             if resp.status != 200:
                 raise HttpError(f"HTTP {resp.status}")
             if resp.content_length and resp.content_length > self.max_image:
@@ -192,11 +197,15 @@ class ImageCache:
                     return None
             return bytes(data), resp.content_type.lower()
 
-    def _fetch_blocking(self, url: str) -> tuple[bytes, str] | None:
+    def _fetch_blocking(
+        self, url: str, headers: dict | None = None
+    ) -> tuple[bytes, str] | None:
         proxy = self.http.proxy
         proxies = {"http": proxy, "https": proxy} if proxy else {}
         opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
-        request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        request = urllib.request.Request(
+            url, headers={"User-Agent": USER_AGENT, **(headers or {})}
+        )
         with opener.open(request, timeout=self.http.timeout.total) as resp:
             if resp.status != 200:
                 raise HttpError(f"HTTP {resp.status}")
@@ -233,3 +242,26 @@ class ImageCache:
             if mtime < fresh_after and total > self.max_total:
                 path.unlink(missing_ok=True)
                 total -= size
+
+
+async def download_all(
+    cache: ImageCache,
+    urls: list[str],
+    dest: Path,
+    concurrency: int,
+    headers: dict | None = None,
+) -> tuple[list[Path], int]:
+    """整本下载：urls 依次是第 1、2……页，存到 dest（文件以页码命名）。
+
+    返回 (按页码排序的图片路径, 失败页数)。
+    """
+    dest.mkdir(parents=True, exist_ok=True)
+    semaphore = asyncio.Semaphore(max(1, concurrency))
+
+    async def fetch(number: int, url: str) -> Path | None:
+        async with semaphore:
+            return await cache.download(url, dest / f"{number:05d}", headers=headers)
+
+    results = await asyncio.gather(*(fetch(n, url) for n, url in enumerate(urls, 1)))
+    paths = [p for p in results if p]
+    return paths, len(urls) - len(paths)

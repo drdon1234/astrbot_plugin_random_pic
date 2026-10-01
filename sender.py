@@ -113,21 +113,29 @@ async def send_direct(event: AstrMessageEvent, chain: list) -> tuple[bool, str |
     bot = getattr(event, "bot", None)
     if event.get_platform_name() != ONEBOT or bot is None:
         return False, None
+    raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+    self_id = raw.get("self_id") if hasattr(raw, "get") else None
+    delivered, message_id = await send_onebot(
+        bot, chain, str(event.get_group_id() or ""), str(event.get_sender_id()), self_id
+    )
+    if delivered:
+        event._has_send_oper = True  # 避免 AstrBot 认为插件没有回复
+    return delivered, message_id
+
+
+async def send_onebot(
+    bot, chain: list, group_id: str, user_id: str, self_id=None
+) -> tuple[bool, str | None]:
+    """调用 OneBot 接口发到群 group_id，group_id 为空时私聊发给 user_id。返回值同 send_direct。"""
     try:
         from astrbot.core.message.message_event_result import MessageChain
         from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
             AiocqhttpMessageEvent,
         )
 
-        group_id = event.get_group_id()
-        target = (
-            {"group_id": int(group_id)}
-            if group_id
-            else {"user_id": int(event.get_sender_id())}
-        )
-        raw = getattr(event.message_obj, "raw_message", None)
-        if hasattr(raw, "get") and raw.get("self_id"):
-            target["self_id"] = raw["self_id"]
+        target = {"group_id": int(group_id)} if group_id else {"user_id": int(user_id)}
+        if self_id:
+            target["self_id"] = self_id
         if len(chain) == 1 and isinstance(chain[0], Comp.Nodes):
             payload = await chain[0].to_dict()
             action = (
@@ -148,7 +156,6 @@ async def send_direct(event: AstrMessageEvent, chain: list) -> tuple[bool, str |
     except Exception as e:
         logger.warning(f"[random_pic] 发送失败（{action}）: {e!r}")
         raise SendFailed(str(e)) from e
-    event._has_send_oper = True  # 避免 AstrBot 认为插件没有回复
     message_id = ret.get("message_id") if isinstance(ret, dict) else None
     if message_id is None:
         logger.warning(f"[random_pic] 发送接口没有返回消息 ID: {ret!r}")

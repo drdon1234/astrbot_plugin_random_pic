@@ -5,7 +5,8 @@
   所以总数缓存后随机抽一个帖子只要一次请求；N 超出总数时返回 400；
 - categories / categories_exclude / tags_exclude：按分类、标签筛选（分类和标签用数字 id）；
 - search：在标题和正文里搜索，几个词要同时出现，带引号的词组整体匹配；
-- _embed=wp:term：附带分类和标签的名称，用于黑名单过滤和说明文字。
+- _embed=wp:term：附带分类和标签的名称，用于黑名单过滤和说明文字；
+- posts/{id}、posts?slug=：按 id 或链接里的 slug 取帖子，/pdf 整本打包用。
 帖子正文里的 <img> 就是整套图（1600px 左右的 webp 或原图），图片没有防盗链。
 
 分级来自站点的分类，2026-10 抽样目检：
@@ -30,8 +31,8 @@ import aiohttp
 from astrbot.api import logger
 
 from ..filters import ContentFilter, rating_reason
-from ..models import EXPLICIT, REAL, SENSITIVE, Album, DrawOptions
-from ..net import HttpClient, HttpError, ImageCache
+from ..models import EXPLICIT, REAL, SENSITIVE, Album, DrawOptions, Work, WorkRef
+from ..net import HttpClient, HttpError, ImageCache, download_all
 from ..util import fill, pick_pages, shared
 from . import DrawContext
 
@@ -46,6 +47,9 @@ MAX_CAPTION_TAGS = 4
 # 声明的宽高都小于这个值的图片是缩略图（XiuRen 的部分帖子开头有一张小封面）
 MIN_SIDE = 500
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+
+# 取帖子时要的字段（_links 是 _embed 必需的）
+POST_FIELDS = "id,link,title,content,categories,tags,_links,_embedded"
 
 IMG_RE = re.compile(r"<img\b[^>]*>", re.I)
 ATTR_RE = re.compile(r"""\b(src|width|height)\s*=\s*["']([^"']*)["']""", re.I)
@@ -163,6 +167,7 @@ class WordPressSource:
         opts: DrawOptions,
     ):
         self.site = site
+        self.key = site.key
         self.name = site.name
         self.http = http
         self.cache = cache
@@ -220,13 +225,20 @@ class WordPressSource:
             return SENSITIVE
         return self.site.default_rating
 
-    async def _get(self, params: dict[str, str]) -> tuple[list, dict[str, str]]:
-        text, headers = await self.http.get_text_headers(self.site.api, params=params)
+    async def _get(
+        self, params: dict[str, str], path: str = ""
+    ) -> tuple[list | dict, dict[str, str]]:
+        """请求 posts 接口（path 为 /{id} 时取单个帖子），返回 (数据, 响应头)。"""
+        text, headers = await self.http.get_text_headers(
+            self.site.api + path, params=params
+        )
         try:
             data = json.loads(text)
         except ValueError as e:
             raise WordPressError(f"{self.name} 返回的不是 JSON") from e
-        return (data if isinstance(data, list) else []), headers
+        if not isinstance(data, list | dict):
+            data = {} if path else []
+        return data, headers
 
     async def _total(self, params: dict[str, str]) -> int:
         key = json.dumps(params, sort_keys=True)
@@ -265,7 +277,7 @@ class WordPressSource:
                     "per_page": "1",
                     "page": str(page),
                     "_embed": "wp:term",
-                    "_fields": "id,link,title,content,categories,_links,_embedded",
+                    "_fields": POST_FIELDS,
                 }
             )
         except HttpError as e:
@@ -273,7 +285,16 @@ class WordPressSource:
                 raise
             self._totals.pop(json.dumps(params, sort_keys=True), None)
             return None
-        return posts[0] if posts and isinstance(posts[0], dict) else None
+        if isinstance(posts, list) and posts and isinstance(posts[0], dict):
+            return posts[0]
+        return None
+
+    def excluded(self, post: dict) -> bool:
+        """帖子在站点的 AI 生成分类或标签里。"""
+        return bool(
+            set(post.get("categories") or []) & set(self.site.exclude_categories)
+            or set(post.get("tags") or []) & set(self.site.exclude_tags)
+        )
 
     def _reject(
         self, post: dict, ctx: DrawContext, exclude: list[str], images: list[str]
@@ -372,4 +393,40 @@ class WordPressSource:
             total=len(images),
             pictures=sorted(pictures),
             details=details,
+            work=WorkRef(self.key, str(post.get("id"))),
         )
+
+    async def work(self, ref: WorkRef) -> Work | None:
+        """按帖子 id 或链接里的 slug 取帖子，不存在时返回 None。"""
+        params = {"_embed": "wp:term", "_fields": POST_FIELDS}
+        if ref.id.isdigit():
+            try:
+                post, _ = await self._get(params, f"/{ref.id}")
+            except HttpError as e:
+                if e.status in (400, 404):
+                    return None
+                raise
+        else:
+            posts, _ = await self._get({**params, "slug": ref.id})
+            post = posts[0] if isinstance(posts, list) and posts else None
+        if not isinstance(post, dict) or not post.get("id"):
+            return None
+        images = post_images(str((post.get("content") or {}).get("rendered") or ""))
+        title = html.unescape(str((post.get("title") or {}).get("rendered") or ""))
+        categories, tags = term_names(post)
+        blocked = (
+            ("是 AI 生成的作品" if self.excluded(post) else None)
+            or self.content.text_reason([title, *categories, *tags])
+            or (None if images else "没有图片")
+        )
+        return Work(
+            ref=WorkRef(self.key, str(post["id"])),
+            title=title.strip(),
+            pages=len(images),
+            rating=self.post_rating(post),
+            blocked=blocked,
+            data=images,
+        )
+
+    async def download_work(self, work: Work, dest: Path) -> tuple[list[Path], int]:
+        return await download_all(self.cache, work.data, dest, self.opts.concurrency)

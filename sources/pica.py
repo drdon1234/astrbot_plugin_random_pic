@@ -7,6 +7,7 @@
 - comics/advanced-search?page=N（POST 关键词和分类）：关键词搜索，结果格式同分类列表；
 - comics/{id}：本子详情（搜索结果缺标签时补标签）；
 - comics/{id}/order/{第几话}/pages?page=N：一话的图片，每页若干张，带总张数。
+  第几话从 1 开始，整本打包时依次取第 1 到 epsCount 话。
 
 随机抽取 = 随机翻一页分类列表（带关键词时翻搜索结果），再随机挑一本、随机取几张。
 关键词只支持普通词，E-Hentai 的标签语法（带 : $ "）交给 E-Hentai。哔咔没有分级，
@@ -29,8 +30,8 @@ from yarl import URL
 from astrbot.api import logger
 
 from ..filters import ContentFilter, rating_reason
-from ..models import EXPLICIT, REAL, SENSITIVE, Album, DrawOptions
-from ..net import HttpClient, ImageCache
+from ..models import EXPLICIT, REAL, SENSITIVE, Album, DrawOptions, Work, WorkRef
+from ..net import HttpClient, ImageCache, download_all
 from ..util import fill, pick_pages
 from . import DrawContext
 
@@ -98,6 +99,7 @@ def split_terms(terms: list[str]) -> tuple[str, list[str]]:
 
 
 class Picacomic:
+    key = "pica"
     name = "哔咔"
 
     def __init__(
@@ -397,4 +399,50 @@ class Picacomic:
             total=total,
             pictures=sorted(pictures),
             details=details,
+            work=WorkRef(self.key, cid),
         )
+
+    async def work(self, ref: WorkRef) -> Work | None:
+        """查询本子详情，不存在时返回 None。分级和过滤与抽图相同。"""
+        comic = (await self._request(f"comics/{ref.id}")).get("comic")
+        if not isinstance(comic, dict) or not comic.get("_id"):
+            return None
+        tags = [str(t) for t in comic.get("tags") or []]
+        title = str(comic.get("title") or "").strip()
+        words = [title, str(comic.get("author") or "")]
+        return Work(
+            ref=WorkRef(self.key, str(comic["_id"])),
+            title=title,
+            pages=int(comic.get("pagesCount") or 0),
+            rating=comic_rating(tags),
+            blocked=self.content.tags_reason(tags) or self.content.text_reason(words),
+            data=max(1, int(comic.get("epsCount") or 1)),
+        )
+
+    async def _episode_urls(self, cid: str, order: int) -> list[str]:
+        """一话的全部图片地址：先取第一页得到总数，其余页并发取。"""
+        first = await self._episode_page(cid, order, 1)
+        total, limit = int(first.get("total") or 0), int(first.get("limit") or 0)
+        if total <= 0 or limit <= 0:
+            return []
+        rest = await asyncio.gather(
+            *(
+                self._episode_page(cid, order, page)
+                for page in range(2, -(-total // limit) + 1)
+            )
+        )
+        docs = [d for data in [first, *rest] for d in data.get("docs") or []]
+        return [media_url(d["media"]) for d in docs if d.get("media")]
+
+    async def download_work(self, work: Work, dest: Path) -> tuple[list[Path], int]:
+        """依次取每一话的图片地址，再一起下载；所有话连起来编页码。"""
+        cid, episodes = work.ref.id, work.data
+        urls = []
+        for order in range(1, episodes + 1):
+            urls += await self._episode_urls(cid, order)
+        if not urls:
+            raise PicaError("哔咔没有返回图片列表")
+        paths, missing = await download_all(
+            self.cache, urls, dest, self.opts.concurrency
+        )
+        return paths, missing + max(0, work.pages - len(urls))
