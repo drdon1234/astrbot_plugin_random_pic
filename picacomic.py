@@ -4,9 +4,12 @@
 （路径 + 时间 + nonce + 方法 + api-key，转小写，密钥写死在 App 里），登录后带 token。
 - auth/sign-in：邮箱（用户名）+ 密码换 token，实测有效期 7 天，过期后接口返回 401；
 - comics?page=N&c=Cosplay&s=dd：分类列表，每页 20 本，带标签；
+- comics/advanced-search?page=N（POST 关键词和分类）：关键词搜索，结果格式同分类列表；
+- comics/{id}：本子详情（搜索结果缺标签时补标签）；
 - comics/{id}/order/{第几话}/pages?page=N：一话的图片，每页若干张，带总张数。
 
-随机抽取 = 随机翻一页分类列表，再随机挑一本、随机取一张。哔咔没有分级，
+随机抽取 = 随机翻一页分类列表（带关键词时翻搜索结果），再随机挑一本、随机取一张。
+关键词只支持普通词，E-Hentai 的标签语法（带 : $ "）交给 E-Hentai。哔咔没有分级，
 上传者给无露点的写真打「無H內容」标签（实测 Cosplay 分类约 83% 带这个标签），
 带它的算擦边，不带的算 R18。
 """
@@ -28,6 +31,7 @@ from astrbot.api import logger
 from .filters import TagBlacklist
 from .models import EXPLICIT, REAL, SENSITIVE, ImageItem
 from .net import HttpClient, ImageCache
+from .workers import fill
 
 API_BASE = "https://picaapi.picacomic.com/"
 API_KEY = "C69BAF41DA5ABD1FFEDC6D2FEA56B"
@@ -50,10 +54,17 @@ NON_H_TAG = "無H內容"
 PLAIN_TAGS = frozenset({"COSPLAY", NON_H_TAG})
 # 分类的总页数一小时刷新一次
 LISTING_TTL = 3600
+# 搜索结果的总页数缓存 10 分钟
+SEARCH_TTL = 600
+SEARCH_CACHE_SIZE = 256
 # 每张图最多看这么多页列表（一页里没有符合分级、黑名单的本子或下载失败时换一页）
 LISTINGS_PER_IMAGE = 4
-# 登录失败（密码错误、被封）后这么久内不再尝试，避免每次抽卡都去登录
+# 搜索结果不带标签时，每页最多查这么多本的详情
+DETAIL_TRIES = 3
+# 登录失败（密码错误、被封、限流）后这么久内不再尝试，避免每次抽卡都去登录
 LOGIN_BACKOFF = 600
+# 关键词里出现这些字符时是 E-Hentai 的标签语法，哔咔搜不了
+TAG_SYNTAX = frozenset(':$"')
 
 
 class PicaError(Exception):
@@ -73,6 +84,18 @@ def media_url(media: dict) -> str:
     return f"{str(media['fileServer']).rstrip('/')}/static/{media['path']}"
 
 
+def supports_terms(terms: list[str]) -> bool:
+    """关键词都是普通词时哔咔才能搜索。"""
+    return not any(TAG_SYNTAX & set(t) for t in terms)
+
+
+def split_terms(terms: list[str]) -> tuple[str, list[str]]:
+    """返回 (搜索用的关键词, 要排除的词)。哔咔搜索不支持排除，排除词在本地过滤。"""
+    positive = [t for t in terms if t and not t.startswith("-")]
+    negative = [t[1:].lower() for t in terms if t.startswith("-") and len(t) > 1]
+    return " ".join(positive), negative
+
+
 class Picacomic:
     def __init__(
         self,
@@ -85,6 +108,7 @@ class Picacomic:
         *,
         rating_enabled: bool = True,
         explicit_skip: float = 0.0,
+        token_path: Path | None = None,
     ):
         self.http = http
         self.cache = cache
@@ -99,6 +123,36 @@ class Picacomic:
         self._login_lock = asyncio.Lock()
         self._pages = 0
         self._pages_at = -LISTING_TTL
+        # 关键词 → (过期时间, 搜索结果总页数)
+        self._search_pages: dict[str, tuple[float, int]] = {}
+        # token 存到磁盘，插件重载后不必重新登录（登录接口限流很严）
+        self._token_path = token_path
+        self._load_token()
+
+    def _account_key(self) -> str:
+        return hashlib.sha256(self.email.encode()).hexdigest()
+
+    def _load_token(self):
+        if self._token_path is None:
+            return
+        try:
+            data = json.loads(self._token_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if isinstance(data, dict) and data.get("account") == self._account_key():
+            self._token = data.get("token") or None
+
+    def _save_token(self):
+        if self._token_path is None:
+            return
+        try:
+            self._token_path.parent.mkdir(parents=True, exist_ok=True)
+            self._token_path.write_text(
+                json.dumps({"account": self._account_key(), "token": self._token}),
+                encoding="utf-8",
+            )
+        except OSError as e:
+            logger.warning(f"[random_pic] 保存哔咔 token 失败: {e!r}")
 
     async def _send(
         self, method: str, path: str, body: dict | None
@@ -139,15 +193,17 @@ class Picacomic:
                 self._login_failed = time.monotonic()
                 raise PicaError(f"哔咔登录失败：{data.get('message') or status}")
             self._token = token
+            self._save_token()
             logger.info("[random_pic] 哔咔登录成功")
 
-    async def _get(self, path: str) -> dict:
-        """带 token 的 GET 请求，返回响应里的 data。token 过期时重新登录一次。"""
+    async def _request(self, path: str, body: dict | None = None) -> dict:
+        """带 token 的请求（有 body 时为 POST），返回响应里的 data。token 过期时重新登录一次。"""
         if self._token is None:
             await self._login(None)
+        method = "GET" if body is None else "POST"
         for attempt in range(2):
             token = self._token
-            status, data = await self._send("GET", path, None)
+            status, data = await self._send(method, path, body)
             if status == 401 and attempt == 0:
                 await self._login(token)
                 continue
@@ -159,10 +215,38 @@ class Picacomic:
         raise AssertionError("unreachable")
 
     async def _listing(self, page: int) -> dict:
-        data = await self._get(f"comics?page={page}&c={CATEGORY}&s=dd")
+        data = await self._request(f"comics?page={page}&c={CATEGORY}&s=dd")
         return data.get("comics") or {}
 
-    async def _random_listing(self) -> list[dict]:
+    async def _search(self, keyword: str, page: int) -> dict:
+        data = await self._request(
+            f"comics/advanced-search?page={page}",
+            {"keyword": keyword, "categories": [CATEGORY], "sort": "dd"},
+        )
+        return data.get("comics") or {}
+
+    async def _random_search(self, keyword: str) -> list[dict]:
+        cached = self._search_pages.get(keyword)
+        first = None
+        if cached and cached[0] > time.monotonic():
+            pages = cached[1]
+        else:
+            first = await self._search(keyword, 1)
+            pages = int(first.get("pages") or 0)
+            self._search_pages[keyword] = (time.monotonic() + SEARCH_TTL, pages)
+            while len(self._search_pages) > SEARCH_CACHE_SIZE:
+                self._search_pages.pop(next(iter(self._search_pages)))
+        if pages <= 0:
+            raise PicaError(f"哔咔 Cosplay 分类里搜不到「{keyword}」")
+        page = random.randint(1, pages)
+        listing = first if first is not None and page == 1 else None
+        if listing is None:
+            listing = await self._search(keyword, page)
+        return listing.get("docs") or []
+
+    async def _random_listing(self, keyword: str = "") -> list[dict]:
+        if keyword:
+            return await self._random_search(keyword)
         if time.monotonic() - self._pages_at > LISTING_TTL:
             first = await self._listing(1)
             self._pages = int(first.get("pages") or 0)
@@ -172,67 +256,113 @@ class Picacomic:
         listing = await self._listing(random.randint(1, self._pages))
         return listing.get("docs") or []
 
-    def _reject(self, comic: dict, rating: str) -> str | None:
+    def _reject(
+        self, comic: dict, rating: str, exclude: list[str] = ()
+    ) -> str | None:
+        categories = comic.get("categories")
+        if categories and CATEGORY not in categories:
+            return "不在 Cosplay 分类"
         tags = [str(t) for t in comic.get("tags") or []]
         if not tags:
             return "缺少标签，无法做未成年过滤"
         if self.rating_enabled and comic_rating(tags) != rating:
             return "分级不符"
-        term = self.blacklist.hit(
-            [*tags, str(comic.get("title") or ""), str(comic.get("author") or "")]
-        )
+        words = [*tags, str(comic.get("title") or ""), str(comic.get("author") or "")]
+        term = self.blacklist.hit(words)
         if term:
             return f"命中黑名单 {term}"
+        text = "\n".join(words).lower()
+        if any(word in text for word in exclude):
+            return "命中排除的关键词"
         if not comic.get("pagesCount"):
             return "没有图片"
         return None
 
+    async def _detail(self, comic: dict) -> dict:
+        data = await self._request(f"comics/{comic['_id']}")
+        return {**comic, **(data.get("comic") or {})}
+
+    async def _pick(
+        self, keyword: str, exclude: list[str], rating: str, seen: set[str]
+    ) -> dict | None:
+        """随机翻一页，挑一本符合分级、黑名单的本子。"""
+        docs = [
+            c
+            for c in await self._random_listing(keyword)
+            if c.get("_id") and c["_id"] not in seen
+        ]
+        random.shuffle(docs)
+        details = 0
+        for comic in docs:
+            if "tags" not in comic:
+                if details >= DETAIL_TRIES:
+                    break
+                details += 1
+                comic = await self._detail(comic)
+            if comic["_id"] in seen or self._reject(comic, rating, exclude):
+                continue
+            seen.add(comic["_id"])
+            return comic
+        return None
+
     async def draw(
-        self, n: int, rating: str, same_comic: bool
+        self,
+        n: int,
+        rating: str,
+        same_comic: bool,
+        terms: list[str] = (),
+        concurrency: int = 1,
     ) -> tuple[list[tuple[ImageItem, Path]], list[str]]:
-        """抽 n 张图。same_comic 时只取一本，按页码顺序取至多 n 张；否则每本取一张。"""
+        """抽 n 张图。same_comic 时只取一本，按页码顺序取至多 n 张；否则每本取一张，并发抽取。
+
+        terms 是关键词（只支持普通词，见 supports_terms），以 - 开头的词表示排除。
+        """
+        keyword, exclude = split_terms(list(terms))
         images: list[tuple[ImageItem, Path]] = []
         errors: list[str] = []
         seen: set[str] = set()
         skipped = 0
-        for _ in range(LISTINGS_PER_IMAGE * (1 if same_comic else n)):
-            need = n - len(images)
-            if need <= 0 or (same_comic and images):
-                break
+
+        async def attempt(count: int) -> list[tuple[ImageItem, Path]]:
+            nonlocal skipped
             try:
-                docs = await self._random_listing()
-                comics = [
-                    c
-                    for c in docs
-                    if c.get("_id") not in seen and not self._reject(c, rating)
-                ]
-                if not comics:
-                    skipped += 1
-                    continue
-                comic = random.choice(comics)
-                seen.add(comic["_id"])
-                items = await self._fetch(comic, need if same_comic else 1)
-            except PicaError as e:
-                logger.warning(f"[random_pic] {e}")
-                errors.append(str(e))
-                break
+                comic = await self._pick(keyword, exclude, rating, seen)
+                items = await self._fetch(comic, count, concurrency) if comic else []
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 logger.warning(f"[random_pic] 哔咔请求失败: {e!r}")
                 if "哔咔请求失败" not in errors:
                     errors.append("哔咔请求失败")
-                continue
+                return []
             if not items:
                 skipped += 1
-            images.extend(items)
+            return items
+
+        async def one() -> tuple[ImageItem, Path] | None:
+            items = await attempt(1)
+            return items[0] if items else None
+
+        try:
+            if same_comic:
+                for _ in range(LISTINGS_PER_IMAGE):
+                    images.extend(await attempt(n))
+                    if images:
+                        break
+            else:
+                await fill(images, n, LISTINGS_PER_IMAGE * n, concurrency, one)
+        except PicaError as e:
+            logger.warning(f"[random_pic] {e}")
+            errors.append(str(e))
         if skipped:
             errors.append(f"{skipped} 次哔咔抽取没有符合条件的本子或下载失败")
         return images, errors
 
     async def _episode_page(self, cid: str, order: int, page: int) -> dict:
-        data = await self._get(f"comics/{cid}/order/{order}/pages?page={page}")
+        data = await self._request(f"comics/{cid}/order/{order}/pages?page={page}")
         return data.get("pages") or {}
 
-    async def _fetch(self, comic: dict, n: int) -> list[tuple[ImageItem, Path]]:
+    async def _fetch(
+        self, comic: dict, n: int, concurrency: int = 1
+    ) -> list[tuple[ImageItem, Path]]:
         """从本子随机的一话里取 n 张，按页码排序。R18 跳过开头穿着完整的一段。"""
         cid = comic["_id"]
         tags = [str(t) for t in comic.get("tags") or []]
@@ -244,21 +374,24 @@ class Picacomic:
             return []
         start = int(total * self.explicit_skip) if rating == EXPLICIT else 0
         indices = sorted(random.sample(range(start, total), min(n, total - start)))
+        # 用到的图片列表页一次性并发取回
+        wanted = sorted({index // limit + 1 for index in indices} - {1})
+        fetched = await asyncio.gather(
+            *(self._episode_page(cid, order, page) for page in wanted)
+        )
         pages = {1: first.get("docs") or []}
-        items = []
-        for index in indices:
-            page = index // limit + 1
-            if page not in pages:
-                pages[page] = (await self._episode_page(cid, order, page)).get(
-                    "docs"
-                ) or []
-            docs = pages[page]
+        pages.update((page, data.get("docs") or []) for page, data in zip(wanted, fetched))
+        semaphore = asyncio.Semaphore(max(1, concurrency))
+
+        async def download(index: int) -> tuple[ImageItem, Path] | None:
+            docs = pages[index // limit + 1]
             if index % limit >= len(docs):
-                continue
+                return None
             url = media_url(docs[index % limit]["media"])
-            path = await self.cache.download(url, self.proxy)
+            async with semaphore:
+                path = await self.cache.download(url, self.proxy)
             if path is None:
-                continue
+                return None
             item = ImageItem(
                 image_url=url,
                 rating=rating,
@@ -272,5 +405,7 @@ class Picacomic:
                 characters=[t for t in tags if t not in PLAIN_TAGS],
                 source=SOURCE,
             )
-            items.append((item, path))
-        return items
+            return item, path
+
+        results = await asyncio.gather(*(download(i) for i in indices))
+        return [r for r in results if r is not None]

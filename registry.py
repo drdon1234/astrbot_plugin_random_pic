@@ -2,6 +2,7 @@
 
 NapCat 回传的图片消息段里，file 是上传时的临时文件名，不能用来识别图片；
 file_size 则是原始字节数，和插件发出的图片文件大小一致。所以按字节数登记。
+合并转发里的图片可能不带 file_size，所以同时按标题行（第几张/共几张-标题）登记。
 """
 
 import json
@@ -27,6 +28,7 @@ class SentRegistry:
     def __init__(self, path: Path):
         self.path = path
         self._by_size: dict[int, GalleryRef] = {}
+        self._by_label: dict[str, GalleryRef] = {}
         self._last: dict[str, list[GalleryRef]] = {}
         self._load()
 
@@ -39,6 +41,9 @@ class SentRegistry:
             self._last = {
                 k: [GalleryRef(**r) for r in refs] for k, refs in data["last"].items()
             }
+            self._by_label = {
+                k: GalleryRef(**v) for k, v in data.get("by_label", {}).items()
+            }
         except FileNotFoundError:
             pass
         except Exception as e:
@@ -48,6 +53,7 @@ class SentRegistry:
         data = {
             "saved": int(time.time()),
             "by_size": {str(k): asdict(v) for k, v in self._by_size.items()},
+            "by_label": {k: asdict(v) for k, v in self._by_label.items()},
             "last": {k: [asdict(r) for r in refs] for k, refs in self._last.items()},
         }
         try:
@@ -58,21 +64,27 @@ class SentRegistry:
         except OSError as e:
             logger.warning(f"[random_pic] 保存已发送图片登记表失败: {e!r}")
 
-    def record(self, session: str, sent: list[tuple[int, GalleryRef]]):
-        """登记一次抽卡发出的图片：[(文件字节数, 画廊)]，按发送顺序。"""
-        for size, ref in sent:
-            self._by_size.pop(size, None)  # 重新插入，保持「最近」在末尾
-            self._by_size[size] = ref
-        while len(self._by_size) > MAX_ENTRIES:
-            self._by_size.pop(next(iter(self._by_size)))
+    def record(self, session: str, sent: list[tuple[int, str, GalleryRef]]):
+        """登记一次抽卡发出的图片：[(文件字节数, 标题行, 画廊)]，按发送顺序。"""
+        for size, label, ref in sent:
+            # 重新插入，保持「最近」在末尾
+            for table, key in ((self._by_size, size), (self._by_label, label)):
+                table.pop(key, None)
+                table[key] = ref
+        for table in (self._by_size, self._by_label):
+            while len(table) > MAX_ENTRIES:
+                table.pop(next(iter(table)))
         self._last.pop(session, None)
-        self._last[session] = [ref for _, ref in sent]
+        self._last[session] = [ref for _, _, ref in sent]
         while len(self._last) > MAX_SESSIONS:
             self._last.pop(next(iter(self._last)))
         self._save()
 
     def by_size(self, size: int) -> GalleryRef | None:
         return self._by_size.get(size)
+
+    def by_label(self, label: str) -> GalleryRef | None:
+        return self._by_label.get(label)
 
     def last(self, session: str) -> list[GalleryRef]:
         return list(self._last.get(session, []))

@@ -37,7 +37,16 @@ from .models import (
 from .net import HttpClient, HttpError, ImageCache
 from .pdf import write_pdf
 from .picacomic import SOURCE as PICA, Picacomic
-from .refs import Unit, gallery_from_text, message_units, pick, resolve_units
+from .refs import (
+    Unit,
+    gallery_from_text,
+    header_line,
+    image_label,
+    last_candidates,
+    message_units,
+    pick,
+    resolve_units,
+)
 from .registry import GalleryRef, SentRegistry
 from .sixteenk import SOURCE as SIXTEENK, SixteenK
 from .tags import DEFAULT_DB_URL, TagDB
@@ -64,7 +73,11 @@ RATING_WORDS = {"擦边": SENSITIVE, "r18": EXPLICIT, "色图": EXPLICIT}
 DEFAULT_RATING_WORDS = {"擦边": SENSITIVE, "R18": EXPLICIT}
 HELP_WORDS = {"help", "帮助"}
 FORWARD = "合并转发"
+MIXED = "图文混合"
+SEPARATE = "逐条发送"
 FORWARD_PLATFORMS = {"aiocqhttp"}
+# 图文混合时每条消息最多放这么多张图，太多时 QQ 可能发送失败
+MIXED_PER_MESSAGE = 10
 # 本插件存储的 PDF：画廊号[-incomplete][-第几卷of共几卷].pdf
 OWN_PDF = re.compile(r"(\d+)(?:-incomplete)?(?:-\d+of\d+)?\.pdf")
 # 群聊不带唤醒前缀时也能触发的指令词（整条消息就是指令词，或后面跟空格和参数）
@@ -115,32 +128,29 @@ def parse_args(
     return req
 
 
+def item_label(item: ImageItem) -> str:
+    return image_label(item.page, item.pages, item.title)
+
+
 def format_caption(item: ImageItem) -> str:
+    """图片下方的说明文字。标题和第几张已经在图片上方的标题行里。"""
     if item.source == PICA:
         # 哔咔没有公开的网页地址，不附链接
-        lines = [f"标题：{item.title}"] if item.title else []
-        if item.author:
-            lines.append(f"作者：{item.author}")
+        lines = [f"作者：{item.author}"] if item.author else []
         if item.characters:
             lines.append(f"标签：{'、'.join(item.characters[:MAX_CAPTION_TAGS])}")
-        lines.append(f"{item.category} · 第 {item.page}/{item.pages} 张")
+        lines.append(item.category)
         return "\n".join(lines)
     if item.source == SIXTEENK:
-        lines = [f"标题：{item.title}"] if item.title else []
-        if item.pages > 1:
-            lines.append(f"16K · 第 {item.page}/{item.pages} 张")
-        lines.append(f"帖子：{item.gallery_url}")
-        return "\n".join(lines)
+        return f"16K 帖子：{item.gallery_url}"
     lines = []
-    if item.title:
-        lines.append(f"标题：{item.title}")
     if item.author:
         lines.append(f"作者：{item.author}")
     if item.parodies:
         lines.append(f"作品：{'、'.join(item.parodies)}")
     if item.characters:
         lines.append(f"角色：{'、'.join(item.characters)}")
-    info = [item.category, f"第 {item.page}/{item.pages} 页"]
+    info = [item.category]
     if item.stars:
         info.append(f"★{item.stars:.1f}")
     lines.append(" · ".join(i for i in info if i))
@@ -245,6 +255,7 @@ class RandomPicPlugin(Star):
                 pica_password,
                 rating_enabled=self.rating_enabled,
                 explicit_skip=float(eh_conf.get("explicit_skip_ratio", 0.3)),
+                token_path=data_dir / "pica_token.json",
             )
         eh = EHentai(
             self.http,
@@ -284,6 +295,7 @@ class RandomPicPlugin(Star):
             sixteenk_ratio=self.sixteenk_ratio,
             pica=pica,
             pica_ratio=self.pica_ratio,
+            concurrency=int(config.get("concurrency", 4)),
         )
 
     async def initialize(self):
@@ -424,36 +436,57 @@ class RandomPicPlugin(Star):
             [
                 (
                     path.stat().st_size,
+                    item_label(item),
                     GalleryRef(item.gid, item.token, item.title, item.pages),
                 )
                 for item, path in result.images
             ],
         )
-        contents = [self._content(item, path) for item, path in result.images]
-        if len(contents) > 1 and self._use_forward(event):
+        contents = [
+            self._content(idx, item, path)
+            for idx, (item, path) in enumerate(result.images, 1)
+        ]
+        mode = self._send_mode(event)
+        if len(contents) == 1 or mode == SEPARATE:
+            for content in contents:
+                yield event.chain_result(content)
+        elif mode == FORWARD:
             # 合并转发：每张图一个节点，节点顺序即抽图顺序
             uin = str(event.get_self_id())
             nodes = [Comp.Node(content=c, uin=uin, name="抽图") for c in contents]
             yield event.chain_result([Comp.Nodes(nodes)])
         else:
-            for content in contents:
-                yield event.chain_result(content)
+            # 图文混合：标题行、图片、说明依次排在一条消息里，图多时分几条发
+            for start in range(0, len(contents), MIXED_PER_MESSAGE):
+                chain = []
+                for content in contents[start : start + MIXED_PER_MESSAGE]:
+                    if chain:
+                        chain.append(Comp.Plain("\n\n"))
+                    chain.extend(content)
+                yield event.chain_result(chain)
         if len(result.images) < req.count:
             yield event.plain_result(
                 f"仅获取到 {len(result.images)}/{req.count} 张图片。"
             )
 
-    def _content(self, item: ImageItem, path: Path) -> list:
-        content = [Comp.Image.fromFileSystem(str(path))]
+    def _content(self, idx: int, item: ImageItem, path: Path) -> list:
+        """一张图的消息段：标题行「序号-第几张/共几张-标题」、图片、说明文字。"""
+        content = [
+            Comp.Plain(header_line(idx, item_label(item)) + "\n"),
+            Comp.Image.fromFileSystem(str(path)),
+        ]
         if self.config.get("send_caption", True):
-            content.append(Comp.Plain(format_caption(item)))
+            content.append(Comp.Plain("\n" + format_caption(item)))
         return content
 
-    def _use_forward(self, event: AstrMessageEvent) -> bool:
-        return (
-            self.config.get("send_mode", FORWARD) == FORWARD
-            and event.get_platform_name() in FORWARD_PLATFORMS
-        )
+    def _send_mode(self, event: AstrMessageEvent) -> str:
+        """合并转发只在 QQ / OneBot 上可用，其他平台改用图文混合。"""
+        mode = self.config.get("send_mode", FORWARD)
+        if mode not in (FORWARD, MIXED, SEPARATE):
+            mode = FORWARD
+        if mode == FORWARD and event.get_platform_name() not in FORWARD_PLATFORMS:
+            mode = MIXED
+        return mode
 
     async def _handle_pdf(self, event: AstrMessageEvent):
         user_id = str(event.get_sender_id())
@@ -526,7 +559,10 @@ class RandomPicPlugin(Star):
     async def _pdf_target(
         self, event: AstrMessageEvent, tokens: list[str]
     ) -> tuple[GalleryRef | None, str]:
-        """依次看参数里的画廊链接、被回复的消息、本会话上一次抽卡。"""
+        """依次看参数里的画廊链接、被回复的消息、本会话上一次抽卡。
+
+        回复的消息里有多张图（合并转发、图文混合）时必须带序号，不带就列出来提示。
+        """
         for token in tokens:
             ref = gallery_from_text(token)
             if ref:
@@ -536,10 +572,10 @@ class RandomPicPlugin(Star):
             (c for c in event.message_obj.message if isinstance(c, Comp.Reply)), None
         )
         if reply is not None:
-            refs = resolve_units(await self._reply_units(event, reply), self.registry)
-        else:
-            refs = self.registry.last(event.unified_msg_origin)
-        return pick(refs, index)
+            units = await self._reply_units(event, reply)
+            return pick(resolve_units(units, self.registry), index, strict=True)
+        candidates = last_candidates(self.registry.last(event.unified_msg_origin))
+        return pick(candidates, index, strict=False)
 
     async def _reply_units(self, event: AstrMessageEvent, reply) -> list[Unit]:
         """读取被回复消息的原始消息段（需要文件大小和合并转发内容），失败时退回纯文本。"""
@@ -660,7 +696,8 @@ class RandomPicPlugin(Star):
         if self.pdf_conf.get("enabled", True):
             lines.append(
                 f"/pdf 或 /全集：回复抽到的图片，获取整个画廊的 PDF，每 {self._pages_per_file()} 页一个文件"
-                "（合并转发可加序号，如 /pdf 2；也可以 /pdf <画廊链接>）"
+                "（回复合并转发或图文混合消息时必须加序号，即图片上方标题行开头的数字，如 /pdf 2；"
+                "也可以 /pdf <画廊链接>）"
             )
         if self.config.get("enable_aliases", True):
             lines.append("别名：/二次元 /三次元 /擦边 /色图")
@@ -678,7 +715,9 @@ class RandomPicPlugin(Star):
                 f"三次元不带关键词时，{where}部分图片来自 16K（没有分级，擦边和 R18 都可能抽到）"
             )
         if self.pica_ratio:
-            lines.append("三次元不带关键词时，部分图片来自哔咔的 Cosplay 分类")
+            lines.append(
+                "三次元部分图片来自哔咔的 Cosplay 分类（可搜普通关键词，E-Hentai 标签语法除外）"
+            )
         lines += [
             "示例：/抽图 原神 2　/抽图 二次元 芙莉莲",
             "/抽图 帮助：显示本说明",

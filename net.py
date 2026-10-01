@@ -17,6 +17,9 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
 )
 
+# 这么多秒内下载的图片不清理：并发抽图时同一次抽卡的图片可能还没发出去
+FRESH_SECONDS = 600
+
 IMAGE_EXTS = {
     "image/jpeg": ".jpg",
     "image/png": ".png",
@@ -200,13 +203,22 @@ class ImageCache:
         return path
 
     def cleanup(self):
-        files = [p for p in self.dir.iterdir() if p.is_file()]
-        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        files = []
+        for path in self.dir.iterdir():
+            try:
+                stat = path.stat()
+            except OSError:
+                continue  # 并发清理时已被删除
+            if path.is_file():
+                files.append((stat.st_mtime, stat.st_size, path))
+        files.sort(key=lambda f: f[0], reverse=True)
+        fresh_after = time.time() - FRESH_SECONDS
         total = 0
-        for index, path in enumerate(files):
-            size = path.stat().st_size
+        for index, (mtime, size, path) in enumerate(files):
             total += size
-            # 最新的一张永远保留，保证刚下载的图片能被发送
-            if index > 0 and (index >= self.max_files or total > self.max_total):
+            # 刚下载的图片保留，保证同一次抽卡的图片都能发出去
+            if mtime < fresh_after and (
+                index >= self.max_files or total > self.max_total
+            ):
                 path.unlink(missing_ok=True)
                 total -= size

@@ -1,6 +1,7 @@
 """随机抽卡：风格 × 分级 → 画廊池，随机跳转、复核过滤后取随机一页的图片。"""
 
 import asyncio
+import functools
 import random
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -21,9 +22,14 @@ from .filters import TagBlacklist, check_gallery, heavy_hit, heavy_search_term
 from .imagecheck import is_colorful
 from .models import ANIME, EXPLICIT, RATINGS, REAL, STYLES, ImageItem, PicRequest
 from .net import HttpError, ImageCache
-from .picacomic import Picacomic
-from .sixteenk import SixteenK
+from .picacomic import SOURCE as PICA, Picacomic, supports_terms
+from .sixteenk import SOURCE as SIXTEENK, SixteenK
 from .tags import TagDB, TagIndex, search_term
+from .workers import fill
+
+EH = "ehentai"
+SOURCES = (EH, SIXTEENK, PICA)
+SOURCE_NAMES = {EH: "E-Hentai", SIXTEENK: "16K", PICA: "哔咔"}
 
 # 二次元擦边：无 H 画廊里带这些「擦边」属性之一的（实测纯画集有 78% 不带任何人物标签，
 # 多是设定集、线稿和教程）
@@ -175,6 +181,7 @@ class Drawer:
         sixteenk_ratio: int = 0,
         pica: Picacomic | None = None,
         pica_ratio: int = 0,
+        concurrency: int = 4,
     ):
         self.eh = eh
         self.pools = pools
@@ -195,6 +202,7 @@ class Drawer:
         self.sixteenk_ratio = min(max(sixteenk_ratio, 0), 100)
         self.pica = pica
         self.pica_ratio = min(max(pica_ratio, 0), 100)
+        self.concurrency = max(1, concurrency)
 
     def _params(self, pool: Pool, terms: list[str]) -> dict:
         return build_search(
@@ -206,82 +214,134 @@ class Drawer:
             min_pages=self.min_pages,
         )
 
-    def _source_counts(self, req: PicRequest, allow_unrated: bool) -> tuple[int, int]:
-        """这次抽卡里交给 (16K, 哔咔) 的张数，其余由 E-Hentai 抽。
+    def _source_counts(self, req: PicRequest, allow_unrated: bool) -> dict[str, int]:
+        """这次抽卡里每个图源（EH / SIXTEENK / PICA）分到的张数。
 
-        两个图源都不能搜索，带关键词或随机角色时不用。每张图按比例选图源；两个比例之和
-        超过 100 时按比例分配，不给 E-Hentai 留份额。16K 不能用时（未分级）它的份额归 E-Hentai，
-        不挪给哔咔。
+        每张图按配置的比例选图源。某个图源这次不能用时（不支持关键词、随机角色、未分级），
+        它的比例按其余可用图源的比例分给它们。两个比例之和超过 100 时 E-Hentai 的比例为 0；
+        可用图源的比例全为 0 时全部由 E-Hentai 抽。
         """
-        if req.style != REAL or req.tags or req.random_character:
-            return 0, 0
         sk = self.sixteenk_ratio if self.sixteenk is not None else 0
         pk = self.pica_ratio if self.pica is not None else 0
-        if not sk and not pk:
-            return 0, 0
-        weights = (sk, pk, max(0, 100 - sk - pk))
+        weights = {EH: max(0, 100 - sk - pk)}
+        if req.style == REAL and not req.random_character:
+            # 16K 不能搜索也没有分级；哔咔只能搜普通关键词
+            if sk and not req.tags and allow_unrated:
+                weights[SIXTEENK] = sk
+            if pk and supports_terms(req.tags):
+                weights[PICA] = pk
+        counts = dict.fromkeys(SOURCES, 0)
+        if sum(weights.values()) <= 0 or len(weights) == 1:
+            counts[EH] = req.count
+            return counts
         # 同一画廊模式整次抽卡只用一个图源，避免把画廊的连续几页和别处的散图混在一起
         picks = random.choices(
-            ("16k", "pica", "eh"), weights, k=1 if self.same_gallery else req.count
+            list(weights), list(weights.values()), k=1 if self.same_gallery else req.count
         )
         if self.same_gallery:
             picks *= req.count
-        sixteenk = picks.count("16k") if allow_unrated else 0
-        return sixteenk, picks.count("pica")
+        for name in picks:
+            counts[name] += 1
+        return counts
+
+    def _check_terms(self, raw: list[str], terms: list[str]) -> str | None:
+        """关键词闸门，对所有图源生效：原词和翻译后的标签都检查。"""
+        positive = [t for t in [*raw, *terms] if not t.startswith("-")]
+        term = self.blacklist.hit(positive)
+        if term:
+            return f"关键词命中黑名单 {term}"
+        heavy = next(
+            (h for t in positive if (h := heavy_search_term(t, self.heavy))), None
+        )
+        if heavy:
+            return f"关键词是已屏蔽的重口标签 {heavy}"
+        return None
 
     async def draw(
         self, req: PicRequest, is_private: bool, allow_unrated: bool = False
     ) -> FetchResult:
         """allow_unrated：本次请求能否使用没有分级的图源（见 filters.unrated_allowed）。
 
-        16K、哔咔没抽够的张数由 E-Hentai 补上；各图源的图片打乱顺序发送
+        各图源同时抽取；16K、哔咔没抽够的张数在它们结束时马上由 E-Hentai 补上。各图源的图片打乱顺序发送
         （同一画廊模式不打乱，保证画廊的几页按页码顺序）。
         """
-        sixteenk, pica = self._source_counts(req, allow_unrated)
-        if not sixteenk and not pica:
-            return await self._draw_ehentai(req, is_private)
         result = FetchResult()
-        if sixteenk:
-            images, errors = await self.sixteenk.draw(sixteenk, req.rating)
+        index = await self.tags.get() if self.tags else None
+        terms = [index.translate(t) for t in req.tags] if index else list(req.tags)
+        reason = self._check_terms(req.tags, terms)
+        if reason:
+            result.errors.append(reason)
+            return result
+
+        counts = self._source_counts(req, allow_unrated)
+        ehentai = functools.partial(
+            self._draw_ehentai, is_private=is_private, terms=terms, index=index
+        )
+
+        async def run(name: str, job) -> tuple[list, list[str]]:
+            """抽一个图源；16K、哔咔没抽够时马上由 E-Hentai 补，不等其他图源。"""
+            try:
+                images, errors = await job
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(
+                    f"[random_pic] {SOURCE_NAMES[name]} 抽取出错: {e!r}", exc_info=e
+                )
+                images, errors = [], [f"{SOURCE_NAMES[name]} 出错：{e!r}"]
+            short = counts[name] - len(images)
+            if name != EH and short > 0:
+                more, more_errors = await ehentai(replace(req, count=short))
+                images, errors = images + more, errors + more_errors
+            return images, errors
+
+        jobs = []
+        if counts[SIXTEENK]:
+            jobs.append(
+                run(
+                    SIXTEENK,
+                    self.sixteenk.draw(counts[SIXTEENK], req.rating, self.concurrency),
+                )
+            )
+        if counts[PICA]:
+            jobs.append(
+                run(
+                    PICA,
+                    self.pica.draw(
+                        counts[PICA],
+                        req.rating,
+                        self.same_gallery,
+                        req.tags,
+                        self.concurrency,
+                    ),
+                )
+            )
+        if counts[EH]:
+            jobs.append(run(EH, ehentai(replace(req, count=counts[EH]))))
+        for images, errors in await asyncio.gather(*jobs):
             result.images.extend(images)
             result.errors.extend(errors)
-        if pica:
-            images, errors = await self.pica.draw(pica, req.rating, self.same_gallery)
-            result.images.extend(images)
-            result.errors.extend(errors)
-        need = req.count - len(result.images)
-        if need > 0:
-            rest = await self._draw_ehentai(replace(req, count=need), is_private)
-            result.images.extend(rest.images)
-            result.errors.extend(rest.errors)
         if not self.same_gallery:
             random.shuffle(result.images)
         return result
 
-    async def _draw_ehentai(self, req: PicRequest, is_private: bool) -> FetchResult:
+    async def _draw_ehentai(
+        self,
+        req: PicRequest,
+        is_private: bool,
+        terms: list[str],
+        index: TagIndex | None,
+    ) -> tuple[list[tuple[ImageItem, Path]], list[str]]:
         result = FetchResult()
         pool = self.pools[(req.style, req.rating)]
-        index = await self.tags.get() if self.tags else None
-        terms = [index.translate(t) for t in req.tags] if index else list(req.tags)
-        positive = [t for t in terms if not t.startswith("-")]
-        term = self.blacklist.hit(positive)
-        if term:
-            result.errors.append(f"关键词命中黑名单 {term}")
-            return result
-        heavy = next(
-            (h for t in positive if (h := heavy_search_term(t, self.heavy))), None
-        )
-        if heavy:
-            result.errors.append(f"关键词是已屏蔽的重口标签 {heavy}")
-            return result
         if req.random_character and (index is None or not index.characters):
             result.errors.append("标签库不可用，无法随机角色")
-            return result
+            return result.images, result.errors
         try:
             self._params(pool, terms)
         except ValueError as e:
             result.errors.append(f"画廊池配置错误：{e}")
-            return result
+            return result.images, result.errors
 
         seen: set[int] = set()
         discarded = 0
@@ -304,7 +364,7 @@ class Drawer:
                     result.errors.append("E-Hentai 请求失败")
         if discarded:
             result.errors.append(f"{discarded} 个画廊被过滤或下载失败")
-        return result
+        return result.images, result.errors
 
     async def _round(
         self,
@@ -317,38 +377,73 @@ class Drawer:
         seen: set[int],
         result: FetchResult,
     ) -> int:
-        """跳转若干次，每次跳转选中一个画廊。元数据一轮只查一次 API。
+        """并发跳转若干次，每次跳转选中一个画廊。元数据一轮只查一次 API。
 
         普通模式跳转 need 次、每个画廊取一张；同一画廊模式只跳一次、取 need 张。
+        E-Hentai 的页面请求仍受 request_interval 限速，并发省下的是等待网络和下载图片的时间。
         """
         jumps, per_gallery = (1, need) if self.same_gallery else (need, 1)
+        semaphore = asyncio.Semaphore(self.concurrency)
+
+        async def jump():
+            async with semaphore:
+                return await self._listing(req, pool, terms, index)
+
+        listings = await asyncio.gather(
+            *(jump() for _ in range(jumps)), return_exceptions=True
+        )
+        failures = [r for r in listings if isinstance(r, BaseException)]
+        for failure in failures:
+            if isinstance(failure, (BlockedError, asyncio.CancelledError)):
+                raise failure
+        if len(failures) == len(listings):
+            raise failures[0]
         groups = []
-        for _ in range(jumps):
-            listing = await self._listing(req, pool, terms, index)
+        per_jump = CANDIDATES_WITH_REQUIRE if pool.require else CANDIDATES_PER_JUMP
+        for listing in listings:
+            if isinstance(listing, BaseException):
+                continue
             candidates = [g for g in listing if g[0] not in seen]
             random.shuffle(candidates)
-            per_jump = CANDIDATES_WITH_REQUIRE if pool.require else CANDIDATES_PER_JUMP
-            groups.append(candidates[:per_jump])
+            group = candidates[:per_jump]
+            # 几次跳转可能落在同一页，同一个画廊只给一个分组
+            seen.update(gid for gid, _ in group)
+            groups.append(group)
         metas = await self.eh.gdata([g for group in groups for g in group])
 
-        discarded = 0
-        for group in groups:
+        async def take(group) -> tuple[list[tuple[ImageItem, Path]], int]:
+            """依次试分组里的画廊，取到图就停。返回 (图片, 丢弃的画廊数)。"""
+            discarded = 0
             for gid, _ in group:
-                if gid in seen:
-                    continue
-                seen.add(gid)
                 gallery = metas.get(gid)
                 reason = self._reject(gallery, req, is_private, pool)
                 if reason:
                     logger.info(f"[random_pic] 丢弃画廊 {gid}: {reason}")
                     discarded += 1
                     continue
-                items = await self._fetch_images(gallery, req, index, per_gallery)
-                if not items:
-                    discarded += 1
-                    continue
-                result.images.extend(items)
-                break
+                async with semaphore:
+                    items = await self._fetch_images(gallery, req, index, per_gallery)
+                if items:
+                    return items, discarded
+                discarded += 1
+            return [], discarded
+
+        taken = await asyncio.gather(
+            *(take(group) for group in groups), return_exceptions=True
+        )
+        discarded = 0
+        blocked = None
+        for outcome in taken:
+            if isinstance(outcome, BaseException):
+                if isinstance(outcome, asyncio.CancelledError):
+                    raise outcome
+                blocked = blocked or outcome
+                continue
+            result.images.extend(outcome[0])
+            discarded += outcome[1]
+        if blocked is not None:
+            # 已经取到的图片保留，IP 被封、额度用尽时停止抽卡
+            raise blocked
         return discarded
 
     async def _listing(
@@ -404,24 +499,29 @@ class Drawer:
     async def _fetch_images(
         self, gallery: Gallery, req: PicRequest, index: TagIndex | None, n: int
     ) -> list[tuple[ImageItem, Path]]:
-        """取 n 张图，按页码排序后返回，保证同一画廊的多张图按顺序发送。
+        """取 n 张图（多张时并发），按页码排序后返回，保证同一画廊的多张图按顺序发送。
 
         二次元只要彩图时，黑白页（线稿、黑白漫画）丢弃后换一页，最多多试 COLOR_RETRIES 页。
         """
         check_color = self.color_only and req.style == ANIME
         tries = n + (COLOR_RETRIES if check_color else 0)
-        items = []
-        for page_index in self._page_candidates(gallery, req, tries):
-            if len(items) >= n:
-                break
+        candidates = iter(self._page_candidates(gallery, req, tries))
+
+        async def attempt() -> tuple[ImageItem, Path] | None:
+            page_index = next(candidates, None)
+            if page_index is None:
+                return None
             item = await self._fetch_image(gallery, req, index, page_index)
             if item is None:
-                continue
+                return None
             if check_color and not await asyncio.to_thread(colorful, item[1]):
                 logger.info(f"[random_pic] 丢弃黑白页 {item[0].page_url}")
                 item[1].unlink(missing_ok=True)
-                continue
-            items.append(item)
+                return None
+            return item
+
+        items: list[tuple[ImageItem, Path]] = []
+        await fill(items, n, tries, self.concurrency, attempt)
         return sorted(items, key=lambda it: it[0].page)
 
     async def _fetch_image(

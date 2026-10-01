@@ -6,6 +6,7 @@ E-Hentai 的列表页只能用游标翻页（next=<gid> 返回 gid 更小的下�
 一种按时间近似均匀的抽样。
 """
 
+import asyncio
 import random
 import re
 import time
@@ -14,6 +15,7 @@ from html import unescape
 
 from .filters import SEARCH_EXCLUDES
 from .net import HttpClient, HttpError, RateLimiter
+from .workers import shared
 
 # f_cats 是「排除」位掩码：位为 1 表示不显示该分类
 CATEGORY_BITS = {
@@ -40,6 +42,8 @@ THUMBS_PER_PAGE = 20
 GDATA_BATCH = 25
 # 游标范围缓存的条目上限（随机角色模式会产生大量不同的搜索条件）
 RANGE_CACHE_SIZE = 4096
+# 画廊缩略图页的缓存条目数：同一画廊连抽多页时，每个缩略图页只取一次
+THUMB_CACHE_SIZE = 64
 
 
 class EHentaiError(Exception):
@@ -177,6 +181,10 @@ class EHentai:
         # 搜索参数 → (过期时间, 最旧 gid, 最新 gid, 单页结果)；
         # 结果只有一页时缓存这一页，没有结果时缓存空列表
         self._ranges: dict[tuple, tuple[float, int, int, list | None]] = {}
+        self._range_pending: dict[tuple, asyncio.Future] = {}
+        # (gid, 缩略图页) → 画廊页 HTML
+        self._thumbs: dict[tuple[int, int], str] = {}
+        self._thumb_pending: dict[tuple[int, int], asyncio.Future] = {}
 
     def gallery_url(self, gid: int, token: str) -> str:
         return f"{self.base}/g/{gid}/{token}/"
@@ -204,6 +212,12 @@ class EHentai:
         cached = self._ranges.get(key)
         if cached and cached[0] > time.monotonic():
             return cached[1:]
+        # 并发抽取时多个跳转同时遇到未缓存的条件，只查一次
+        return await shared(
+            self._range_pending, key, lambda: self._fetch_range(key, params)
+        )
+
+    async def _fetch_range(self, key: tuple, params: dict) -> tuple[int, int, list | None]:
         newest, has_next = await self.listing(params)
         if has_next and newest:
             oldest, _ = await self.listing({**params, "prev": "1"})
@@ -250,12 +264,26 @@ class EHentai:
                 out[gallery.gid] = gallery
         return out
 
+    async def _thumb_page(self, gallery: Gallery, page: int) -> str:
+        key = (gallery.gid, page)
+        html = self._thumbs.get(key)
+        if html is None:
+            url = self.gallery_url(gallery.gid, gallery.token)
+            html = await shared(
+                self._thumb_pending,
+                key,
+                lambda: self._get(url, {"p": str(page)} if page else None),
+            )
+            self._thumbs[key] = html
+            while len(self._thumbs) > THUMB_CACHE_SIZE:
+                self._thumbs.pop(next(iter(self._thumbs)))
+        return html
+
     async def page_url(self, gallery: Gallery, index: int) -> tuple[int, str]:
         """取画廊第 index 张（从 0 开始）的单页 URL，返回 (实际页码, URL)。"""
-        url = self.gallery_url(gallery.gid, gallery.token)
         number = index + 1
         page = index // self.thumbs_per_page
-        html = await self._get(url, {"p": str(page)} if page else None)
+        html = await self._thumb_page(gallery, page)
         links = parse_page_links(html, gallery.gid)
         if number not in links:
             # 每页缩略图数与预期不符（登录后可修改），按页面上的「Showing」校正后重取
@@ -265,7 +293,7 @@ class EHentai:
                 if per_page != self.thumbs_per_page:
                     self.thumbs_per_page = per_page
                     page = index // per_page
-                    html = await self._get(url, {"p": str(page)} if page else None)
+                    html = await self._thumb_page(gallery, page)
                     links = parse_page_links(html, gallery.gid)
         if not links:
             raise EHentaiError(f"画廊 {gallery.gid} 没有可用的图片页")

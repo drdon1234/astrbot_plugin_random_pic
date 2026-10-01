@@ -1,29 +1,56 @@
 """从被回复的消息中找出画廊：/pdf 用。
 
-被回复的消息拆成若干「单元」：普通消息是一个单元，合并转发的每个节点各是一个单元。
-每个单元先看文字里的画廊链接（带说明文字时），再按图片字节数查已发送登记表（纯图片时）。
+抽图发出的每张图前面都有一行标题行「序号-第几张/共几张-标题」。被回复的消息拆成若干「单元」，
+每张图一个单元：合并转发的每个节点、图文混合消息里的每个标题行各开始一个新单元。
+每个单元先看文字里的画廊链接（带说明文字时），再按图片字节数、标题行查已发送登记表。
 """
 
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from html import unescape
 
 from .registry import GalleryRef, SentRegistry
 
 GALLERY_URL_RE = re.compile(
     r"https?://(?:e-hentai|exhentai)\.org/g/(\d+)/([0-9a-f]{10})"
 )
+# 标题行：序号-第几张/共几张-标题
+HEADER_RE = re.compile(r"(?m)^(\d+)-(\d+/\d+-.*)$")
+LABEL_RE = re.compile(r"\d+/\d+-(.*)")
 # NapCat 配置为字符串（CQ 码）消息格式时
-CQ_FILE_SIZE_RE = re.compile(r"\[CQ:image,[^\]]*?file_size=(\d+)")
+CQ_RE = re.compile(r"\[CQ:(\w+)((?:,[^\]]*)?)\]")
 MAX_FORWARD_DEPTH = 3
+# 提示选序号时最多列出的条数
+MAX_LISTED = 30
 
 GetForward = Callable[[str], Awaitable[list]]
+
+
+def image_label(page: int, pages: int, title: str) -> str:
+    """标题行去掉序号的部分，也是登记表里按标题行查画廊的键。"""
+    title = " ".join(title.split()) or "无标题"
+    return f"{page}/{pages}-{title}"
+
+
+def header_line(idx: int, label: str) -> str:
+    return f"{idx}-{label}"
 
 
 @dataclass
 class Unit:
     text: str = ""
     sizes: list[int] = field(default_factory=list)
+    images: int = 0
+    idx: int | None = None  # 标题行里的序号
+    label: str = ""
+
+
+@dataclass
+class Candidate:
+    idx: int
+    label: str
+    ref: GalleryRef | None
 
 
 def gallery_from_text(text: str) -> GalleryRef | None:
@@ -31,66 +58,164 @@ def gallery_from_text(text: str) -> GalleryRef | None:
     return GalleryRef(int(match.group(1)), match.group(2)) if match else None
 
 
+def cq_segments(message: str) -> list[dict]:
+    """把 CQ 码字符串转换成消息段数组。"""
+    segments, pos = [], 0
+    for match in CQ_RE.finditer(message):
+        if match.start() > pos:
+            segments.append(
+                {"type": "text", "data": {"text": unescape(message[pos : match.start()])}}
+            )
+        data = {}
+        for pair in match.group(2).split(",")[1:]:
+            key, _, value = pair.partition("=")
+            data[key] = unescape(value)
+        segments.append({"type": match.group(1), "data": data})
+        pos = match.end()
+    if pos < len(message):
+        segments.append({"type": "text", "data": {"text": unescape(message[pos:])}})
+    return segments
+
+
+class _Splitter:
+    """按标题行和图片把一条消息切成单元。"""
+
+    def __init__(self):
+        self.units: list[Unit] = []
+        self.current: Unit | None = None
+
+    def _new(self) -> Unit:
+        self.current = Unit()
+        self.units.append(self.current)
+        return self.current
+
+    def _append(self, text: str):
+        if text:
+            (self.current or self._new()).text += text
+
+    def text(self, text: str):
+        pos = 0
+        for match in HEADER_RE.finditer(text):
+            self._append(text[pos : match.start()])
+            unit = self._new()
+            unit.idx, unit.label = int(match.group(1)), match.group(2).strip()
+            pos = match.start()
+        self._append(text[pos:])
+
+    def image(self, size: int | None):
+        # 没有标题行的旧消息：每张图开始一个新单元，图后面的文字是它的说明
+        unit = self.current
+        if unit is None or unit.images:
+            unit = self._new()
+        unit.images += 1
+        if size:
+            unit.sizes.append(size)
+
+    def nested(self, units: list[Unit]):
+        self.units.extend(units)
+        self.current = None
+
+
 async def message_units(
     message, get_forward: GetForward | None, depth: int = 0
 ) -> list[Unit]:
-    """把 OneBot 消息（消息段数组或 CQ 码字符串）拆成单元。"""
+    """把 OneBot 消息（消息段数组或 CQ 码字符串）拆成单元，每张图一个。"""
     if isinstance(message, str):
-        sizes = [int(s) for s in CQ_FILE_SIZE_RE.findall(message)]
-        return [Unit(message, sizes)]
-    own = Unit()
-    nested: list[Unit] = []
+        message = cq_segments(message)
+    splitter = _Splitter()
     for seg in message or []:
         kind, data = seg.get("type"), seg.get("data") or {}
         if kind == "text":
-            own.text += str(data.get("text", ""))
-        elif kind == "image" and str(data.get("file_size", "")).isdigit():
-            own.sizes.append(int(data["file_size"]))
+            splitter.text(str(data.get("text", "")))
+        elif kind == "image":
+            size = str(data.get("file_size", ""))
+            splitter.image(int(size) if size.isdigit() else None)
         elif kind == "forward" and depth < MAX_FORWARD_DEPTH:
             nodes = data.get("content")
             if not nodes and get_forward and data.get("id"):
                 nodes = await get_forward(str(data["id"]))
             for node in nodes or []:
                 body = node.get("message") or node.get("content") or []
-                nested.extend(await message_units(body, get_forward, depth + 1))
-    return ([own] if own.text or own.sizes else []) + nested
+                splitter.nested(await message_units(body, get_forward, depth + 1))
+    return [
+        u
+        for u in splitter.units
+        if u.images or u.idx is not None or gallery_from_text(u.text)
+    ]
 
 
-def resolve_units(units: list[Unit], registry: SentRegistry) -> list[GalleryRef | None]:
-    refs = []
-    for unit in units:
+def resolve_units(units: list[Unit], registry: SentRegistry) -> list[Candidate]:
+    candidates = []
+    for position, unit in enumerate(units, 1):
         ref = gallery_from_text(unit.text)
         if ref is None:
             ref = next(
                 (r for r in map(registry.by_size, unit.sizes) if r is not None), None
             )
-        refs.append(ref)
-    return refs
+        if ref is None and unit.label:
+            ref = registry.by_label(unit.label)
+        if ref is not None and not ref.title and unit.label:
+            match = LABEL_RE.fullmatch(unit.label)
+            ref = replace(ref, title=match.group(1) if match else "")
+        idx = unit.idx if unit.idx is not None else position
+        candidates.append(Candidate(idx, unit.label, ref))
+    return candidates
+
+
+def last_candidates(refs: list[GalleryRef]) -> list[Candidate]:
+    return [Candidate(i, ref.title, ref) for i, ref in enumerate(refs, 1)]
+
+
+def _listing(candidates: list[Candidate], intro: str) -> str:
+    lines = [intro]
+    for c in candidates[:MAX_LISTED]:
+        name = c.label or (c.ref.title if c.ref else "") or "（无标题）"
+        if c.ref is None:
+            name += "（未识别）"
+        elif not c.ref.gid:
+            name += "（16K / 哔咔，不支持）"
+        lines.append(f"{c.idx}. {name}")
+    if len(candidates) > MAX_LISTED:
+        lines.append(f"……共 {len(candidates)} 张")
+    return "\n".join(lines)
 
 
 def pick(
-    refs: list[GalleryRef | None], index: int | None
+    candidates: list[Candidate], index: int | None, strict: bool
 ) -> tuple[GalleryRef | None, str]:
     """从候选里选出一个画廊；选不出时返回提示文字。
 
-    16K 的图片登记为 gid 0：不加序号时忽略它们，只有全是 16K 图片时才返回（由调用方提示不支持）。
+    strict（回复的是合并转发或图文混合消息）时，多张图必须带序号，不带就列出来让用户选；
+    否则（本会话上一次抽卡）所有图都来自同一个画廊时可以不带序号。
+    16K、哔咔的图片登记为 gid 0，由调用方提示不支持。
     """
-    if index is not None:
-        if 1 <= index <= len(refs) and refs[index - 1]:
-            return refs[index - 1], ""
-        return None, f"序号 {index} 没有对应的画廊（共 {len(refs)} 项）。"
-    found = [r for r in refs if r and r.gid]
-    unique = {r.gid: r for r in found}
-    if not unique:
-        other = next((r for r in refs if r), None)
-        if other:
-            return other, ""
+    if not candidates:
         return None, "没有识别到画廊：请回复抽图发出的图片，或使用 /pdf <画廊链接>。"
+    if index is not None:
+        chosen = next((c for c in candidates if c.idx == index), None)
+        if chosen is None:
+            return None, _listing(
+                candidates, f"没有序号 {index}，共 {len(candidates)} 张图："
+            )
+        if chosen.ref is None:
+            return None, f"第 {index} 张图没有识别到画廊，请改用 /pdf <画廊链接>。"
+        return chosen.ref, ""
+    if len(candidates) == 1:
+        ref = candidates[0].ref
+        if ref is None:
+            return None, "没有识别到这张图的画廊，请改用 /pdf <画廊链接>。"
+        return ref, ""
+    example = next((c.idx for c in candidates if c.ref and c.ref.gid), candidates[0].idx)
+    intro = f"共 {len(candidates)} 张图，请在指令后加序号，例如 /pdf {example}："
+    if strict:
+        return None, _listing(candidates, f"引用的消息里{intro}")
+    found = [c.ref for c in candidates if c.ref and c.ref.gid]
+    unique = {r.gid for r in found}
     if len(unique) == 1:
         # 优先返回带标题的那条（来自登记表）
         return max(found, key=lambda r: bool(r.title)), ""
-    lines = ["包含多个画廊，请加序号，例如 /pdf 2："]
-    for i, ref in enumerate(refs, 1):
-        if ref and ref.gid:
-            lines.append(f"{i}. {ref.title or ref.gid}")
-    return None, "\n".join(lines)
+    if not unique:
+        other = next((c.ref for c in candidates if c.ref), None)
+        if other:
+            return other, ""
+    return None, _listing(candidates, f"上一次抽卡{intro}")

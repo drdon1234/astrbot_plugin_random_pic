@@ -7,6 +7,8 @@
 
 随机抽取就是沿着 rand 走：每次请求帖子时记下响应里的 rand 作为下一次的帖子，
 所以连抽时每个帖子只需要一次请求。实测 rand 覆盖全部帖子，没有指向已删除的帖子。
+
+站点没有关键词搜索（首页的搜索框跳转到外部的番号站），带关键词时不用这个图源。
 """
 
 import asyncio
@@ -21,6 +23,7 @@ from astrbot.api import logger
 from .filters import TagBlacklist
 from .models import REAL, ImageItem
 from .net import HttpClient, HttpError, ImageCache
+from .workers import fill
 
 API_URL = "https://16k.club/api.php"
 POST_URL = "https://16k.club/post/{}/"
@@ -57,6 +60,8 @@ class SixteenK:
         self.proxy = proxy
         self.blacklist = blacklist
         self._next: int | None = None
+        # rand 链只能一个接一个地走，并发抽取时只并发下载
+        self._chain = asyncio.Lock()
 
     async def _api(self, **params) -> dict:
         for attempt in range(REQUEST_RETRIES + 1):
@@ -84,6 +89,10 @@ class SixteenK:
 
     async def random_post(self) -> tuple[int, dict]:
         """返回 (帖子 id, 帖子数据)。帖子可能已删除（数据为空）。"""
+        async with self._chain:
+            return await self._walk()
+
+    async def _walk(self) -> tuple[int, dict]:
         if self._next is None:
             seed = await self._seed()
             data = await self._api(type="post", id=seed)
@@ -97,9 +106,9 @@ class SixteenK:
         return pid, data
 
     async def draw(
-        self, n: int, rating: str
+        self, n: int, rating: str, concurrency: int = 1
     ) -> tuple[list[tuple[ImageItem, Path]], list[str]]:
-        """抽 n 张图，每个帖子随机取一张。
+        """抽 n 张图，每个帖子随机取一张；帖子 API 依次请求，图片并发下载。
 
         帖子大多只有一张图，所以不跟随「同一画廊」模式，总是从多个帖子凑够张数。
         rating 只是记在结果上的请求分级，16K 本身没有分级。
@@ -108,30 +117,31 @@ class SixteenK:
         errors: list[str] = []
         seen: set[int] = set()
         skipped = 0
-        for _ in range(POSTS_PER_IMAGE * n):
-            if len(images) >= n:
-                break
-            try:
-                pid, data = await self.random_post()
-            except SixteenKError as e:
-                logger.warning(f"[random_pic] {e}")
-                errors.append(str(e))
-                break
+
+        async def attempt() -> tuple[ImageItem, Path] | None:
+            nonlocal skipped
+            pid, data = await self.random_post()
             if pid in seen:
-                continue
+                return None
             seen.add(pid)
             reason = self._reject(data)
             if reason:
                 logger.info(f"[random_pic] 丢弃 16K 帖子 {pid}: {reason}")
                 skipped += 1
-                continue
+                return None
             urls = post_images(data)
-            index = random.randrange(len(urls))
-            item = await self._download(pid, data, urls, index, rating)
+            item = await self._download(
+                pid, data, urls, random.randrange(len(urls)), rating
+            )
             if item is None:
                 skipped += 1
-            else:
-                images.append(item)
+            return item
+
+        try:
+            await fill(images, n, POSTS_PER_IMAGE * n, concurrency, attempt)
+        except SixteenKError as e:
+            logger.warning(f"[random_pic] {e}")
+            errors.append(str(e))
         if skipped:
             errors.append(f"{skipped} 个 16K 帖子被过滤或下载失败")
         return images, errors
