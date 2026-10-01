@@ -26,6 +26,17 @@ BASE_BLACKLIST = (
     "ショタ",
 )
 
+# 每次搜索都排除的标签（ExHentai 上能搜到这类画廊），本地黑名单是第二道保险
+SEARCH_EXCLUDES = (
+    "-female:lolicon$",
+    "-male:shotacon$",
+    '-female:"low lolicon$"',
+    '-male:"low shotacon$"',
+    '-female:"oppai loli$"',
+    "-female:toddlercon$",
+    "-male:toddlercon$",
+)
+
 # 三次元分类，其余分类一律视为二次元
 REAL_CATEGORIES = frozenset({"Cosplay", "Asian Porn"})
 # 「无性内容」的分类与标签：命中即为擦边

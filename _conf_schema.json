@@ -16,11 +16,59 @@
     "type": "bool",
     "default": true
   },
+  "default_style": {
+    "description": "默认风格",
+    "type": "string",
+    "default": "三次元",
+    "options": [
+      "二次元",
+      "三次元"
+    ],
+    "hint": "/抽图、/擦边、/色图 没写风格时使用。"
+  },
+  "default_rating": {
+    "description": "默认分级",
+    "type": "string",
+    "default": "擦边",
+    "options": [
+      "擦边",
+      "R18"
+    ],
+    "hint": "/抽图、/二次元、/三次元 没写分级时使用。默认设为 R18 时，群聊里不带分级的指令都会被拒绝。"
+  },
+  "send_caption": {
+    "description": "附带文字说明",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后只发图片，不附标题、作者、作品、角色和画廊链接。"
+  },
+  "send_mode": {
+    "description": "多张图的发送方式",
+    "type": "string",
+    "default": "合并转发",
+    "options": [
+      "合并转发",
+      "逐条发送"
+    ],
+    "hint": "合并转发：一次抽到多张图时打包成一条合并转发消息，每张图一个节点（仅 QQ / OneBot，其他平台自动逐条发送）。"
+  },
+  "same_gallery": {
+    "description": "多张图从同一画廊抽取",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后一次抽卡只选一个画廊，从中随机抽多页并按页码顺序发送；画廊页数不足时少发几张。"
+  },
+  "default_count": {
+    "description": "单次抽卡张数",
+    "type": "int",
+    "default": 1,
+    "hint": "指令里没写数量时发几张，不超过「单次最多图片数」。"
+  },
   "max_count": {
     "description": "单次最多图片数",
     "type": "int",
     "default": 5,
-    "hint": "每张图大约需要 4 次 E-Hentai 请求（/随机角色 更多），数量越多越慢。"
+    "hint": "每张图大约需要 4 次请求（/随机角色 更多），数量越多越慢。"
   },
   "max_retries": {
     "description": "最大抽卡轮数",
@@ -40,14 +88,51 @@
     "hint": "内置基线黑名单（loli、lolicon、shota、shotacon、toddlercon、child、toddler、萝莉、正太、幼女、幼児、ロリ、ショタ 等）始终生效且不可删除，这里只能追加。匹配 E-Hentai 标签，忽略大小写，例如 guro。"
   },
   "ehentai": {
-    "description": "E-Hentai",
+    "description": "E-Hentai / ExHentai",
     "type": "object",
     "items": {
+      "site": {
+        "description": "站点",
+        "type": "string",
+        "default": "e-hentai",
+        "options": [
+          "e-hentai",
+          "exhentai"
+        ],
+        "hint": "exhentai（里站）需要填写下面的 ipb_member_id、ipb_pass_hash、igneous，缺任意一个都会自动改用 e-hentai。"
+      },
       "proxy": {
         "description": "HTTP 代理",
         "type": "string",
         "default": "",
-        "hint": "例如 http://127.0.0.1:7890。留空则直连。E-Hentai 页面、API 和图片都走这个代理。"
+        "hint": "例如 http://127.0.0.1:7890。留空则直连。页面、API 和图片都走这个代理。"
+      },
+      "ipb_member_id": {
+        "description": "Cookie：ipb_member_id",
+        "type": "string",
+        "default": "",
+        "secret": true,
+        "hint": "登录 e-hentai.org 后从浏览器 cookie 中复制。表站也可以填，登录后图片额度更高。"
+      },
+      "ipb_pass_hash": {
+        "description": "Cookie：ipb_pass_hash",
+        "type": "string",
+        "default": "",
+        "secret": true
+      },
+      "igneous": {
+        "description": "Cookie：igneous",
+        "type": "string",
+        "default": "",
+        "secret": true,
+        "hint": "访问 exhentai.org 后获得，仅里站需要。"
+      },
+      "sk": {
+        "description": "Cookie：sk（可选）",
+        "type": "string",
+        "default": "",
+        "secret": true,
+        "hint": "站点设置的密钥，一般不用填。"
       },
       "min_rating": {
         "description": "画廊最低评分",
@@ -180,6 +265,41 @@
         "description": "更新间隔（天）",
         "type": "int",
         "default": 7
+      }
+    }
+  },
+  "pdf": {
+    "description": "整本 PDF（/pdf）",
+    "type": "object",
+    "hint": "回复抽到的图片（或合并转发消息）发送 /pdf，下载整个画廊并打包成 PDF 发送。分级闸门与抽图相同：R18 画廊只能在私聊打包。",
+    "items": {
+      "enabled": {
+        "description": "启用 /pdf",
+        "type": "bool",
+        "default": true
+      },
+      "max_pages": {
+        "description": "最多页数",
+        "type": "int",
+        "default": 200,
+        "hint": "超过此页数的画廊不予打包。每页都要单独下载，页数越多越慢，也越消耗 E-Hentai 图片额度。"
+      },
+      "output_dir": {
+        "description": "PDF 存放目录",
+        "type": "string",
+        "default": "",
+        "hint": "留空为插件数据目录下的 pdf 文件夹。QQ 机器人（NapCat 等）与 AstrBot 分属不同容器时，必须填两边路径相同的共享目录，例如 /app/sharedFolder/random_pic_pdf，否则文件发不出去。"
+      },
+      "keep_files": {
+        "description": "保留的 PDF 数量",
+        "type": "int",
+        "default": 10,
+        "hint": "同一画廊再次请求时直接复用；超出数量时删除最旧的。只清理本插件生成的文件（文件名为画廊号）。"
+      },
+      "concurrency": {
+        "description": "图片并发下载数",
+        "type": "int",
+        "default": 3
       }
     }
   },

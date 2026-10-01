@@ -30,6 +30,8 @@ class ImageItem:
     image_url: str
     rating: str
     style: str
+    gid: int = 0
+    token: str = ""
     title: str = ""
     author: str = ""
     category: str = ""

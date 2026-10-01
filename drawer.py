@@ -120,6 +120,7 @@ class Drawer:
         min_pages: int,
         cover_only: bool,
         explicit_skip: float = 0.0,
+        same_gallery: bool = False,
         tags: TagDB | None = None,
     ):
         self.eh = eh
@@ -132,6 +133,7 @@ class Drawer:
         self.min_pages = min_pages
         self.cover_only = cover_only
         self.explicit_skip = min(max(explicit_skip, 0.0), 0.9)
+        self.same_gallery = same_gallery
         self.tags = tags
 
     def _params(self, pool: Pool, terms: list[str]) -> dict:
@@ -166,7 +168,8 @@ class Drawer:
         discarded = 0
         for _ in range(self.max_rounds):
             need = req.count - len(result.images)
-            if need <= 0:
+            # 同一画廊模式只取一个画廊；画廊页数不足时就少发几张
+            if need <= 0 or (self.same_gallery and result.images):
                 break
             try:
                 discarded += await self._round(
@@ -176,9 +179,10 @@ class Drawer:
                 result.errors.append(str(e))
                 break
             except (aiohttp.ClientError, asyncio.TimeoutError, HttpError) as e:
+                # 网络抖动（连接被重置、超时）多半是偶发的，下一轮重试
                 logger.warning(f"[random_pic] E-Hentai 请求失败: {e!r}")
-                result.errors.append("E-Hentai 请求失败")
-                break
+                if "E-Hentai 请求失败" not in result.errors:
+                    result.errors.append("E-Hentai 请求失败")
         if discarded:
             result.errors.append(f"{discarded} 个画廊被过滤或下载失败")
         return result
@@ -194,9 +198,13 @@ class Drawer:
         seen: set[int],
         result: FetchResult,
     ) -> int:
-        """跳转 need 次，每次跳转产出至多一张图。元数据一轮只查一次 API。"""
+        """跳转若干次，每次跳转选中一个画廊。元数据一轮只查一次 API。
+
+        普通模式跳转 need 次、每个画廊取一张；同一画廊模式只跳一次、取 need 张。
+        """
+        jumps, per_gallery = (1, need) if self.same_gallery else (need, 1)
         groups = []
-        for _ in range(need):
+        for _ in range(jumps):
             listing = await self._listing(req, pool, terms, index)
             candidates = [g for g in listing if g[0] not in seen]
             random.shuffle(candidates)
@@ -215,11 +223,11 @@ class Drawer:
                     logger.info(f"[random_pic] 丢弃画廊 {gid}: {reason}")
                     discarded += 1
                     continue
-                item = await self._fetch_image(gallery, req, index)
-                if item is None:
+                items = await self._fetch_images(gallery, req, index, per_gallery)
+                if not items:
                     discarded += 1
                     continue
-                result.images.append(item)
+                result.images.extend(items)
                 break
         return discarded
 
@@ -256,28 +264,38 @@ class Drawer:
             self.blacklist,
         )
 
-    def _page_index(self, gallery: Gallery, req: PicRequest) -> int:
+    def _page_indices(self, gallery: Gallery, req: PicRequest, n: int) -> list[int]:
+        """选 n 个不重复的页（从 0 开始），按页码升序。"""
         if self.cover_only:
-            return 0
+            return list(range(min(n, gallery.filecount)))
         # R18 画廊通常从穿着完整开始，跳过前一段
         start = (
             int(gallery.filecount * self.explicit_skip) if req.rating == EXPLICIT else 0
         )
-        return random.randrange(start, gallery.filecount)
+        population = range(start, gallery.filecount)
+        return sorted(random.sample(population, min(n, len(population))))
+
+    async def _fetch_images(
+        self, gallery: Gallery, req: PicRequest, index: TagIndex | None, n: int
+    ) -> list[tuple[ImageItem, Path]]:
+        """按页码顺序逐张取图，保证同一画廊的多张图按顺序发送。"""
+        items = []
+        for page_index in self._page_indices(gallery, req, n):
+            item = await self._fetch_image(gallery, req, index, page_index)
+            if item:
+                items.append(item)
+        return items
 
     async def _fetch_image(
-        self, gallery: Gallery, req: PicRequest, index: TagIndex | None
+        self,
+        gallery: Gallery,
+        req: PicRequest,
+        index: TagIndex | None,
+        page_index: int,
     ) -> tuple[ImageItem, Path] | None:
         try:
-            page, page_url = await self.eh.page_url(
-                gallery, self._page_index(gallery, req)
-            )
-            image, reload = await self.eh.image_url(page_url)
-            path = await self.cache.download(image, self.eh.proxy)
-            if path is None and reload:
-                # 当前图片服务器不可用，换一台服务器再试一次
-                image, _ = await self.eh.image_url(page_url, reload)
-                path = await self.cache.download(image, self.eh.proxy)
+            page, page_url = await self.eh.page_url(gallery, page_index)
+            image, path = await self._download_page(page_url)
         except BlockedError:
             raise
         except (
@@ -294,6 +312,8 @@ class Drawer:
             image_url=image,
             style=req.style,
             rating=req.rating,
+            gid=gallery.gid,
+            token=gallery.token,
             title=gallery.title,
             author=gallery_author(gallery),
             category=gallery.category,
@@ -307,3 +327,50 @@ class Drawer:
             characters=gallery_names(gallery, "character", index),
         )
         return item, path
+
+    async def _download_page(
+        self, page_url: str, dest: Path | None = None
+    ) -> tuple[str, Path | None]:
+        """解析单页并下载图片，返回 (图片 URL, 本地路径)。"""
+        image, reload = await self.eh.image_url(page_url)
+        path = await self.cache.download(image, self.eh.proxy, dest)
+        if path is None and reload:
+            # 当前图片服务器不可用，换一台服务器再试一次
+            image, _ = await self.eh.image_url(page_url, reload)
+            path = await self.cache.download(image, self.eh.proxy, dest)
+        return image, path
+
+    async def download_gallery(
+        self, gallery: Gallery, dest: Path, concurrency: int
+    ) -> tuple[list[Path], int]:
+        """下载整个画廊到 dest，返回 (按页码排序的图片路径, 失败页数)。"""
+        dest.mkdir(parents=True, exist_ok=True)
+        pages = await self.eh.all_page_urls(gallery)
+        semaphore = asyncio.Semaphore(max(1, concurrency))
+
+        async def fetch(number: int, url: str) -> Path | None:
+            async with semaphore:
+                try:
+                    _, path = await self._download_page(url, dest / f"{number:05d}")
+                    return path
+                except BlockedError:
+                    raise
+                except (
+                    EHentaiError,
+                    HttpError,
+                    aiohttp.ClientError,
+                    asyncio.TimeoutError,
+                ) as e:
+                    logger.warning(
+                        f"[random_pic] 画廊 {gallery.gid} 第 {number} 页失败: {e}"
+                    )
+                    return None
+
+        results = await asyncio.gather(
+            *(fetch(n, u) for n, u in pages), return_exceptions=True
+        )
+        for r in results:
+            if isinstance(r, BaseException):
+                raise r
+        paths = [p for p in results if p]
+        return paths, gallery.filecount - len(paths)

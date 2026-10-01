@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass
 from html import unescape
 
+from .filters import SEARCH_EXCLUDES
 from .net import HttpClient, HttpError, RateLimiter
 
 # f_cats 是「排除」位掩码：位为 1 表示不显示该分类
@@ -32,8 +33,9 @@ ALL_CATEGORIES = 1023
 GALLERY_RE = re.compile(r"https?://[^/\"'\s]+/g/(\d+)/([0-9a-f]{10})/")
 IMAGE_RE = re.compile(r'<img id="img" src="([^"]+)"')
 RELOAD_RE = re.compile(r"nl\('([^']+)'\)")
+SHOWING_RE = re.compile(r"Showing ([\d,]+) - ([\d,]+) of ([\d,]+) images")
 BANNED_MARK = "Your IP address has been temporarily banned"
-# 匿名访问时画廊页每页 20 张缩略图
+# 匿名访问时画廊页每页 20 张缩略图；登录后可在站点设置里修改，运行时会自动校正
 THUMBS_PER_PAGE = 20
 GDATA_BATCH = 25
 # 游标范围缓存的条目上限（随机角色模式会产生大量不同的搜索条件）
@@ -89,7 +91,7 @@ def build_search(
     min_pages: int,
 ) -> dict[str, str]:
     """组合搜索参数。返回的 dict 同时作为游标范围缓存的键。"""
-    words = [search.strip(), *user_tags]
+    words = [search.strip(), *user_tags, *SEARCH_EXCLUDES]
     if exclude_ai:
         words.append('-other:"ai generated$"')
     params = {"f_cats": str(category_mask(categories))}
@@ -122,6 +124,15 @@ def parse_page_links(html: str, gid: int) -> dict[int, str]:
     """解析画廊页，返回 {页码: 单页 URL}。"""
     pattern = re.compile(rf"https?://[^/\"'\s]+/s/[0-9a-f]{{10}}/{gid}-(\d+)")
     return {int(m.group(1)): m.group(0) for m in pattern.finditer(html)}
+
+
+def parse_showing(html: str) -> tuple[int, int, int] | None:
+    """解析画廊页的「Showing 起 - 止 of 总数 images」。"""
+    match = SHOWING_RE.search(html)
+    if not match:
+        return None
+    start, end, total = (int(g.replace(",", "")) for g in match.groups())
+    return start, end, total
 
 
 def parse_image(html: str) -> tuple[str | None, str | None]:
@@ -162,6 +173,7 @@ class EHentai:
         self.proxy = proxy
         self.limiter = RateLimiter(interval)
         self.range_ttl = range_ttl
+        self.thumbs_per_page = THUMBS_PER_PAGE
         # 搜索参数 → (过期时间, 最旧 gid, 最新 gid, 单页结果)；
         # 结果只有一页时缓存这一页，没有结果时缓存空列表
         self._ranges: dict[tuple, tuple[float, int, int, list | None]] = {}
@@ -179,6 +191,9 @@ class EHentai:
             raise
         if BANNED_MARK in html:
             raise BlockedError("IP 被 E-Hentai 临时封禁，请稍后再试")
+        if not html.strip():
+            # ExHentai 的 cookie 无效时返回状态 200 的空页面
+            raise BlockedError("站点返回空页面，ExHentai cookie 无效或已过期")
         return html
 
     async def listing(self, params: dict) -> tuple[list[tuple[int, str]], bool]:
@@ -237,17 +252,44 @@ class EHentai:
 
     async def page_url(self, gallery: Gallery, index: int) -> tuple[int, str]:
         """取画廊第 index 张（从 0 开始）的单页 URL，返回 (实际页码, URL)。"""
-        page = index // THUMBS_PER_PAGE
-        params = {"p": str(page)} if page else None
-        html = await self._get(self.gallery_url(gallery.gid, gallery.token), params)
+        url = self.gallery_url(gallery.gid, gallery.token)
+        number = index + 1
+        page = index // self.thumbs_per_page
+        html = await self._get(url, {"p": str(page)} if page else None)
         links = parse_page_links(html, gallery.gid)
+        if number not in links:
+            # 每页缩略图数与预期不符（登录后可修改），按页面上的「Showing」校正后重取
+            showing = parse_showing(html)
+            if showing and showing[1] < showing[2]:
+                per_page = showing[1] - showing[0] + 1
+                if per_page != self.thumbs_per_page:
+                    self.thumbs_per_page = per_page
+                    page = index // per_page
+                    html = await self._get(url, {"p": str(page)} if page else None)
+                    links = parse_page_links(html, gallery.gid)
         if not links:
             raise EHentaiError(f"画廊 {gallery.gid} 没有可用的图片页")
-        number = index + 1
         if number not in links:
-            # 缩略图分页与预期不符（例如登录后改了每页数量），退而在当前页随机挑一张
             number = random.choice(list(links))
         return number, links[number]
+
+    async def all_page_urls(self, gallery: Gallery) -> list[tuple[int, str]]:
+        """按页码顺序返回画廊全部单页 URL。"""
+        url = self.gallery_url(gallery.gid, gallery.token)
+        links: dict[int, str] = {}
+        page = 0
+        while len(links) < gallery.filecount:
+            html = await self._get(url, {"p": str(page)} if page else None)
+            found = parse_page_links(html, gallery.gid)
+            new = {k: v for k, v in found.items() if k not in links}
+            if not new:
+                break
+            links.update(new)
+            page += 1
+        return sorted(links.items())
+
+    async def gallery(self, gid: int, token: str) -> Gallery | None:
+        return (await self.gdata([(gid, token)])).get(gid)
 
     async def image_url(self, page_url: str, reload: str | None = None):
         """解析单页上的图片地址，返回 (图片 URL, nl 参数)。"""

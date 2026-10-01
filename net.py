@@ -4,9 +4,11 @@ import asyncio
 import time
 import urllib.request
 import uuid
+from http.cookies import SimpleCookie
 from pathlib import Path
 
 import aiohttp
+from yarl import URL
 
 from astrbot.api import logger
 
@@ -27,10 +29,24 @@ class HttpError(Exception):
     pass
 
 
-class HttpClient:
-    """共用一个 aiohttp 会话，所有请求都带超时。"""
+def scoped_cookies(domain: str, values: dict[str, str]) -> SimpleCookie:
+    cookies = SimpleCookie()
+    for name, value in values.items():
+        cookies[name] = value
+        cookies[name]["domain"] = domain
+        cookies[name]["path"] = "/"
+    return cookies
 
-    def __init__(self, timeout: float, cookies: dict | None = None):
+
+class HttpClient:
+    """共用一个 aiohttp 会话，所有请求都带超时。
+
+    cookies 为 {域名: {名称: 值}}，只发给该域名及其子域名，不会发给图片服务器等第三方。
+    """
+
+    def __init__(
+        self, timeout: float, cookies: dict[str, dict[str, str]] | None = None
+    ):
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self.cookies = cookies or {}
         self._session: aiohttp.ClientSession | None = None
@@ -38,10 +54,15 @@ class HttpClient:
     @property
     def session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
+            jar = aiohttp.CookieJar()
+            for domain, values in self.cookies.items():
+                jar.update_cookies(
+                    scoped_cookies(domain, values), URL(f"https://{domain}/")
+                )
             self._session = aiohttp.ClientSession(
                 timeout=self.timeout,
                 headers={"User-Agent": USER_AGENT},
-                cookies=self.cookies,
+                cookie_jar=jar,
             )
         return self._session
 
@@ -116,8 +137,13 @@ class ImageCache:
         self.max_total = int(max_total_mb * 1024 * 1024)
         self.max_image = int(max_image_mb * 1024 * 1024)
 
-    async def download(self, url: str, proxy: str | None) -> Path | None:
-        """下载单张图片，返回本地文件路径；失败返回 None。"""
+    async def download(
+        self, url: str, proxy: str | None, dest: Path | None = None
+    ) -> Path | None:
+        """下载单张图片，返回本地文件路径；失败返回 None。
+
+        dest 为不含扩展名的目标路径（例如整本下载时的「页码」），此时不进缓存、不触发清理。
+        """
         try:
             try:
                 fetched = await self._fetch(url, proxy)
@@ -129,11 +155,12 @@ class ImageCache:
             if fetched is None:
                 logger.info(f"[random_pic] 图片过大，已跳过: {url}")
                 return None
-            path = self._save(*fetched)
+            path = self._save(*fetched, dest)
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError, HttpError) as e:
             logger.warning(f"[random_pic] 下载失败 {url}: {e!r}")
             return None
-        self.cleanup()
+        if dest is None:
+            self.cleanup()
         return path
 
     async def _fetch(self, url: str, proxy: str | None) -> tuple[bytes, str] | None:
@@ -161,11 +188,14 @@ class ImageCache:
             ctype = resp.headers.get_content_type().lower()
         return None if len(data) > self.max_image else (data, ctype)
 
-    def _save(self, data: bytes, ctype: str) -> Path:
+    def _save(self, data: bytes, ctype: str, dest: Path | None = None) -> Path:
         ext = sniff_ext(data[:16]) or IMAGE_EXTS.get(ctype)
         if not ext:
             raise HttpError(f"不是图片（{ctype}）")
-        path = self.dir / f"{uuid.uuid4().hex}{ext}"
+        if dest is None:
+            path = self.dir / f"{uuid.uuid4().hex}{ext}"
+        else:
+            path = dest.with_name(dest.name + ext)
         path.write_bytes(data)
         return path
 
