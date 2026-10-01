@@ -39,6 +39,13 @@ WORK_URLS = (
         "xiuren",
         re.compile(r"https?://(?:www\.)?xiuren\.biz/([\w%-]+)/?(?![\w%/-])", re.ASCII),
     ),
+    # 禁漫的域名经常更换，认域名里带 18comic、jm 的
+    (
+        "jmcomic",
+        re.compile(
+            r"https?://[\w.-]*(?:18comic|jm)[\w.-]*/album/(\d+)(?![\w%-])", re.ASCII
+        ),
+    ),
 )
 # 图集标题行：「【序号】标题」换行「第 x/y 张 · 来源」
 HEADER_RE = re.compile(r"(?m)^【(\d+)】(.*)\n第 \d+/\d+ 张 · (.*)$")

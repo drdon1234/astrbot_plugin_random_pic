@@ -65,14 +65,17 @@ class Send:
 class Push:
     enabled: bool
     interval_minutes: int
-    targets: list[str]
-    command: str
+    groups: list[str]
+    users: list[str]
+    content: str
+    album_format: str
 
     def __post_init__(self):
         self.interval_minutes = min(max(self.interval_minutes, 1), 24 * 60)
-        self.command = (
-            self.command.strip() or SCHEMA["push"]["items"]["command"]["default"]
-        )
+        items = SCHEMA["push"]["items"]
+        for key in ("content", "album_format"):
+            if getattr(self, key) not in items[key]["options"]:
+                setattr(self, key, items[key]["default"])
 
 
 @dataclass
@@ -104,11 +107,12 @@ class Sources:
     pica: int
     cosplaytele: int
     xiuren: int
+    jmcomic: int
 
     @property
     def weights(self) -> dict[str, int]:
         """各图源的权重：手动配置时用配置值，否则均分。"""
-        names = ("ehentai", "pica", "cosplaytele", "xiuren")
+        names = ("ehentai", "pica", "cosplaytele", "xiuren", "jmcomic")
         if not self.custom_weights:
             return dict.fromkeys(names, 1)
         return {name: max(0, getattr(self, name)) for name in names}
@@ -168,6 +172,21 @@ class Pica:
 
 
 @dataclass
+class JMComicConf:
+    domain: str
+    min_likes: int
+    exclude_tags: list[str]
+
+    def __post_init__(self):
+        # 允许粘贴带 https:// 或路径的地址
+        domain = self.domain.strip().removeprefix("https://").removeprefix("http://")
+        self.domain = (
+            domain.split("/", 1)[0] or SCHEMA["jmcomic"]["items"]["domain"]["default"]
+        )
+        self.min_likes = max(0, self.min_likes)
+
+
+@dataclass
 class TagDBConf:
     enabled: bool
     url: str
@@ -210,6 +229,7 @@ class Settings:
     ehentai: EHentaiConf
     pools: dict
     pica: Pica
+    jmcomic: JMComicConf
     tag_db: TagDBConf
     pdf: Pdf
 

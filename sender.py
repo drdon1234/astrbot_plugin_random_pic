@@ -15,6 +15,8 @@ SEPARATE = "逐条发送"
 ONEBOT = "aiocqhttp"
 # 图文混合时每条消息最多放这么多张图，太多时 QQ 可能发送失败
 MIXED_PER_MESSAGE = 10
+# 一条合并转发最多这么多个节点（QQ 的上限）
+FORWARD_MAX_NODES = 100
 
 # 一条消息：(消息段, 其中的图集序号)
 Message = tuple[list, list[int]]
@@ -41,17 +43,47 @@ class Composer:
         """
         content = []
         for i, (page, path) in enumerate(pictures):
-            if self.header:
-                text = (
-                    header_text(idx, album.title, page, album.total, album.source)
-                    if i == 0
-                    else page_text(page, album.total)
-                )
-                content.append(Comp.Plain(text + "\n"))
-            content.append(Comp.Image.fromFileSystem(str(path)))
-        if last and self.caption and album.details:
-            content.append(Comp.Plain("\n" + "\n".join(album.details)))
+            content += self.picture_content(idx, album, page, path, i == 0)
+        if last:
+            content += self.caption_content(album)
         return content
+
+    def picture_content(
+        self, idx: int, album: Album, page: int, path: Path, full_header: bool
+    ) -> list:
+        """一张图的消息段：标题行（full_header 时是完整标题，否则只有「第 x/y 张」）和图片。"""
+        content = []
+        if self.header:
+            text = (
+                header_text(idx, album.title, page, album.total, album.source)
+                if full_header
+                else page_text(page, album.total)
+            )
+            content.append(Comp.Plain(text + "\n"))
+        content.append(Comp.Image.fromFileSystem(str(path)))
+        return content
+
+    def caption_content(self, album: Album) -> list:
+        if self.caption and album.details:
+            return [Comp.Plain("\n" + "\n".join(album.details))]
+        return []
+
+    def forward_album(self, album: Album, uin: str) -> list[Message]:
+        """整个图集用合并转发发送：每张图一个节点，超过 FORWARD_MAX_NODES 张时拆成几条。
+
+        每条的第一张图带完整标题，说明文字跟在整个图集最后一张图后面。图集序号固定为 1。
+        """
+        pictures = album.pictures
+        messages = []
+        for start in range(0, len(pictures), FORWARD_MAX_NODES):
+            nodes = []
+            for i, (page, path) in enumerate(pictures[start : start + FORWARD_MAX_NODES]):
+                content = self.picture_content(1, album, page, path, i == 0)
+                if start + i == len(pictures) - 1:
+                    content += self.caption_content(album)
+                nodes.append(Comp.Node(content=content, uin=uin, name="抽图"))
+            messages.append(([Comp.Nodes(nodes)], [1]))
+        return messages
 
     def compose(self, albums: list[Album], mode: str, uin: str) -> list[Message]:
         numbered = list(enumerate(albums, 1))

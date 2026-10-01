@@ -123,13 +123,13 @@
   "push": {
     "description": "定时推送",
     "type": "object",
-    "hint": "按固定间隔把一次抽图的结果主动发到下面的会话，每个会话单独抽一次。推送不受群白名单、冷却和每日上限限制，但仍受分级闸门约束（例如开启内容分级时 R18 只能推送到私聊）；被拒绝或抽图失败时只记日志，不发消息。",
+    "hint": "按固定间隔通过 QQ（aiocqhttp / NapCat）主动推送到下面的群和用户，每个群、每个用户单独抽一次。推送不受群白名单、冷却和每日上限限制，但仍受分级闸门约束（例如开启内容分级时 R18 只能推送给私聊用户）；被拒绝或抽图失败时只记日志，不发消息。",
     "items": {
       "enabled": {
         "description": "启用定时推送",
         "type": "bool",
         "default": true,
-        "hint": "推送会话为空时不推送。"
+        "hint": "推送群和推送用户都为空时不推送。"
       },
       "interval_minutes": {
         "description": "推送间隔（分钟）",
@@ -137,17 +137,32 @@
         "default": 60,
         "hint": "从每天 0 点起每隔这么多分钟推送一次：60 为每个整点，30 为每个整点和半点，1440 为每天 0 点。间隔不能整除一天时次日 0 点重新计算。1~1440。"
       },
-      "targets": {
-        "description": "推送会话",
+      "groups": {
+        "description": "推送群",
         "type": "list",
         "default": [],
-        "hint": "会话 ID，在目标群聊或私聊里发送 /sid 获取，例如 aiocqhttp:GroupMessage:123456。"
+        "hint": "QQ 群号，每项一个，例如 123456789。机器人需要在群里。"
       },
-      "command": {
+      "users": {
+        "description": "推送用户",
+        "type": "list",
+        "default": [],
+        "hint": "QQ 号，每项一个，按私聊推送。通常要求对方是机器人的好友。"
+      },
+      "content": {
         "description": "推送内容",
         "type": "string",
-        "default": "抽图",
-        "hint": "按这条抽图指令抽取，写法与聊天里相同（不带 /），例如「抽图」「二次元 3」「抽图 三次元 原神 2x3」。可用 抽图、随机角色、二次元、三次元、擦边、色图；开头不是这些指令词时当作 /抽图 的参数。"
+        "options": ["跟随默认配置", "随机完整图集"],
+        "default": "跟随默认配置",
+        "hint": "跟随默认配置：等同于发送不带参数的 /抽图，按「指令」里的默认风格、分级、图集数和每集张数抽取，按「发送」里的方式发送。随机完整图集：按默认风格和分级随机抽一个图集，推送整个作品（画廊、帖子、本子）的全部图片。"
+      },
+      "album_format": {
+        "description": "完整图集发送方式",
+        "type": "string",
+        "options": ["合并转发", "PDF"],
+        "default": "合并转发",
+        "condition": {"content": "随机完整图集"},
+        "hint": "合并转发：每张图一个节点，一条合并转发最多 100 个节点，超过 100 张时拆成多条依次发送。PDF：按「整本 PDF」的设置打包（分卷页数、压缩、输出目录），以文件发送。"
       }
     }
   },
@@ -228,7 +243,7 @@
   "sources": {
     "description": "三次元图源比例",
     "type": "object",
-    "hint": "每个三次元图集从这次能用的图源里选一个（二次元只用 Danbooru）。哔咔需要填写账号，不支持 E-Hentai 标签语法（: $ \"）的关键词和 /随机角色；CosplayTele、XiuRen 不支持 /随机角色，XiuRen 只有擦边。E-Hentai 以外的图源没抽够的图集由 E-Hentai 补上。",
+    "hint": "每个三次元图集从这次能用的图源里选一个（二次元只用 Danbooru）。哔咔需要填写账号，哔咔和禁漫天堂不支持 E-Hentai 标签语法（: $ \"）的关键词；E-Hentai 以外的图源都不支持 /随机角色，XiuRen 只有擦边，禁漫天堂只有 R18。E-Hentai 以外的图源没抽够的图集由 E-Hentai 补上。",
     "items": {
       "custom_weights": {
         "description": "手动配置比例",
@@ -262,6 +277,13 @@
         "default": 33,
         "condition": {"custom_weights": true},
         "hint": "xiuren.biz：约 1 万套秀人、尤蜜等工作室的棚拍写真，只用于擦边。关键词原样搜索（标题多为中文模特名）。设为 0 即不用。"
+      },
+      "jmcomic": {
+        "description": "禁漫天堂权重",
+        "type": "int",
+        "default": 33,
+        "condition": {"custom_weights": true},
+        "hint": "禁漫天堂（18comic）网页版的 Cosplay 分类，约 8000 本，只用于 R18（关闭内容分级时不限）。域名、点赞数下限在「禁漫天堂」里设置。设为 0 即不用。"
       }
     }
   },
@@ -446,6 +468,31 @@
         "type": "string",
         "default": "",
         "secret": true
+      }
+    }
+  },
+  "jmcomic": {
+    "description": "禁漫天堂",
+    "type": "object",
+    "hint": "抽「其他類 › 角色扮演」分类，图片自动还原切割。网页有 Cloudflare 校验，用 curl_cffi 模拟浏览器请求，被拦时自动换浏览器指纹重试；国内通常要在「网络与缓存」里填代理。",
+    "items": {
+      "domain": {
+        "description": "域名",
+        "type": "string",
+        "default": "18comic.vip",
+        "hint": "禁漫的网页域名经常更换（18comic.vip、18comic.org 等），填当前能打开的域名，不带 https://。"
+      },
+      "min_likes": {
+        "description": "最少点赞数",
+        "type": "int",
+        "default": 500,
+        "hint": "点赞数低于这个值的本子不抽。分类末尾约两成是早年的日本素人摄影，点赞多在 100 以下、画质差；500 能滤掉其中绝大多数，其他本子只损失约一成。"
+      },
+      "exclude_tags": {
+        "description": "排除的标签",
+        "type": "list",
+        "default": ["3D", "動圖", "重口", "AI", "AI繪圖", "AI生成"],
+        "hint": "带这些标签的本子不抽（忽略大小写，整个标签匹配）。默认排除 3D 渲染、动图、重口和 AI 作品。"
       }
     }
   },

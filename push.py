@@ -25,31 +25,38 @@ def next_fire(after: datetime, interval: int) -> datetime:
 
 @dataclass(frozen=True)
 class Target:
-    """一个推送目标会话。"""
+    """一个推送目标：QQ 群或 QQ 用户。"""
 
-    umo: str
-    platform_id: str
     is_group: bool
     # 群号或 QQ 号
     chat_id: str
 
+    def umo(self, platform_id: str) -> str:
+        """该目标在平台 platform_id 上的会话 ID。"""
+        return f"{platform_id}:{GROUP if self.is_group else FRIEND}:{self.chat_id}"
 
-def parse_target(umo: str) -> Target | None:
-    """解析会话 ID（/sid 显示的「平台:消息类型:会话」），不是群聊或私聊时返回 None。"""
-    parts = umo.strip().split(":", 2)
-    if len(parts) != 3 or parts[1] not in (GROUP, FRIEND) or not parts[2]:
-        return None
-    platform_id, kind, session = parts
-    is_group = kind == GROUP
-    # 开启会话隔离时群聊会话是「用户_群号」
-    chat_id = session.split("_")[-1] if is_group else session
-    return Target(umo.strip(), platform_id, is_group, chat_id)
+    def __str__(self) -> str:
+        return f"{'群' if self.is_group else 'QQ'} {self.chat_id}"
+
+
+def parse_targets(
+    groups: list[str], users: list[str]
+) -> tuple[list[Target], list[str]]:
+    """群号、QQ 号列表 → 推送目标（去重，保持顺序），以及不是纯数字的无效项。"""
+    targets, invalid = [], []
+    for is_group, ids in ((True, groups), (False, users)):
+        for chat_id in dict.fromkeys(ids):
+            if chat_id.isdigit():
+                targets.append(Target(is_group, chat_id))
+            else:
+                invalid.append(chat_id)
+    return targets, invalid
 
 
 class PushScheduler:
-    """后台循环：等到下一个触发时刻执行 job，job 耗时超过间隔时跳过错过的时刻。"""
+    """后台循环：等到下一个触发时刻执行 job(触发时刻)，job 耗时超过间隔时跳过错过的时刻。"""
 
-    def __init__(self, interval: int, job: Callable[[], Awaitable[None]]):
+    def __init__(self, interval: int, job: Callable[[datetime], Awaitable[None]]):
         self.interval = interval
         self.job = job
         self._task: asyncio.Task | None = None
@@ -69,7 +76,7 @@ class PushScheduler:
             await asyncio.sleep(max(0.0, (fire - datetime.now()).total_seconds()))
             last = fire
             try:
-                await self.job()
+                await self.job(fire)
             except asyncio.CancelledError:
                 raise
             except Exception:

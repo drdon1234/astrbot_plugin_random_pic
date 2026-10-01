@@ -2,7 +2,10 @@
 
 import asyncio
 import re
+import shutil
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 import aiohttp
@@ -30,14 +33,16 @@ from .models import (
     REAL,
     SENSITIVE,
     STYLE_NAMES,
+    Album,
     DrawOptions,
     DrawRequest,
     Work,
 )
 from .net import HttpClient, HttpError, ImageCache
 from .pdf import PdfError, PdfStore
-from .push import PushScheduler, Target, parse_target
+from .push import PushScheduler, Target, parse_targets
 from .sender import (
+    FORWARD_MAX_NODES,
     ONEBOT,
     Composer,
     SendFailed,
@@ -53,6 +58,12 @@ from .sources.pica import Picacomic
 from .sources.wordpress import SITES as WP_SITES
 from .sources.wordpress import WordPressSource
 from .tags import TagDB
+
+try:
+    from .sources.jm import JMComicSource
+except ImportError as e:  # 依赖 jmcomic 没装上时其他图源照常可用
+    JMComicSource = None
+    JM_IMPORT_ERROR = e
 
 PLUGIN_NAME = "astrbot_plugin_random_pic"
 STYLE_WORDS = {"二次元": ANIME, "三次元": REAL}
@@ -73,12 +84,18 @@ DRAW_COMMANDS = {
 }
 ALIASES = {"二次元", "三次元", "擦边", "色图"}
 PDF_COMMANDS = ("pdf", "全集")
+# 定时推送的推送内容、完整图集发送方式（与 _conf_schema.json 的选项一致）
+PUSH_FULL_ALBUM = "随机完整图集"
+PUSH_PDF = "PDF"
+# 随机完整图集：抽到的作品不能推送（被过滤、分级不符）时最多抽这么多次
+PUSH_ATTEMPTS = 3
 # 图源键 → 显示名，图源没有启用时提示用
 SOURCE_NAMES = {
     "ehentai": "E-Hentai",
     "pica": "哔咔",
     "cosplaytele": "CosplayTele",
     "xiuren": "XiuRen",
+    "jmcomic": "禁漫天堂",
     "danbooru": "Danbooru",
 }
 # 群聊不带唤醒前缀时也能触发的指令词（整条消息就是指令词，或后面跟空格和参数）
@@ -119,12 +136,9 @@ def parse_args(
     return req
 
 
-def parse_push_command(text: str) -> tuple[str, list[str]]:
-    """定时推送内容：开头是抽图指令词（可带 /）时按该指令，否则整条当作 /抽图 的参数。"""
-    tokens = text.split()
-    if tokens and tokens[0].lstrip("/") in DRAW_COMMANDS:
-        return tokens[0].lstrip("/"), tokens[1:]
-    return "抽图", tokens
+def push_title(when: str) -> str:
+    """推送说明的开头，写明是本插件在 when（时:分）的定时推送。"""
+    return f"【定时推送】这是抽图插件 {when} 的定时推送"
 
 
 class RandomPicPlugin(Star):
@@ -195,6 +209,24 @@ class RandomPicPlugin(Star):
             for site in WP_SITES
         ]
         weights += [(source, source_weights[source.key]) for source in wordpress]
+        self.jm = None
+        if JMComicSource is None:
+            logger.warning(
+                f"[random_pic] 禁漫天堂图源不可用，缺少依赖 jmcomic：{JM_IMPORT_ERROR!r}"
+            )
+        else:
+            self.jm = JMComicSource(
+                cache,
+                self.content,
+                opts,
+                domain=s.jmcomic.domain,
+                proxy=s.network.proxy,
+                timeout=s.network.timeout,
+                min_likes=s.jmcomic.min_likes,
+                exclude_tags=s.jmcomic.exclude_tags,
+            )
+            weights.append((self.jm, source_weights["jmcomic"]))
+            self.work_sources[self.jm.key] = self.jm
         self.tagdb = (
             TagDB(self.http, data_dir / "ehtag.json.gz", s.tag_db.url)
             if s.tag_db.enabled
@@ -218,9 +250,9 @@ class RandomPicPlugin(Star):
             s.pdf.keep_galleries,
             s.pdf.quality,
         )
+        self.push_tmp = data_dir / "push_tmp"
         self._preload: asyncio.Task | None = None
         self.push_targets = self._push_targets()
-        self.push_command = parse_push_command(s.push.command)
         self.push = (
             PushScheduler(s.push.interval_minutes, self._push_all)
             if s.push.enabled and self.push_targets
@@ -228,13 +260,12 @@ class RandomPicPlugin(Star):
         )
 
     def _push_targets(self) -> list[Target]:
-        targets = []
-        for umo in dict.fromkeys(self.settings.push.targets):
-            target = parse_target(umo)
-            if target is None:
-                logger.warning(f"[random_pic] 定时推送：会话 ID 无效，已忽略：{umo}")
-            else:
-                targets.append(target)
+        push = self.settings.push
+        targets, invalid = parse_targets(push.groups, push.users)
+        for item in invalid:
+            logger.warning(
+                f"[random_pic] 定时推送：不是有效的群号或 QQ 号，已忽略：{item}"
+            )
         return targets
 
     async def initialize(self):
@@ -250,6 +281,8 @@ class RandomPicPlugin(Star):
         if self.push:
             self.push.stop()
         await self.http.close()
+        if self.jm:
+            await self.jm.close()
 
     @filter.command("抽图")
     async def draw_pic(self, event: AstrMessageEvent):
@@ -404,6 +437,15 @@ class RandomPicPlugin(Star):
         self.history.record_draw(session, sent)
         mode = resolve_mode(self.settings.send.mode, platform, len(albums))
         messages = self.composer.compose(albums, mode, self_id)
+        return await self._send_all(messages, sent, send), len(messages)
+
+    async def _send_all(
+        self,
+        messages: list,
+        sent: list[SentAlbum],
+        send: Callable[[list], Awaitable[str | None]],
+    ) -> int:
+        """依次发送消息并按消息 ID 登记其中的图集，返回失败条数。"""
         failed = 0
         for i, (chain, idxs) in enumerate(messages):
             if i:
@@ -413,40 +455,46 @@ class RandomPicPlugin(Star):
             except SendFailed:
                 failed += 1
                 continue
-            if message_id:
+            if message_id and idxs:
                 self.history.record_message(message_id, [sent[idx - 1] for idx in idxs])
-        return failed, len(messages)
+        return failed
 
-    async def _push_all(self):
-        """定时推送：每个会话单独抽一次，依次推送。"""
+    async def _push_all(self, fire: datetime | None = None):
+        """定时推送：每个群、每个用户单独抽一次，依次推送。fire 是这次的触发时刻。"""
+        when = (fire or datetime.now()).strftime("%H:%M")
+        platform = self._onebot_platform()
+        if platform is None:
+            logger.warning("[random_pic] 定时推送：没有找到 QQ（aiocqhttp）平台适配器")
+            return
         for target in self.push_targets:
             try:
-                await self._push(target)
+                await self._push(platform, target, when)
             except Exception:
-                logger.exception(f"[random_pic] 定时推送到 {target.umo} 出错")
+                logger.exception(f"[random_pic] 定时推送到{target}出错")
 
-    async def _push(self, target: Target):
-        word, tokens = self.push_command
-        req = self._request(word, tokens)
+    def _onebot_platform(self):
+        """QQ（aiocqhttp）平台适配器，有多个时用第一个。"""
+        return next(
+            (
+                p
+                for p in self.context.platform_manager.platform_insts
+                if p.meta().name == ONEBOT
+            ),
+            None,
+        )
+
+    async def _push(self, platform, target: Target, when: str):
+        umo = target.umo(platform.meta().id)
         is_private = not target.is_group
+        full = self.settings.push.content == PUSH_FULL_ALBUM
+        req = self._request("抽图", [])
+        if full:
+            req.albums = req.per_album = 1
         denied = self.access.gate(req.rating, is_private)
         if denied:
-            logger.warning(f"[random_pic] 定时推送到 {target.umo} 被拒绝：{denied}")
+            logger.warning(f"[random_pic] 定时推送到{target}被拒绝：{denied}")
             return
-        platform = self.context.get_platform_inst(target.platform_id)
-        if platform is None:
-            logger.warning(f"[random_pic] 定时推送：找不到平台 {target.platform_id}")
-            return
-        result = await self.drawer.draw(req, is_private)
-        if not result.albums:
-            detail = "；".join(result.errors[:6]) or "未知原因"
-            logger.warning(
-                f"[random_pic] 定时推送到 {target.umo} 抽图失败 {req}: {detail}"
-            )
-            return
-
-        platform_name = platform.meta().name
-        bot = getattr(platform, "bot", None) if platform_name == ONEBOT else None
+        bot = getattr(platform, "bot", None)
         group_id = target.chat_id if target.is_group else ""
 
         async def send(chain: list) -> str | None:
@@ -457,19 +505,157 @@ class RandomPicPlugin(Star):
                 if delivered:
                     return message_id
             try:
-                await self.context.send_message(target.umo, MessageChain(chain))
+                await self.context.send_message(umo, MessageChain(chain))
             except Exception as e:
-                logger.warning(f"[random_pic] 定时推送到 {target.umo} 发送失败: {e!r}")
+                logger.warning(f"[random_pic] 定时推送到{target}发送失败: {e!r}")
                 raise SendFailed(str(e)) from e
             return None
 
-        failed, total = await self._deliver(
-            result.albums, target.umo, platform_name, await self._self_id(bot), send
-        )
+        if full:
+            failed, total = await self._push_work(target, umo, req, bot, send, when)
+        else:
+            result = await self.drawer.draw(req, is_private)
+            if not result.albums:
+                detail = "；".join(result.errors[:6]) or "未知原因"
+                logger.warning(
+                    f"[random_pic] 定时推送到{target}抽图失败 {req}: {detail}"
+                )
+                return
+            await self._announce(
+                send,
+                f"{push_title(when)}：{STYLE_NAMES[req.style]}·{RATING_NAMES[req.rating]}，"
+                f"{len(result.albums)} 个图集共 {result.images} 张。",
+            )
+            failed, total = await self._deliver(
+                result.albums, umo, ONEBOT, await self._self_id(bot), send
+            )
         if failed:
             logger.warning(
-                f"[random_pic] 定时推送到 {target.umo}：{failed}/{total} 条消息发送失败"
+                f"[random_pic] 定时推送到{target}：{failed}/{total} 条消息发送失败"
             )
+
+    async def _push_work(
+        self,
+        target: Target,
+        umo: str,
+        req: DrawRequest,
+        bot,
+        send: Callable[[list], Awaitable[str | None]],
+        when: str,
+    ) -> tuple[int, int]:
+        """随机完整图集：抽一个图集，先发作品信息，再推送作品的全部图片（合并转发或 PDF）。
+
+        返回 (失败条数, 总条数)。
+        """
+        picked = await self._pick_work(target, req)
+        if picked is None:
+            return 0, 0
+        album, source, work = picked
+        sent = [SentAlbum(1, clean_title(album.title), album.source, work.ref)]
+        self.history.record_draw(umo, sent)
+        await self._announce(send, self._work_notice(when, album, work))
+        if self.settings.push.album_format == PUSH_PDF:
+            files, missing = await self.pdf.get(
+                work, f"push:{umo}", source.download_work
+            )
+            if missing:
+                logger.warning(
+                    f"[random_pic] 定时推送《{work.title}》有 {missing} 页下载失败"
+                )
+            messages = [
+                ([Comp.File(name=name, file=str(path.resolve()))], [])
+                for path, name in files
+            ]
+            return await self._send_all(messages, sent, send), len(messages)
+
+        tmp = self.push_tmp / work.ref.key
+        shutil.rmtree(tmp, ignore_errors=True)
+        try:
+            paths, missing = await source.download_work(work, tmp)
+            if not paths:
+                logger.warning(
+                    f"[random_pic] 定时推送《{work.title}》没有下载到任何图片"
+                )
+                return 0, 0
+            if missing:
+                logger.warning(
+                    f"[random_pic] 定时推送《{work.title}》有 {missing} 页下载失败"
+                )
+            # 下载的图片以页码命名
+            whole = replace(
+                album,
+                total=work.pages,
+                pictures=[(int(path.stem), path) for path in paths],
+            )
+            messages = self.composer.forward_album(whole, await self._self_id(bot))
+            return await self._send_all(messages, sent, send), len(messages)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    async def _announce(
+        self, send: Callable[[list], Awaitable[str | None]], text: str
+    ) -> None:
+        """推送前单独发一条说明；发不出去时照常推送（发送失败已记日志）。"""
+        try:
+            await send([Comp.Plain(text)])
+        except SendFailed:
+            return
+        await asyncio.sleep(SEND_INTERVAL)
+
+    def _work_notice(self, when: str, album: Album, work: Work) -> str:
+        """随机完整图集的推送说明：作品的全部信息和发送方式。"""
+        if self.settings.push.album_format == PUSH_PDF:
+            parts = self.pdf.parts(work.pages)
+            how = "PDF" + (f"，分 {parts} 个文件" if parts > 1 else "")
+        else:
+            parts = -(-work.pages // FORWARD_MAX_NODES)
+            how = "合并转发" + (f"，分 {parts} 条" if parts > 1 else "")
+        lines = [
+            f"{push_title(when)}：随机完整图集",
+            f"标题：{work.title or album.title or '无标题'}",
+            f"来源：{album.source} · {RATING_NAMES[work.rating or EXPLICIT]}",
+            f"页数：{work.pages} 页",
+            f"发送：{how}",
+            *album.details,
+        ]
+        return "\n".join(lines)
+
+    async def _pick_work(self, target: Target, req: DrawRequest):
+        """抽一个图集并查询它所在的作品，返回 (图集, 图源, 作品)。
+
+        作品查不到或不能推送（被过滤、分级不符）时重抽，最多 PUSH_ATTEMPTS 次；都不行时返回 None。
+        """
+        is_private = not target.is_group
+        for _ in range(PUSH_ATTEMPTS):
+            result = await self.drawer.draw(req, is_private)
+            if not result.albums:
+                detail = "；".join(result.errors[:6]) or "未知原因"
+                logger.warning(
+                    f"[random_pic] 定时推送到{target}抽图失败 {req}: {detail}"
+                )
+                return None
+            album = result.albums[0]
+            ref = album.work
+            source = self.work_sources.get(ref.source) if ref else None
+            if source is None:
+                logger.warning(
+                    f"[random_pic] 定时推送：《{album.title}》无法获取完整作品，重抽"
+                )
+                continue
+            work = await source.work(ref)
+            denied = (
+                "作品不存在或已被删除"
+                if work is None
+                else self._pdf_gate(work, is_private)
+            )
+            if denied:
+                logger.warning(f"[random_pic] 定时推送：《{album.title}》{denied}，重抽")
+                continue
+            return album, source, work
+        logger.warning(
+            f"[random_pic] 定时推送到{target}：连续 {PUSH_ATTEMPTS} 次没有抽到可推送的完整图集"
+        )
+        return None
 
     async def _self_id(self, bot) -> str:
         """机器人自己的 QQ 号，用作合并转发节点的发送者；拿不到时用 0。"""
@@ -630,5 +816,9 @@ class RandomPicPlugin(Star):
             )
         if weights["xiuren"]:
             lines.append("三次元擦边部分图集来自 XiuRen 的工作室写真")
+        if self.jm and weights["jmcomic"]:
+            lines.append(
+                "三次元 R18 部分图集来自禁漫天堂的 Cosplay 分类（可搜普通关键词）"
+            )
         lines += ["示例：/抽图 原神 2　/抽图 二次元 芙莉莲", "/抽图 帮助：显示本说明"]
         return "\n".join(lines)

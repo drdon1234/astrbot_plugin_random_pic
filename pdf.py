@@ -87,7 +87,7 @@ FRESH_SECONDS = 600
 # 本插件存储的 PDF：作品键[-incomplete][-第几卷of共几卷].pdf，作品键是 E-Hentai 画廊号或
 # 「图源_id」（id 是数字，哔咔是十六进制）。只认这些名字，不会误删共享目录里的其他 PDF
 OWN_PDF = re.compile(
-    r"(\d+|(?:pica|cosplaytele|xiuren|danbooru)_[0-9a-f]+)"
+    r"(\d+|(?:pica|cosplaytele|xiuren|danbooru|jmcomic)_[0-9a-f]+)"
     r"(?:-incomplete)?(?:-\d+of\d+)?\.pdf"
 )
 UNSAFE_FILENAME = re.compile(r'[\\/:*?"<>|\r\n\t]+')

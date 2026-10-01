@@ -1,4 +1,4 @@
-"""图源：E-Hentai（二次元、三次元），哔咔、CosplayTele 与 XiuRen（仅三次元）。
+"""图源：Danbooru（二次元），E-Hentai、哔咔、CosplayTele、XiuRen 与禁漫天堂（三次元）。
 
 每个图源提供：
 - name：来源的显示名，出现在标题行和错误说明里；
