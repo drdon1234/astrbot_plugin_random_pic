@@ -212,7 +212,7 @@ class Drawer:
         ):
             return 0
         if self.same_gallery:
-            # 同一画廊模式整次抽卡只用一个图源
+            # 同一画廊模式整次抽卡只用一个图源，避免把画廊的连续几页和 16K 的散图混在一起
             return req.count if random.randrange(100) < self.sixteenk_ratio else 0
         return sum(random.randrange(100) < self.sixteenk_ratio for _ in range(req.count))
 
@@ -221,17 +221,16 @@ class Drawer:
     ) -> FetchResult:
         """allow_unrated：本次请求能否使用没有分级的图源（见 filters.unrated_allowed）。
 
-        16K 没抽够的张数由 E-Hentai 补上；两个图源的图片打乱顺序发送。
+        16K 没抽够的张数由 E-Hentai 补上；两个图源的图片打乱顺序发送
+        （同一画廊模式不打乱，保证画廊的几页按页码顺序）。
         """
         share = self._sixteenk_share(req, allow_unrated)
         if not share:
             return await self._draw_ehentai(req, is_private)
         result = FetchResult()
-        result.images, result.errors = await self.sixteenk.draw(
-            share, req.rating, self.same_gallery
-        )
+        result.images, result.errors = await self.sixteenk.draw(share, req.rating)
         need = req.count - len(result.images)
-        if need > 0 and not (self.same_gallery and result.images):
+        if need > 0:
             rest = await self._draw_ehentai(replace(req, count=need), is_private)
             result.images.extend(rest.images)
             result.errors.extend(rest.errors)

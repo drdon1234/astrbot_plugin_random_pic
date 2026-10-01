@@ -97,18 +97,19 @@ class SixteenK:
         return pid, data
 
     async def draw(
-        self, n: int, rating: str, same_post: bool
+        self, n: int, rating: str
     ) -> tuple[list[tuple[ImageItem, Path]], list[str]]:
-        """抽 n 张图。same_post 时只取一个帖子，按顺序取至多 n 张。
+        """抽 n 张图，每个帖子随机取一张。
 
+        帖子大多只有一张图，所以不跟随「同一画廊」模式，总是从多个帖子凑够张数。
         rating 只是记在结果上的请求分级，16K 本身没有分级。
         """
         images: list[tuple[ImageItem, Path]] = []
         errors: list[str] = []
         seen: set[int] = set()
         skipped = 0
-        for _ in range(POSTS_PER_IMAGE * (1 if same_post else n)):
-            if len(images) >= n or (same_post and images):
+        for _ in range(POSTS_PER_IMAGE * n):
+            if len(images) >= n:
                 break
             try:
                 pid, data = await self.random_post()
@@ -125,14 +126,12 @@ class SixteenK:
                 skipped += 1
                 continue
             urls = post_images(data)
-            if same_post:
-                picks = list(enumerate(urls))[:n]
-            else:
-                picks = [random.choice(list(enumerate(urls)))]
-            items = await self._download(pid, data, urls, picks, rating)
-            if not items:
+            index = random.randrange(len(urls))
+            item = await self._download(pid, data, urls, index, rating)
+            if item is None:
                 skipped += 1
-            images.extend(items)
+            else:
+                images.append(item)
         if skipped:
             errors.append(f"{skipped} 个 16K 帖子被过滤或下载失败")
         return images, errors
@@ -153,24 +152,21 @@ class SixteenK:
         pid: int,
         data: dict,
         urls: list[str],
-        picks: list[tuple[int, str]],
+        index: int,
         rating: str,
-    ) -> list[tuple[ImageItem, Path]]:
-        items = []
-        for index, url in picks:
-            path = await self.cache.download(url, self.proxy)
-            if path is None:
-                continue
-            item = ImageItem(
-                image_url=url,
-                rating=rating,
-                style=REAL,
-                title=str(data.get("title") or "").strip(),
-                category="16K",
-                gallery_url=POST_URL.format(pid),
-                page=index + 1,
-                pages=len(urls),
-                source=SOURCE,
-            )
-            items.append((item, path))
-        return items
+    ) -> tuple[ImageItem, Path] | None:
+        path = await self.cache.download(urls[index], self.proxy)
+        if path is None:
+            return None
+        item = ImageItem(
+            image_url=urls[index],
+            rating=rating,
+            style=REAL,
+            title=str(data.get("title") or "").strip(),
+            category="16K",
+            gallery_url=POST_URL.format(pid),
+            page=index + 1,
+            pages=len(urls),
+            source=SOURCE,
+        )
+        return item, path
