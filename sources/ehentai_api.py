@@ -13,9 +13,28 @@ import time
 from dataclasses import dataclass
 from html import unescape
 
-from .filters import SEARCH_EXCLUDES
-from .net import HttpClient, HttpError, RateLimiter
-from .workers import shared
+from astrbot.api import logger
+
+from ..filters import SEARCH_EXCLUDES
+from ..net import HttpClient, HttpError, RateLimiter
+from ..util import shared
+
+# 站点 → (首页, API, cookie 域名)
+SITES = {
+    "e-hentai": (
+        "https://e-hentai.org",
+        "https://api.e-hentai.org/api.php",
+        "e-hentai.org",
+    ),
+    "exhentai": (
+        "https://exhentai.org",
+        "https://exhentai.org/api.php",
+        "exhentai.org",
+    ),
+}
+SITE_NAMES = {"e-hentai": "E-Hentai", "exhentai": "ExHentai"}
+EH_NAMES = frozenset(SITE_NAMES.values())
+EX_COOKIES = ("ipb_member_id", "ipb_pass_hash", "igneous")
 
 # f_cats 是「排除」位掩码：位为 1 表示不显示该分类
 CATEGORY_BITS = {
@@ -70,6 +89,19 @@ class Gallery:
     stars: float
     tags: list[str]
     expunged: bool
+
+
+def resolve_site(site: str, cookies: dict[str, str]) -> str:
+    """ExHentai 缺少必需的 cookie 时退回表站。"""
+    if site != "exhentai":
+        return "e-hentai"
+    missing = [k for k in EX_COOKIES if k not in cookies]
+    if missing:
+        logger.warning(
+            f"[random_pic] 使用 ExHentai 需要 cookie {', '.join(missing)}，已改用 E-Hentai"
+        )
+        return "e-hentai"
+    return site
 
 
 def category_mask(categories: list[str]) -> int:
@@ -163,18 +195,11 @@ def parse_gallery(meta: dict) -> Gallery:
 
 class EHentai:
     def __init__(
-        self,
-        http: HttpClient,
-        base_url: str,
-        api_url: str,
-        proxy: str | None,
-        interval: float,
-        range_ttl: float = 3600,
+        self, http: HttpClient, site: str, interval: float, range_ttl: float = 3600
     ):
         self.http = http
-        self.base = base_url.rstrip("/")
-        self.api_url = api_url
-        self.proxy = proxy
+        self.name = SITE_NAMES[site]
+        self.base, self.api_url, _ = SITES[site]
         self.limiter = RateLimiter(interval)
         self.range_ttl = range_ttl
         self.thumbs_per_page = THUMBS_PER_PAGE
@@ -192,7 +217,7 @@ class EHentai:
     async def _get(self, url: str, params=None) -> str:
         await self.limiter.wait()
         try:
-            html = await self.http.get_text(url, params=params, proxy=self.proxy)
+            html = await self.http.get_text(url, params=params)
         except HttpError as e:
             if BANNED_MARK in str(e):
                 raise BlockedError("IP 被 E-Hentai 临时封禁，请稍后再试") from e
@@ -217,7 +242,9 @@ class EHentai:
             self._range_pending, key, lambda: self._fetch_range(key, params)
         )
 
-    async def _fetch_range(self, key: tuple, params: dict) -> tuple[int, int, list | None]:
+    async def _fetch_range(
+        self, key: tuple, params: dict
+    ) -> tuple[int, int, list | None]:
         newest, has_next = await self.listing(params)
         if has_next and newest:
             oldest, _ = await self.listing({**params, "prev": "1"})
@@ -255,7 +282,6 @@ class EHentai:
                     "gidlist": [[gid, token] for gid, token in batch],
                     "namespace": 1,
                 },
-                proxy=self.proxy,
             )
             for meta in data.get("gmetadata", []):
                 if "error" in meta:

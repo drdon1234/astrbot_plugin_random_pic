@@ -13,23 +13,21 @@
 
 import asyncio
 import json
-import random
-from pathlib import Path
 
 import aiohttp
 
 from astrbot.api import logger
 
-from .filters import TagBlacklist
-from .models import REAL, ImageItem
-from .net import HttpClient, HttpError, ImageCache
-from .workers import fill
+from ..filters import ContentFilter
+from ..models import REAL, Album, DrawOptions
+from ..net import HttpClient, HttpError, ImageCache
+from ..util import fill, pick_pages
+from . import DrawContext
 
 API_URL = "https://16k.club/api.php"
 POST_URL = "https://16k.club/post/{}/"
-SOURCE = "16k"
 # 每个图集最多看这么多个帖子（全是视频、命中黑名单或下载失败时换下一个）
-POSTS_PER_IMAGE = 4
+POSTS_PER_ALBUM = 4
 # 单次请求失败（偶发 TLS 握手中断）时的重试次数
 REQUEST_RETRIES = 2
 
@@ -48,26 +46,38 @@ def post_images(data: dict) -> list[str]:
 
 
 class SixteenK:
+    name = "16K"
+
     def __init__(
         self,
         http: HttpClient,
         cache: ImageCache,
-        proxy: str | None,
-        blacklist: TagBlacklist,
+        content: ContentFilter,
+        opts: DrawOptions,
     ):
         self.http = http
         self.cache = cache
-        self.proxy = proxy
-        self.blacklist = blacklist
+        self.content = content
+        self.opts = opts
         self._next: int | None = None
         # rand 链只能一个接一个地走，并发抽取时只并发下载
         self._chain = asyncio.Lock()
+
+    def accepts(self, ctx: DrawContext) -> bool:
+        """不能搜索、没有分级：只用于不带关键词的三次元，且这次请求允许未分级的图源。"""
+        req = ctx.req
+        return (
+            req.style == REAL
+            and not req.keywords
+            and not req.random_character
+            and ctx.allow_unrated
+        )
 
     async def _api(self, **params) -> dict:
         for attempt in range(REQUEST_RETRIES + 1):
             try:
                 text = await self.http.get_text(
-                    API_URL, params={k: str(v) for k, v in params.items()}, proxy=self.proxy
+                    API_URL, params={k: str(v) for k, v in params.items()}
                 )
                 data = json.loads(text)
                 return data if isinstance(data, dict) else {}
@@ -90,36 +100,26 @@ class SixteenK:
     async def random_post(self) -> tuple[int, dict]:
         """返回 (帖子 id, 帖子数据)。帖子可能已删除（数据为空）。"""
         async with self._chain:
-            return await self._walk()
+            if self._next is None:
+                data = await self._api(type="post", id=await self._seed())
+                if not data.get("rand"):
+                    raise SixteenKError("16K 接口没有返回随机帖子")
+                self._next = int(data["rand"])
+            pid = self._next
+            data = await self._api(type="post", id=pid)
+            # 已删除的帖子没有 rand，下次重新从最新帖子出发
+            self._next = int(data["rand"]) if data.get("rand") else None
+            return pid, data
 
-    async def _walk(self) -> tuple[int, dict]:
-        if self._next is None:
-            seed = await self._seed()
-            data = await self._api(type="post", id=seed)
-            if not data.get("rand"):
-                raise SixteenKError("16K 接口没有返回随机帖子")
-            self._next = int(data["rand"])
-        pid = self._next
-        data = await self._api(type="post", id=pid)
-        # 已删除的帖子没有 rand，下次重新从最新帖子出发
-        self._next = int(data["rand"]) if data.get("rand") else None
-        return pid, data
-
-    async def draw(
-        self, n: int, per_album: int, rating: str, concurrency: int = 1
-    ) -> tuple[list[list[tuple[ImageItem, Path]]], list[str]]:
-        """抽 n 个帖子，每个帖子随机取至多 per_album 张（按页码排序）。
-
-        帖子 API 依次请求，图片并发下载。帖子大多只有一张图，图不够时少几张。
-        rating 只是记在结果上的请求分级，16K 本身没有分级。
-        """
-        albums: list[list[tuple[ImageItem, Path]]] = []
+    async def draw(self, ctx: DrawContext, n: int) -> tuple[list[Album], list[str]]:
+        """抽 n 个帖子，每个帖子取至多 per_album 张。帖子 API 依次请求，图片并发下载。"""
+        albums: list[Album] = []
         errors: list[str] = []
         seen: set[int] = set()
         skipped = 0
-        semaphore = asyncio.Semaphore(max(1, concurrency))
+        semaphore = asyncio.Semaphore(self.opts.concurrency)
 
-        async def attempt() -> list[tuple[ImageItem, Path]] | None:
+        async def attempt() -> Album | None:
             nonlocal skipped
             pid, data = await self.random_post()
             if pid in seen:
@@ -131,23 +131,30 @@ class SixteenK:
                 skipped += 1
                 return None
             urls = post_images(data)
-            indices = sorted(random.sample(range(len(urls)), min(per_album, len(urls))))
+            indices = pick_pages(
+                len(urls), ctx.req.per_album, from_start=self.opts.from_start
+            )
 
             async def download(index: int):
                 async with semaphore:
-                    return await self._download(pid, data, urls, index, rating)
+                    path = await self.cache.download(urls[index])
+                return (index + 1, path) if path else None
 
-            items = [
-                item
-                for item in await asyncio.gather(*(download(i) for i in indices))
-                if item is not None
-            ]
-            if not items:
+            pictures = [p for p in await asyncio.gather(*map(download, indices)) if p]
+            if not pictures:
                 skipped += 1
-            return items or None
+                return None
+            post_url = POST_URL.format(pid)
+            return Album(
+                source=self.name,
+                title=str(data.get("title") or "").strip(),
+                total=len(urls),
+                pictures=sorted(pictures),
+                details=[f"帖子：{post_url}"],
+            )
 
         try:
-            await fill(albums, n, POSTS_PER_IMAGE * n, concurrency, attempt)
+            await fill(albums, n, POSTS_PER_ALBUM * n, self.opts.concurrency, attempt)
         except SixteenKError as e:
             logger.warning(f"[random_pic] {e}")
             errors.append(str(e))
@@ -161,31 +168,6 @@ class SixteenK:
         if not post_images(data):
             return "只有视频"
         # 没有标签，只能用标题和简介过滤未成年内容
-        term = self.blacklist.hit([data.get("title") or "", data.get("content") or ""])
-        if term:
-            return f"标题命中黑名单 {term}"
-        return None
-
-    async def _download(
-        self,
-        pid: int,
-        data: dict,
-        urls: list[str],
-        index: int,
-        rating: str,
-    ) -> tuple[ImageItem, Path] | None:
-        path = await self.cache.download(urls[index], self.proxy)
-        if path is None:
-            return None
-        item = ImageItem(
-            image_url=urls[index],
-            rating=rating,
-            style=REAL,
-            title=str(data.get("title") or "").strip(),
-            category="16K",
-            gallery_url=POST_URL.format(pid),
-            page=index + 1,
-            pages=len(urls),
-            source=SOURCE,
+        return self.content.text_reason(
+            [data.get("title") or "", data.get("content") or ""]
         )
-        return item, path

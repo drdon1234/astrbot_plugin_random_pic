@@ -1,8 +1,20 @@
-"""并发工具：多个协程同时抽取直到凑够张数；同一请求只发一次。"""
+"""并发与抽样工具。"""
 
 import asyncio
+import random
 from collections.abc import Awaitable, Callable, Hashable
 from typing import Any
+
+
+def pick_pages(total: int, n: int, *, from_start: bool, skip: float = 0.0) -> list[int]:
+    """按尝试顺序返回至多 n 个不重复的页（从 0 开始）。
+
+    from_start 时从第一页起依次取；否则跳过开头 skip 比例的页后随机取。
+    """
+    if from_start:
+        return list(range(min(n, total)))
+    population = range(int(total * skip), total)
+    return random.sample(population, min(n, len(population)))
 
 
 async def fill(

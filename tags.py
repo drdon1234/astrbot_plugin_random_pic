@@ -16,7 +16,6 @@ from astrbot.api import logger
 
 from .net import HttpClient
 
-DEFAULT_DB_URL = "https://github.com/EhTagTranslation/Database/releases/latest/download/db.text.json.gz"
 # 中文名冲突时按这个顺序取第一个
 INDEX_NAMESPACES = (
     "character",
@@ -29,6 +28,8 @@ INDEX_NAMESPACES = (
     "artist",
     "group",
 )
+# 本地缓存超过这么久重新下载
+REFRESH_SECONDS = 7 * 86400
 # 下载失败后至少隔这么久再试
 RETRY_SECONDS = 600
 TRAILING_NOTE = re.compile(r"\s*[（(][^（()）]*[）)]$")
@@ -105,19 +106,10 @@ class TagIndex:
 class TagDB:
     """按需加载标签库：本地缓存过期时重新下载，下载失败时沿用旧缓存。"""
 
-    def __init__(
-        self,
-        http: HttpClient,
-        path: Path,
-        url: str,
-        proxy: str | None,
-        refresh_days: float,
-    ):
+    def __init__(self, http: HttpClient, path: Path, url: str):
         self.http = http
         self.path = path
         self.url = url
-        self.proxy = proxy
-        self.max_age = max(refresh_days, 0.1) * 86400
         self.index: TagIndex | None = None
         self._loaded_mtime = 0.0
         self._next_download = 0.0
@@ -126,7 +118,7 @@ class TagDB:
     def _stale(self) -> bool:
         return (
             not self.path.exists()
-            or time.time() - self.path.stat().st_mtime > self.max_age
+            or time.time() - self.path.stat().st_mtime > REFRESH_SECONDS
         )
 
     async def get(self) -> TagIndex | None:
@@ -143,7 +135,7 @@ class TagDB:
 
     async def _download(self):
         try:
-            data = await self.http.get_bytes(self.url, proxy=self.proxy)
+            data = await self.http.get_bytes(self.url)
             json.loads(gzip.decompress(data))  # 校验完整性
         except Exception as e:
             self._next_download = time.monotonic() + RETRY_SECONDS

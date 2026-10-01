@@ -1,7 +1,6 @@
-"""分级闸门、画廊分级判定与未成年内容标签过滤。
+"""内容过滤：未成年内容黑名单、重口标签与 E-Hentai 画廊的风格 / 分级判定。
 
-这里的判定只依赖 E-Hentai 画廊的分类和标签，不开放配置；只能用内容分级总开关整体关闭
-分级相关的判定，未成年内容过滤始终生效。
+分级判定只依赖画廊的分类和标签，不开放配置；未成年内容过滤始终生效。
 """
 
 import re
@@ -62,29 +61,32 @@ EXPLICIT_TAGS = frozenset(
     }
 )
 
+HEAVY_NAMESPACES = ("female", "male", "mixed")
+# E-Hentai 搜索词形式的标签，例如 female:"body modification$"
+SEARCH_TAG_RE = re.compile(r'^(female|male|mixed):"?([^"$]+)\$?"?$')
+
 
 class TagBlacklist:
-    """忽略大小写的标签黑名单。
+    """忽略大小写的黑名单。
 
     ASCII 词按单词匹配（冒号、下划线、空格、连字符等视为分隔），避免 lolita_fashion
     这类误伤；非 ASCII 词（中日文）按子串匹配，覆盖「合法ロリ」「萝莉塔」等变体。
     """
 
-    def __init__(self, extra: list[str] | None = None):
-        terms = {t.strip().lower() for t in (*BASE_BLACKLIST, *(extra or []))}
+    def __init__(self, extra: list[str] = ()):
+        terms = {t.strip().lower() for t in (*BASE_BLACKLIST, *extra)}
         terms.discard("")
-        self.terms = frozenset(terms)
         self._word_terms = [
             (t, re.compile(rf"(?<![0-9a-z]){re.escape(t)}(?![0-9a-z])"))
-            for t in sorted(self.terms)
+            for t in sorted(terms)
             if t.isascii()
         ]
-        self._sub_terms = sorted(t for t in self.terms if not t.isascii())
+        self._sub_terms = sorted(t for t in terms if not t.isascii())
 
-    def hit(self, tags: list[str]) -> str | None:
+    def hit(self, texts: list[str]) -> str | None:
         """返回命中的黑名单词，未命中返回 None。"""
-        for tag in tags:
-            low = str(tag).strip().lower()
+        for text in texts:
+            low = str(text).strip().lower()
             if not low:
                 continue
             for term, pattern in self._word_terms:
@@ -94,6 +96,57 @@ class TagBlacklist:
                 if term in low:
                     return term
         return None
+
+
+class ContentFilter:
+    """黑名单与重口标签，对所有图源生效。heavy 为空表示不屏蔽重口。"""
+
+    def __init__(
+        self, extra_blacklist: list[str] = (), heavy: frozenset[str] = frozenset()
+    ):
+        self.blacklist = TagBlacklist(extra_blacklist)
+        self.heavy = heavy
+
+    def heavy_hit(self, tags: list[str]) -> str | None:
+        """返回命中的重口标签名，未命中返回 None。"""
+        for tag in tags:
+            namespace, _, name = str(tag).strip().lower().partition(":")
+            if namespace in HEAVY_NAMESPACES and name in self.heavy:
+                return name
+        return None
+
+    def keyword_reason(self, raw: list[str], terms: list[str]) -> str | None:
+        """关键词闸门：原词和翻译后的标签都检查，排除词（- 开头）不检查。
+
+        重口只认标签写法（中文关键词会先被翻译成这种写法）；不带命名空间的英文词是标题搜索，
+        例如 blood 可能是在找《Blood+》，交给画廊复核过滤即可。
+        """
+        positive = [t for t in [*raw, *terms] if not t.startswith("-")]
+        term = self.blacklist.hit(positive)
+        if term:
+            return f"关键词命中黑名单 {term}"
+        for word in positive:
+            match = SEARCH_TAG_RE.match(word.strip().lower())
+            if match and match.group(2) in self.heavy:
+                return f"关键词是已屏蔽的重口标签 {match.group(2)}"
+        return None
+
+    def tags_reason(self, tags: list[str]) -> str | None:
+        """按标签过滤：没有标签无法做未成年过滤，一律拒绝。"""
+        if not tags:
+            return "缺少标签，无法做未成年过滤"
+        term = self.blacklist.hit(tags)
+        if term:
+            return f"命中黑名单 {term}"
+        heavy = self.heavy_hit(tags)
+        if heavy:
+            return f"带重口标签 {heavy}"
+        return None
+
+    def text_reason(self, texts: list[str]) -> str | None:
+        """没有标签的图源只能检查标题、简介等文字。"""
+        term = self.blacklist.hit(texts)
+        return f"命中黑名单 {term}" if term else None
 
 
 def classify(category: str, tags: list[str]) -> tuple[str, str | None]:
@@ -111,123 +164,19 @@ def classify(category: str, tags: list[str]) -> tuple[str, str | None]:
     return style, (None if style == REAL else EXPLICIT)
 
 
-# 重口标签（猎奇、截肢、粪便、兽交等），按标签名匹配 female / male / mixed 命名空间。
-# 默认屏蔽，可在配置中增删；实测二次元 R18 池约 9% 的画廊带这类标签
-HEAVY_TAGS = (
-    "guro",
-    "low guro",
-    "snuff",
-    "amputee",
-    "body modification",
-    "vore",
-    "unbirth",
-    "absorption",
-    "scat",
-    "scat insertion",
-    "vomit",
-    "torture",
-    "blood",
-    "necrophilia",
-    "cannibalism",
-    "eye penetration",
-    "brain fuck",
-    "skinsuit",
-    "ryona",
-    "abortion",
-    "bestiality",
-    "prolapse",
-    "dismantling",
-    "piss drinking",
-    "farting",
-    "hanging",
-    "electric shocks",
-    "cbt",
-    "nose hook",
-    "insect",
-    "worm",
-    "parasite",
-    "cervix penetration",
-    "infantilism",
-    "diaper",
-)
-HEAVY_NAMESPACES = ("female", "male", "mixed")
-# E-Hentai 搜索词形式的标签，例如 female:"body modification$"
-SEARCH_TAG_RE = re.compile(r'^(female|male|mixed):"?([^"$]+)\$?"?$')
-
-
-def heavy_hit(tags: list[str], heavy: frozenset[str]) -> str | None:
-    """返回画廊命中的重口标签名，未命中返回 None。"""
-    for tag in tags:
-        namespace, _, name = str(tag).strip().lower().partition(":")
-        if namespace in HEAVY_NAMESPACES and name in heavy:
-            return name
-    return None
-
-
-def heavy_search_term(term: str, heavy: frozenset[str]) -> str | None:
-    """搜索关键词本身就是屏蔽的重口标签时返回标签名。
-
-    只认标签写法（中文关键词会先被翻译成这种写法）；不带命名空间的英文词是标题搜索，
-    例如 blood 可能是在找《Blood+》，交给画廊复核过滤即可。
-    """
-    match = SEARCH_TAG_RE.match(term.strip().lower())
-    return match.group(2) if match and match.group(2) in heavy else None
-
-
-def request_gate(
-    rating: str,
-    is_private: bool,
-    r18_enabled: bool,
-    group_sensitive_enabled: bool,
-    rating_enabled: bool = True,
+def rating_reason(
+    actual: str | None, requested: str, is_private: bool, rating_enabled: bool
 ) -> str | None:
-    """请求阶段闸门。返回拒绝原因，允许时返回 None。
+    """结果阶段的分级复核，关闭内容分级时不复核。
 
-    关闭内容分级后不再区分私聊和群聊，只保留 R18 总开关。
+    R18 双重闸门的第二道：请求阶段已经拒绝了群聊 R18，这里再按作品的实际分级确认是私聊。
     """
-    if rating == EXPLICIT and not r18_enabled:
-        return "R18 功能未开启。"
     if not rating_enabled:
         return None
-    if rating == EXPLICIT and not is_private:
-        return "R18 内容仅限私聊。"
-    if rating == SENSITIVE and not is_private and not group_sensitive_enabled:
-        return "本群未开启擦边内容。"
-    return None
-
-
-def unrated_allowed(is_private: bool, r18_enabled: bool, rating_enabled: bool) -> bool:
-    """没有分级的图源（16K）能否使用：开启内容分级时按 R18 对待。"""
-    return not rating_enabled or (is_private and r18_enabled)
-
-
-def check_gallery(
-    category: str,
-    tags: list[str],
-    style: str,
-    rating: str,
-    is_private: bool,
-    blacklist: TagBlacklist,
-    rating_enabled: bool = True,
-) -> str | None:
-    """结果阶段复核。返回丢弃原因，通过时返回 None。
-
-    关闭内容分级后只复核风格和黑名单。
-    """
-    real_style, real_rating = classify(category, tags)
-    if real_style != style:
-        return f"风格不符（{category}）"
-    if rating_enabled:
-        if real_rating is None:
-            return "缺少可判定分级的标签"
-        if real_rating != rating:
-            return f"分级不符（请求 {rating}，实际 {real_rating}）"
-        # R18 双重闸门的第二道：以画廊实际分级为准复核私聊
-        if real_rating == EXPLICIT and not is_private:
-            return "R18 结果出现在非私聊会话"
-    if not tags:
-        return "画廊缺少标签，无法做未成年过滤"
-    term = blacklist.hit(tags)
-    if term:
-        return f"命中黑名单标签 {term}"
+    if actual is None:
+        return "无法判定分级"
+    if actual != requested:
+        return f"分级不符（请求 {requested}，实际 {actual}）"
+    if actual == EXPLICIT and not is_private:
+        return "R18 结果出现在非私聊会话"
     return None

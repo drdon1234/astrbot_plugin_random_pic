@@ -1,13 +1,19 @@
-"""把图片按顺序写成 PDF，每张图一页。
+"""整本 PDF：把图片按顺序写成 PDF（每张图一页），以及打包结果的复用与清理。
 
 JPEG（RGB / 灰度）原样嵌入不重新编码；其他格式（webp、png、gif 等）逐张用 Pillow
 转为 JPEG。同一时间只有一张图在内存里，几百页的画廊也不会占用太多内存。
 """
 
+import asyncio
 import io
+import re
+import shutil
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from PIL import Image
+
+from .sources.ehentai_api import Gallery
 
 JPEG_QUALITY = 90
 
@@ -87,3 +93,112 @@ def write_pdf(images: list[Path], out: Path) -> Path:
         )
     tmp.replace(out)
     return out
+
+
+# 本插件存储的 PDF：画廊号[-incomplete][-第几卷of共几卷].pdf
+OWN_PDF = re.compile(r"(\d+)(?:-incomplete)?(?:-\d+of\d+)?\.pdf")
+UNSAFE_FILENAME = re.compile(r'[\/:*?"<>|\r\n\t]+')
+
+
+class PdfError(Exception):
+    pass
+
+
+# 下载整个画廊：(画廊, 目标目录) → (按页码排序、以页码命名的图片, 失败页数)
+Download = Callable[[Gallery, Path], Awaitable[tuple[list[Path], int]]]
+
+
+def display_name(title: str, gid: int, pages: tuple[int, int], parts: int) -> str:
+    """发送给用户的文件名；分卷时带上页码范围。"""
+    name = UNSAFE_FILENAME.sub(" ", title).strip()[:80] or str(gid)
+    if parts > 1:
+        name += f" ({pages[0]}-{pages[1]})"
+    return f"{name}.pdf"
+
+
+def stored_name(gid: int, part: int, parts: int, incomplete: bool = False) -> str:
+    """存储用的文件名，只含画廊号，便于识别缓存和清理。"""
+    name = f"{gid}-incomplete" if incomplete else str(gid)
+    if parts > 1:
+        name += f"-{part}of{parts}"
+    return f"{name}.pdf"
+
+
+class PdfStore:
+    """整本 PDF 的生成、复用与清理。同一时间只打包一个画廊。"""
+
+    def __init__(self, out_dir: Path, tmp_dir: Path, pages_per_file: int, keep: int):
+        self.dir = out_dir
+        self.tmp = tmp_dir
+        self.pages_per_file = pages_per_file
+        self.keep = keep
+        self.lock = asyncio.Lock()
+
+    def parts(self, filecount: int) -> int:
+        return -(-filecount // self.pages_per_file)
+
+    def cached(self, gallery: Gallery) -> list[tuple[Path, str]] | None:
+        """完整打包过的画廊直接复用；缺任何一个分卷都视为没有缓存。"""
+        parts = self.parts(gallery.filecount)
+        files = []
+        for part in range(1, parts + 1):
+            path = self.dir / stored_name(gallery.gid, part, parts)
+            if not path.exists():
+                return None
+            start = (part - 1) * self.pages_per_file + 1
+            end = min(start + self.pages_per_file - 1, gallery.filecount)
+            files.append(
+                (path, display_name(gallery.title, gallery.gid, (start, end), parts))
+            )
+        return files or None
+
+    async def build(
+        self, gallery: Gallery, download: Download
+    ) -> tuple[list[tuple[Path, str]], int]:
+        """下载整个画廊，每 pages_per_file 页写成一个 PDF。
+
+        返回 ([(PDF 路径, 发送文件名)], 失败页数)。有缺页时存储名带 -incomplete，不会被当成缓存复用。
+        """
+        tmp = self.tmp / str(gallery.gid)
+        shutil.rmtree(tmp, ignore_errors=True)
+        try:
+            paths, missing = await download(gallery, tmp)
+            if not paths:
+                raise PdfError("没有下载到任何图片")
+            self.dir.mkdir(parents=True, exist_ok=True)
+            chunks = [
+                paths[i : i + self.pages_per_file]
+                for i in range(0, len(paths), self.pages_per_file)
+            ]
+            files = []
+            for part, chunk in enumerate(chunks, 1):
+                out = self.dir / stored_name(
+                    gallery.gid, part, len(chunks), bool(missing)
+                )
+                await asyncio.to_thread(write_pdf, chunk, out)
+                # 下载的图片以页码命名，分卷文件名标出实际页码范围
+                pages = (int(chunk[0].stem), int(chunk[-1].stem))
+                files.append(
+                    (out, display_name(gallery.title, gallery.gid, pages, len(chunks)))
+                )
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        self._prune(keep=gallery.gid)
+        return files, missing
+
+    def _prune(self, keep: int):
+        """按画廊清理旧 PDF，只动本插件生成的文件（输出目录可能是共享目录）。"""
+        groups: dict[int, list[Path]] = {}
+        for path in self.dir.glob("*.pdf"):
+            match = OWN_PDF.fullmatch(path.name)
+            if match:
+                groups.setdefault(int(match.group(1)), []).append(path)
+        newest = {
+            gid: max(p.stat().st_mtime for p in paths) for gid, paths in groups.items()
+        }
+        others = sorted(
+            (gid for gid in groups if gid != keep), key=newest.get, reverse=True
+        )
+        for gid in others[self.keep - 1 :]:
+            for path in groups[gid]:
+                path.unlink(missing_ok=True)

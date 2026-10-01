@@ -1,6 +1,7 @@
-"""统一数据结构：请求与图片条目。"""
+"""统一数据结构：抽卡请求、图集与各图源共用的取图选项。"""
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 ANIME = "anime"
 REAL = "real"
@@ -15,37 +16,41 @@ RATING_NAMES = {SENSITIVE: "擦边", EXPLICIT: "R18"}
 
 
 @dataclass
-class PicRequest:
-    style: str = ANIME
-    rating: str = SENSITIVE
-    tags: list[str] = field(
-        default_factory=list
-    )  # 追加到 E-Hentai 搜索词，中文名经标签库翻译
-    count: int = 1  # 图集数：抽几个画廊 / 帖子 / 本子
-    per_album: int = 1  # 每个图集抽几张
-    random_character: bool = False  # 每个图集先随机抽一个角色，再在该角色的画廊中抽
+class DrawRequest:
+    style: str
+    rating: str
+    keywords: list[str] = field(default_factory=list)  # 用户原样输入的关键词
+    albums: int = 1  # 图集数
+    per_album: int = 1  # 每个图集几张
+    random_character: bool = False  # 每个图集先随机抽一个角色
 
-    @property
-    def images(self) -> int:
-        return self.count * self.per_album
+
+@dataclass(frozen=True)
+class GalleryRef:
+    """E-Hentai 画廊，/pdf 用。"""
+
+    gid: int
+    token: str
 
 
 @dataclass
-class ImageItem:
-    image_url: str
-    rating: str
-    style: str
-    gid: int = 0
-    token: str = ""
-    title: str = ""
-    author: str = ""
-    category: str = ""
-    gallery_url: str = ""
-    page_url: str = ""
-    page: int = 0  # 从 1 开始
-    pages: int = 0
-    stars: float = 0.0
-    tags: list[str] = field(default_factory=list)
-    parodies: list[str] = field(default_factory=list)  # 中文名（标签库可用时）
-    characters: list[str] = field(default_factory=list)
-    source: str = "ehentai"  # 图源：ehentai / 16k / pica
+class Album:
+    """一个图集：同一画廊 / 帖子 / 本子里抽到的几张图。"""
+
+    source: str  # 来源的显示名
+    title: str
+    total: int  # 作品总页数
+    pictures: list[tuple[int, Path]]  # (页码，从 1 开始, 本地文件)，按页码排序
+    details: list[str] = field(default_factory=list)  # 说明文字，每项一行
+    gallery: GalleryRef | None = None
+
+
+@dataclass
+class DrawOptions:
+    """各图源共用的取图选项。"""
+
+    rating_enabled: bool = True
+    from_start: bool = False
+    explicit_skip: float = 0.0
+    concurrency: int = 1
+    color_only: bool = False

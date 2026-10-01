@@ -42,15 +42,19 @@ def scoped_cookies(domain: str, values: dict[str, str]) -> SimpleCookie:
 
 
 class HttpClient:
-    """共用一个 aiohttp 会话，所有请求都带超时。
+    """共用一个 aiohttp 会话，所有请求都带超时、走同一个代理。
 
     cookies 为 {域名: {名称: 值}}，只发给该域名及其子域名，不会发给图片服务器等第三方。
     """
 
     def __init__(
-        self, timeout: float, cookies: dict[str, dict[str, str]] | None = None
+        self,
+        timeout: float,
+        proxy: str | None = None,
+        cookies: dict[str, dict[str, str]] | None = None,
     ):
         self.timeout = aiohttp.ClientTimeout(total=timeout)
+        self.proxy = proxy or None
         self.cookies = cookies or {}
         self._session: aiohttp.ClientSession | None = None
 
@@ -69,21 +73,24 @@ class HttpClient:
             )
         return self._session
 
-    async def get_text(self, url: str, *, params=None, proxy: str | None = None) -> str:
-        async with self.session.get(url, params=params, proxy=proxy) as resp:
+    def request(self, method: str, url, **kwargs):
+        return self.session.request(method, url, proxy=self.proxy, **kwargs)
+
+    async def get_text(self, url: str, *, params=None) -> str:
+        async with self.request("GET", url, params=params) as resp:
             text = await resp.text(errors="replace")
             if resp.status != 200:
                 raise HttpError(f"HTTP {resp.status}: {text[:200]}")
             return text
 
-    async def get_bytes(self, url: str, *, proxy: str | None = None) -> bytes:
-        async with self.session.get(url, proxy=proxy) as resp:
+    async def get_bytes(self, url: str) -> bytes:
+        async with self.request("GET", url) as resp:
             if resp.status != 200:
                 raise HttpError(f"HTTP {resp.status}")
             return await resp.read()
 
-    async def post_json(self, url: str, payload: dict, *, proxy: str | None = None):
-        async with self.session.post(url, json=payload, proxy=proxy) as resp:
+    async def post_json(self, url: str, payload: dict):
+        async with self.request("POST", url, json=payload) as resp:
             if resp.status != 200:
                 text = (await resp.text(errors="replace"))[:200]
                 raise HttpError(f"HTTP {resp.status}: {text}")
@@ -123,38 +130,34 @@ def sniff_ext(head: bytes) -> str | None:
 
 
 class ImageCache:
-    """把图片下载到插件数据目录的缓存中，并按数量和总大小自动清理。"""
+    """把图片下载到插件数据目录的缓存中，并按总大小自动清理。"""
 
     def __init__(
         self,
         http: HttpClient,
         cache_dir: Path,
-        max_files: int,
         max_total_mb: float,
         max_image_mb: float,
     ):
         self.http = http
         self.dir = cache_dir
         self.dir.mkdir(parents=True, exist_ok=True)
-        self.max_files = max(1, max_files)
         self.max_total = int(max_total_mb * 1024 * 1024)
         self.max_image = int(max_image_mb * 1024 * 1024)
 
-    async def download(
-        self, url: str, proxy: str | None, dest: Path | None = None
-    ) -> Path | None:
+    async def download(self, url: str, dest: Path | None = None) -> Path | None:
         """下载单张图片，返回本地文件路径；失败返回 None。
 
         dest 为不含扩展名的目标路径（例如整本下载时的「页码」），此时不进缓存、不触发清理。
         """
         try:
             try:
-                fetched = await self._fetch(url, proxy)
+                fetched = await self._fetch(url)
             except aiohttp.ClientPayloadError as e:
                 # 部分 H@H 节点经代理时会不发 TLS close_notify 就断开，asyncio 的 SSL
                 # 层会丢掉最后几 KB，同一地址重试也一样；阻塞式 ssl 能读全，所以退回 urllib
                 logger.info(f"[random_pic] 响应不完整，改用 urllib 重新下载: {e!r}")
-                fetched = await asyncio.to_thread(self._fetch_blocking, url, proxy)
+                fetched = await asyncio.to_thread(self._fetch_blocking, url)
             if fetched is None:
                 logger.info(f"[random_pic] 图片过大，已跳过: {url}")
                 return None
@@ -166,9 +169,9 @@ class ImageCache:
             self.cleanup()
         return path
 
-    async def _fetch(self, url: str, proxy: str | None) -> tuple[bytes, str] | None:
+    async def _fetch(self, url: str) -> tuple[bytes, str] | None:
         """返回 (图片数据, Content-Type)，超过大小上限时返回 None。"""
-        async with self.http.session.get(url, proxy=proxy) as resp:
+        async with self.http.request("GET", url) as resp:
             if resp.status != 200:
                 raise HttpError(f"HTTP {resp.status}")
             if resp.content_length and resp.content_length > self.max_image:
@@ -180,7 +183,8 @@ class ImageCache:
                     return None
             return bytes(data), resp.content_type.lower()
 
-    def _fetch_blocking(self, url: str, proxy: str | None) -> tuple[bytes, str] | None:
+    def _fetch_blocking(self, url: str) -> tuple[bytes, str] | None:
+        proxy = self.http.proxy
         proxies = {"http": proxy, "https": proxy} if proxy else {}
         opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
@@ -214,11 +218,9 @@ class ImageCache:
         files.sort(key=lambda f: f[0], reverse=True)
         fresh_after = time.time() - FRESH_SECONDS
         total = 0
-        for index, (mtime, size, path) in enumerate(files):
+        for mtime, size, path in files:
             total += size
             # 刚下载的图片保留，保证同一次抽卡的图片都能发出去
-            if mtime < fresh_after and (
-                index >= self.max_files or total > self.max_total
-            ):
+            if mtime < fresh_after and total > self.max_total:
                 path.unlink(missing_ok=True)
                 total -= size
