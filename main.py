@@ -40,6 +40,8 @@ from .sources.ehentai import EHentaiSource, build_pools
 from .sources.ehentai_api import EH_NAMES, SITES, EHentai, EHentaiError, resolve_site
 from .sources.pica import Picacomic
 from .sources.sixteenk import SixteenK
+from .sources.wordpress import SITES as WP_SITES
+from .sources.wordpress import WordPressSource
 from .tags import TagDB
 
 PLUGIN_NAME = "astrbot_plugin_random_pic"
@@ -163,6 +165,13 @@ class RandomPicPlugin(Star):
                 token_path=data_dir / "pica_token.json",
             )
             weights.append((pica, source_weights["pica"]))
+        weights += [
+            (
+                WordPressSource(site, self.http, cache, self.content, opts),
+                source_weights[site.key],
+            )
+            for site in WP_SITES
+        ]
         self.tagdb = (
             TagDB(self.http, data_dir / "ehtag.json.gz", s.tag_db.url)
             if s.tag_db.enabled
@@ -448,5 +457,12 @@ class RandomPicPlugin(Star):
             )
         if self.pica_enabled:
             lines.append("三次元部分图集来自哔咔的 Cosplay 分类（可搜普通关键词）")
+        weights = s.sources.weights
+        if weights["cosplaytele"]:
+            lines.append(
+                "三次元部分图集来自 CosplayTele 的 Cosplay 写真（可搜角色、作品名）"
+            )
+        if weights["xiuren"]:
+            lines.append("三次元擦边部分图集来自 XiuRen 的工作室写真")
         lines += ["示例：/抽图 原神 2　/抽图 二次元 芙莉莲", "/抽图 帮助：显示本说明"]
         return "\n".join(lines)

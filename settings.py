@@ -90,17 +90,16 @@ class Sources:
     ehentai: int
     sixteenk: int
     pica: int
+    cosplaytele: int
+    xiuren: int
 
     @property
     def weights(self) -> dict[str, int]:
         """各图源的权重：手动配置时用配置值，否则均分。"""
+        names = ("ehentai", "sixteenk", "pica", "cosplaytele", "xiuren")
         if not self.custom_weights:
-            return {"ehentai": 1, "sixteenk": 1, "pica": 1}
-        return {
-            "ehentai": max(0, self.ehentai),
-            "sixteenk": max(0, self.sixteenk),
-            "pica": max(0, self.pica),
-        }
+            return dict.fromkeys(names, 1)
+        return {name: max(0, getattr(self, name)) for name in names}
 
 
 @dataclass

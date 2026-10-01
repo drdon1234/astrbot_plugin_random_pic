@@ -203,7 +203,7 @@
   "sources": {
     "description": "三次元图源比例",
     "type": "object",
-    "hint": "每个三次元图集从这次能用的图源里选一个（二次元只有 E-Hentai）。16K 不能搜索也没有分级，只用于不带关键词、不是 /随机角色 的抽图，开启内容分级时只在私聊且开启 R18 时使用；哔咔需要填写账号，不支持 E-Hentai 标签语法（: $ \"）的关键词和 /随机角色。16K、哔咔没抽够的图集由 E-Hentai 补上。",
+    "hint": "每个三次元图集从这次能用的图源里选一个（二次元只有 E-Hentai）。16K 不能搜索也没有分级，只用于不带关键词、不是 /随机角色 的抽图，开启内容分级时只在私聊且开启 R18 时使用；哔咔需要填写账号，不支持 E-Hentai 标签语法（: $ \"）的关键词和 /随机角色；CosplayTele、XiuRen 不支持 /随机角色，XiuRen 只有擦边。E-Hentai 以外的图源没抽够的图集由 E-Hentai 补上。",
     "items": {
       "custom_weights": {
         "description": "手动配置比例",
@@ -230,6 +230,20 @@
         "default": 33,
         "condition": {"custom_weights": true},
         "hint": "哔咔漫画的 Cosplay 分类，需要在「哔咔账号」里填写账号。带「無H內容」标签的算擦边，不带的算 R18。设为 0 即不用。"
+      },
+      "cosplaytele": {
+        "description": "CosplayTele 权重",
+        "type": "int",
+        "default": 33,
+        "condition": {"custom_weights": true},
+        "hint": "cosplaytele.com：约 5600 套 Cosplay 写真，按站点分类定分级（Cosplay Ero 为擦边，Cosplay Nude 为 R18）。关键词先经标签库翻译成英文的角色 / 作品名再搜索。设为 0 即不用。"
+      },
+      "xiuren": {
+        "description": "XiuRen 权重",
+        "type": "int",
+        "default": 33,
+        "condition": {"custom_weights": true},
+        "hint": "xiuren.biz：约 1 万套秀人、尤蜜等工作室的棚拍写真，只用于擦边。关键词原样搜索（标题多为中文模特名）。设为 0 即不用。"
       }
     }
   },

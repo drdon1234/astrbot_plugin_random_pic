@@ -29,7 +29,9 @@ IMAGE_EXTS = {
 
 
 class HttpError(Exception):
-    pass
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 def scoped_cookies(domain: str, values: dict[str, str]) -> SimpleCookie:
@@ -77,11 +79,18 @@ class HttpClient:
         return self.session.request(method, url, proxy=self.proxy, **kwargs)
 
     async def get_text(self, url: str, *, params=None) -> str:
+        text, _ = await self.get_text_headers(url, params=params)
+        return text
+
+    async def get_text_headers(
+        self, url: str, *, params=None
+    ) -> tuple[str, dict[str, str]]:
+        """返回 (响应文本, 响应头)，响应头的键为小写。"""
         async with self.request("GET", url, params=params) as resp:
             text = await resp.text(errors="replace")
             if resp.status != 200:
-                raise HttpError(f"HTTP {resp.status}: {text[:200]}")
-            return text
+                raise HttpError(f"HTTP {resp.status}: {text[:200]}", resp.status)
+            return text, {k.lower(): v for k, v in resp.headers.items()}
 
     async def get_bytes(self, url: str) -> bytes:
         async with self.request("GET", url) as resp:
