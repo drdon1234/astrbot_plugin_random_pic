@@ -348,30 +348,26 @@ class RandomPicPlugin(Star):
 
         files = self.pdf.cached(gallery)
         if files is None:
-            if self.pdf.lock.locked():
-                yield event.plain_result("正在打包另一个画廊，请稍后再试。")
-                return
-            async with self.pdf.lock:
+            # 排队等待不提示；同一画廊已在打包时直接等它的结果
+            if not self.pdf.building(gallery.gid):
                 parts = self.pdf.parts(gallery.filecount)
                 split = f"，分 {parts} 个文件发送" if parts > 1 else ""
                 yield event.plain_result(
-                    f"开始下载《{gallery.title}》共 {gallery.filecount} 页{split}，完成后发送 PDF……"
+                    f"《{gallery.title}》共 {gallery.filecount} 页{split}，打包完成后发送 PDF……"
                 )
-                try:
-                    files, missing = await self.pdf.build(
-                        gallery, self.ehentai.download_gallery
-                    )
-                except (PdfError, EHentaiError) as e:
-                    yield event.plain_result(f"打包失败：{e}")
-                    return
-                except Exception as e:
-                    logger.exception(f"[random_pic] 画廊 {gallery.gid} 打包失败")
-                    yield event.plain_result(f"打包失败：{e!r}")
-                    return
-                if missing:
-                    yield event.plain_result(
-                        f"有 {missing} 页下载失败，PDF 中缺少这些页。"
-                    )
+            try:
+                files, missing = await self.pdf.get(
+                    gallery, str(event.get_sender_id()), self.ehentai.download_gallery
+                )
+            except (PdfError, EHentaiError) as e:
+                yield event.plain_result(f"打包失败：{e}")
+                return
+            except Exception as e:
+                logger.exception(f"[random_pic] 画廊 {gallery.gid} 打包失败")
+                yield event.plain_result(f"打包失败：{e!r}")
+                return
+            if missing:
+                yield event.plain_result(f"有 {missing} 页下载失败，PDF 中缺少这些页。")
         for path, name in files:
             yield event.chain_result([Comp.File(name=name, file=str(path.resolve()))])
 

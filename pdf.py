@@ -8,12 +8,14 @@ import asyncio
 import io
 import re
 import shutil
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from PIL import Image
 
 from .sources.ehentai_api import Gallery
+from .util import shared
 
 JPEG_QUALITY = 90
 
@@ -95,9 +97,14 @@ def write_pdf(images: list[Path], out: Path) -> Path:
     return out
 
 
+# 不同用户最多同时打包这么多个画廊（同一用户的请求依次进行）。打包时每页都要请求一次
+# E-Hentai，所有打包和抽图共用同一个请求限速，同时打包太多只会互相拖慢、更快耗尽图片额度
+PACK_CONCURRENCY = 2
+# 这么多秒内生成的 PDF 不清理：可能是另一个打包刚完成、还没发出去的文件
+FRESH_SECONDS = 600
 # 本插件存储的 PDF：画廊号[-incomplete][-第几卷of共几卷].pdf
 OWN_PDF = re.compile(r"(\d+)(?:-incomplete)?(?:-\d+of\d+)?\.pdf")
-UNSAFE_FILENAME = re.compile(r'[\/:*?"<>|\r\n\t]+')
+UNSAFE_FILENAME = re.compile(r'[\\/:*?"<>|\r\n\t]+')
 
 
 class PdfError(Exception):
@@ -125,14 +132,54 @@ def stored_name(gid: int, part: int, parts: int, incomplete: bool = False) -> st
 
 
 class PdfStore:
-    """整本 PDF 的生成、复用与清理。同一时间只打包一个画廊。"""
+    """整本 PDF 的生成、复用与清理。
+
+    打包请求排队进行：同一画廊正在打包时等它完成、共用结果；同一用户的请求依次进行；
+    不同用户最多同时打包 PACK_CONCURRENCY 个。
+    """
 
     def __init__(self, out_dir: Path, tmp_dir: Path, pages_per_file: int, keep: int):
         self.dir = out_dir
         self.tmp = tmp_dir
         self.pages_per_file = pages_per_file
         self.keep = keep
-        self.lock = asyncio.Lock()
+        self._slots = asyncio.Semaphore(PACK_CONCURRENCY)
+        # 用户 → (锁, 正在使用的请求数)，没有请求时删除
+        self._users: dict[str, tuple[asyncio.Lock, int]] = {}
+        # 画廊号 → 正在进行的打包
+        self._builds: dict[int, asyncio.Future] = {}
+
+    def building(self, gid: int) -> bool:
+        return gid in self._builds
+
+    async def get(
+        self, gallery: Gallery, user_id: str, download: Download
+    ) -> tuple[list[tuple[Path, str]], int]:
+        """返回画廊的 PDF：(文件列表, 失败页数)。没有完整的缓存时排队打包。"""
+        return await shared(
+            self._builds,
+            gallery.gid,
+            lambda: self._queued(gallery, user_id, download),
+        )
+
+    async def _queued(
+        self, gallery: Gallery, user_id: str, download: Download
+    ) -> tuple[list[tuple[Path, str]], int]:
+        lock, users = self._users.get(user_id, (asyncio.Lock(), 0))
+        self._users[user_id] = (lock, users + 1)
+        try:
+            async with lock, self._slots:
+                # 排队期间可能已经有人打包好了
+                files = self.cached(gallery)
+                if files is not None:
+                    return files, 0
+                return await self.build(gallery, download)
+        finally:
+            lock, users = self._users[user_id]
+            if users > 1:
+                self._users[user_id] = (lock, users - 1)
+            else:
+                del self._users[user_id]
 
     def parts(self, filecount: int) -> int:
         return -(-filecount // self.pages_per_file)
@@ -199,6 +246,9 @@ class PdfStore:
         others = sorted(
             (gid for gid in groups if gid != keep), key=newest.get, reverse=True
         )
+        fresh_after = time.time() - FRESH_SECONDS
         for gid in others[self.keep - 1 :]:
+            if newest[gid] > fresh_after or gid in self._builds:
+                continue
             for path in groups[gid]:
                 path.unlink(missing_ok=True)
