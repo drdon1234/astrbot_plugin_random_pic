@@ -40,7 +40,7 @@ from .picacomic import SOURCE as PICA, Picacomic
 from .refs import (
     Unit,
     gallery_from_text,
-    header_line,
+    header_text,
     image_label,
     last_candidates,
     message_units,
@@ -132,17 +132,24 @@ def item_label(item: ImageItem) -> str:
     return image_label(item.page, item.pages, item.title)
 
 
+def source_name(item: ImageItem) -> str:
+    if item.source == PICA:
+        return "哔咔"
+    if item.source == SIXTEENK:
+        return "16K"
+    return "ExHentai" if "exhentai.org" in item.gallery_url else "E-Hentai"
+
+
 def format_caption(item: ImageItem) -> str:
-    """图片下方的说明文字。标题和第几张已经在图片上方的标题行里。"""
+    """图片下方的说明文字。标题、第几张和来源已经在图片上方的标题行里。"""
     if item.source == PICA:
         # 哔咔没有公开的网页地址，不附链接
         lines = [f"作者：{item.author}"] if item.author else []
         if item.characters:
             lines.append(f"标签：{'、'.join(item.characters[:MAX_CAPTION_TAGS])}")
-        lines.append(item.category)
         return "\n".join(lines)
     if item.source == SIXTEENK:
-        return f"16K 帖子：{item.gallery_url}"
+        return f"帖子：{item.gallery_url}"
     lines = []
     if item.author:
         lines.append(f"作者：{item.author}")
@@ -470,13 +477,15 @@ class RandomPicPlugin(Star):
             )
 
     def _content(self, idx: int, item: ImageItem, path: Path) -> list:
-        """一张图的消息段：标题行「序号-第几张/共几张-标题」、图片、说明文字。"""
+        """一张图的消息段：两行标题（【序号】标题 / 第几张/共几张 · 来源）、图片、说明文字。"""
+        header = header_text(idx, item.page, item.pages, item.title, source_name(item))
         content = [
-            Comp.Plain(header_line(idx, item_label(item)) + "\n"),
+            Comp.Plain(header + "\n"),
             Comp.Image.fromFileSystem(str(path)),
         ]
-        if self.config.get("send_caption", True):
-            content.append(Comp.Plain("\n" + format_caption(item)))
+        caption = format_caption(item) if self.config.get("send_caption", True) else ""
+        if caption:
+            content.append(Comp.Plain("\n" + caption))
         return content
 
     def _send_mode(self, event: AstrMessageEvent) -> str:
@@ -696,7 +705,7 @@ class RandomPicPlugin(Star):
         if self.pdf_conf.get("enabled", True):
             lines.append(
                 f"/pdf 或 /全集：回复抽到的图片，获取整个画廊的 PDF，每 {self._pages_per_file()} 页一个文件"
-                "（回复合并转发或图文混合消息时必须加序号，即图片上方标题行开头的数字，如 /pdf 2；"
+                "（回复合并转发或图文混合消息时必须加序号，即图片上方【】里的数字，如 /pdf 2；"
                 "也可以 /pdf <画廊链接>）"
             )
         if self.config.get("enable_aliases", True):

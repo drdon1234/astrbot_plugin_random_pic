@@ -1,6 +1,6 @@
 """从被回复的消息中找出画廊：/pdf 用。
 
-抽图发出的每张图前面都有一行标题行「序号-第几张/共几张-标题」。被回复的消息拆成若干「单元」，
+抽图发出的每张图前面都有两行标题：「【序号】标题」和「第几张/共几张 · 来源」。被回复的消息拆成若干「单元」，
 每张图一个单元：合并转发的每个节点、图文混合消息里的每个标题行各开始一个新单元。
 每个单元先看文字里的画廊链接（带说明文字时），再按图片字节数、标题行查已发送登记表。
 """
@@ -15,9 +15,11 @@ from .registry import GalleryRef, SentRegistry
 GALLERY_URL_RE = re.compile(
     r"https?://(?:e-hentai|exhentai)\.org/g/(\d+)/([0-9a-f]{10})"
 )
-# 标题行：序号-第几张/共几张-标题
-HEADER_RE = re.compile(r"(?m)^(\d+)-(\d+/\d+-.*)$")
-LABEL_RE = re.compile(r"\d+/\d+-(.*)")
+# 标题行：「【序号】标题」换行「第 几/共几 张 · 来源」
+HEADER_RE = re.compile(r"(?m)^【(\d+)】(.*)\n第 (\d+)/(\d+) 张(?: · .*)?$")
+# 2.7.0 的标题行：序号-第几张/共几张-标题
+LEGACY_HEADER_RE = re.compile(r"(?m)^(\d+)-(\d+/\d+-.*)$")
+LABEL_RE = re.compile(r"(\d+)/(\d+)-(.*)")
 # NapCat 配置为字符串（CQ 码）消息格式时
 CQ_RE = re.compile(r"\[CQ:(\w+)((?:,[^\]]*)?)\]")
 MAX_FORWARD_DEPTH = 3
@@ -27,14 +29,42 @@ MAX_LISTED = 30
 GetForward = Callable[[str], Awaitable[list]]
 
 
+def clean_title(title: str) -> str:
+    return " ".join(title.split()) or "无标题"
+
+
 def image_label(page: int, pages: int, title: str) -> str:
-    """标题行去掉序号的部分，也是登记表里按标题行查画廊的键。"""
-    title = " ".join(title.split()) or "无标题"
-    return f"{page}/{pages}-{title}"
+    """登记表里按标题行查画廊的键：第几张/共几张-标题。"""
+    return f"{page}/{pages}-{clean_title(title)}"
 
 
-def header_line(idx: int, label: str) -> str:
-    return f"{idx}-{label}"
+def header_text(idx: int, page: int, pages: int, title: str, source: str) -> str:
+    """图片上方的两行标题。"""
+    return f"【{idx}】{clean_title(title)}\n第 {page}/{pages} 张 · {source}"
+
+
+def label_display(label: str) -> str:
+    match = LABEL_RE.fullmatch(label)
+    if not match:
+        return label
+    return f"{match.group(3)}（第 {match.group(1)}/{match.group(2)} 张）"
+
+
+def find_headers(text: str) -> list[tuple[int, int, str]]:
+    """文字里的标题行，返回 [(起始位置, 序号, 登记键)]，按位置排序。"""
+    found = [
+        (
+            m.start(),
+            int(m.group(1)),
+            image_label(int(m.group(3)), int(m.group(4)), m.group(2)),
+        )
+        for m in HEADER_RE.finditer(text)
+    ]
+    found += [
+        (m.start(), int(m.group(1)), m.group(2).strip())
+        for m in LEGACY_HEADER_RE.finditer(text)
+    ]
+    return sorted(found)
 
 
 @dataclass
@@ -95,11 +125,11 @@ class _Splitter:
 
     def text(self, text: str):
         pos = 0
-        for match in HEADER_RE.finditer(text):
-            self._append(text[pos : match.start()])
+        for start, idx, label in find_headers(text):
+            self._append(text[pos:start])
             unit = self._new()
-            unit.idx, unit.label = int(match.group(1)), match.group(2).strip()
-            pos = match.start()
+            unit.idx, unit.label = idx, label
+            pos = start
         self._append(text[pos:])
 
     def image(self, size: int | None):
@@ -156,7 +186,7 @@ def resolve_units(units: list[Unit], registry: SentRegistry) -> list[Candidate]:
             ref = registry.by_label(unit.label)
         if ref is not None and not ref.title and unit.label:
             match = LABEL_RE.fullmatch(unit.label)
-            ref = replace(ref, title=match.group(1) if match else "")
+            ref = replace(ref, title=match.group(3) if match else "")
         idx = unit.idx if unit.idx is not None else position
         candidates.append(Candidate(idx, unit.label, ref))
     return candidates
@@ -169,7 +199,7 @@ def last_candidates(refs: list[GalleryRef]) -> list[Candidate]:
 def _listing(candidates: list[Candidate], intro: str) -> str:
     lines = [intro]
     for c in candidates[:MAX_LISTED]:
-        name = c.label or (c.ref.title if c.ref else "") or "（无标题）"
+        name = label_display(c.label) or (c.ref.title if c.ref else "") or "（无标题）"
         if c.ref is None:
             name += "（未识别）"
         elif not c.ref.gid:
