@@ -17,7 +17,7 @@ from .ehentai import (
     NoHitsError,
     build_search,
 )
-from .filters import TagBlacklist, check_gallery
+from .filters import TagBlacklist, check_gallery, heavy_hit, heavy_search_term
 from .imagecheck import is_colorful
 from .models import ANIME, EXPLICIT, RATINGS, STYLES, ImageItem, PicRequest
 from .net import HttpError, ImageCache
@@ -166,6 +166,7 @@ class Drawer:
         explicit_skip: float = 0.0,
         same_gallery: bool = False,
         color_only: bool = True,
+        heavy: frozenset[str] = frozenset(),
         tags: TagDB | None = None,
     ):
         self.eh = eh
@@ -180,6 +181,7 @@ class Drawer:
         self.explicit_skip = min(max(explicit_skip, 0.0), 0.9)
         self.same_gallery = same_gallery
         self.color_only = color_only
+        self.heavy = heavy
         self.tags = tags
 
     def _params(self, pool: Pool, terms: list[str]) -> dict:
@@ -197,9 +199,16 @@ class Drawer:
         pool = self.pools[(req.style, req.rating)]
         index = await self.tags.get() if self.tags else None
         terms = [index.translate(t) for t in req.tags] if index else list(req.tags)
-        term = self.blacklist.hit([t for t in terms if not t.startswith("-")])
+        positive = [t for t in terms if not t.startswith("-")]
+        term = self.blacklist.hit(positive)
         if term:
             result.errors.append(f"关键词命中黑名单 {term}")
+            return result
+        heavy = next(
+            (h for t in positive if (h := heavy_search_term(t, self.heavy))), None
+        )
+        if heavy:
+            result.errors.append(f"关键词是已屏蔽的重口标签 {heavy}")
             return result
         if req.random_character and (index is None or not index.characters):
             result.errors.append("标签库不可用，无法随机角色")
@@ -310,6 +319,8 @@ class Drawer:
             is_private,
             self.blacklist,
         )
+        if reason is None and (heavy := heavy_hit(gallery.tags, self.heavy)):
+            reason = f"重口标签 {heavy}"
         if reason is None and pool.missing_required(gallery.tags):
             reason = "缺少画廊池要求的标签"
         return reason

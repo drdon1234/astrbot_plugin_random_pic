@@ -16,7 +16,7 @@ from astrbot.api.star import Context, Star, StarTools
 
 from .drawer import Drawer, build_pools
 from .ehentai import EHentai, EHentaiError
-from .filters import TagBlacklist, classify, request_gate
+from .filters import HEAVY_TAGS, TagBlacklist, classify, heavy_hit, request_gate
 from .models import (
     ANIME,
     EXPLICIT,
@@ -165,6 +165,16 @@ class RandomPicPlugin(Star):
         )
         self.pdf_tmp = data_dir / "pdf_tmp"
         self._pdf_lock = asyncio.Lock()
+        heavy = config.get("heavy_tags")
+        self.heavy = (
+            frozenset(
+                str(t).strip().lower()
+                for t in (HEAVY_TAGS if heavy is None else heavy)
+                if str(t).strip()
+            )
+            if config.get("block_heavy", True)
+            else frozenset()
+        )
 
         eh_conf = config.get("ehentai", {})
         self.site, cookies = resolve_site(eh_conf)
@@ -214,6 +224,7 @@ class RandomPicPlugin(Star):
             explicit_skip=float(eh_conf.get("explicit_skip_ratio", 0.3)),
             same_gallery=bool(config.get("same_gallery", False)),
             color_only=bool(config.get("anime_color_only", True)),
+            heavy=self.heavy,
             tags=self.tagdb,
         )
 
@@ -481,6 +492,9 @@ class RandomPicPlugin(Star):
         """整本打包和抽图走同样的分级闸门；无法判定分级的按 R18 处理。"""
         if not gallery.tags:
             return "画廊缺少标签，无法做未成年过滤，不予打包。"
+        heavy = heavy_hit(gallery.tags, self.heavy)
+        if heavy:
+            return f"画廊带重口标签（{heavy}），不予打包。"
         if self.drawer.blacklist.hit(gallery.tags):
             return "画廊命中黑名单标签，不予打包。"
         _, rating = classify(gallery.category, gallery.tags)

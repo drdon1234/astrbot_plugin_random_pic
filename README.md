@@ -122,6 +122,16 @@ gid 随上传时间递增，所以这是按时间近似均匀的抽样。每张�
 
 每个池的分类和搜索条件都可以在 WebUI 的 `pools` 配置段里改。例如想在二次元 R18 里加入同人志，就在 `anime_explicit_categories` 中加上 `Doujinshi`（随机页多为漫画分镜）。
 
+## 屏蔽重口
+
+`block_heavy`（默认开启）：带重口标签的画廊不会被抽到，也不能用 `/pdf` 打包；关键词本身就是这类标签时（例如 `抽图 猎奇`，中文关键词会先翻译成标签）直接拒绝。不带命名空间的英文词是标题搜索（例如 `blood` 可能在找《Blood+》），不会被拒绝，抽到的画廊照样过滤。
+
+默认的 `heavy_tags`（按标签名匹配 `female` / `male` / `mixed` 命名空间，可在配置中增删）：
+
+`guro, low guro, snuff, amputee, body modification, vore, unbirth, absorption, scat, scat insertion, vomit, torture, blood, necrophilia, cannibalism, eye penetration, brain fuck, skinsuit, ryona, abortion, bestiality, prolapse, dismantling, piss drinking, farting, hanging, electric shocks, cbt, nose hook, insect, worm, parasite, cervix penetration, infantilism, diaper`
+
+即猎奇、杀害、截肢、身体改造、吞食、粪便、呕吐、拷打、血液、凌虐、兽交、脱垂、饮尿、虫类、宫颈穿透、尿布等。实测二次元 R18 池约 9% 的画廊带这类标签，二次元擦边池约 3%，三次元抽样中没有。洗脑、催眠、触手等不在默认列表里，需要时自行加入。
+
 ## 安全机制（硬性，不可通过配置关闭）
 
 1. **R18 双重闸门**：请求阶段先判断是否私聊，群聊一律拒绝 R18；结果阶段再按画廊实际分级复核，只要是 R18 就必须是私聊。R18 总开关 `r18_enabled` 默认关闭；群聊擦边由 `group_sensitive_enabled` 单独控制，默认关闭（关闭时群聊里本插件不可用）。

@@ -109,6 +109,69 @@ def classify(category: str, tags: list[str]) -> tuple[str, str | None]:
     return style, (None if style == REAL else EXPLICIT)
 
 
+# 重口标签（猎奇、截肢、粪便、兽交等），按标签名匹配 female / male / mixed 命名空间。
+# 默认屏蔽，可在配置中增删；实测二次元 R18 池约 9% 的画廊带这类标签
+HEAVY_TAGS = (
+    "guro",
+    "low guro",
+    "snuff",
+    "amputee",
+    "body modification",
+    "vore",
+    "unbirth",
+    "absorption",
+    "scat",
+    "scat insertion",
+    "vomit",
+    "torture",
+    "blood",
+    "necrophilia",
+    "cannibalism",
+    "eye penetration",
+    "brain fuck",
+    "skinsuit",
+    "ryona",
+    "abortion",
+    "bestiality",
+    "prolapse",
+    "dismantling",
+    "piss drinking",
+    "farting",
+    "hanging",
+    "electric shocks",
+    "cbt",
+    "nose hook",
+    "insect",
+    "worm",
+    "parasite",
+    "cervix penetration",
+    "infantilism",
+    "diaper",
+)
+HEAVY_NAMESPACES = ("female", "male", "mixed")
+# E-Hentai 搜索词形式的标签，例如 female:"body modification$"
+SEARCH_TAG_RE = re.compile(r'^(female|male|mixed):"?([^"$]+)\$?"?$')
+
+
+def heavy_hit(tags: list[str], heavy: frozenset[str]) -> str | None:
+    """返回画廊命中的重口标签名，未命中返回 None。"""
+    for tag in tags:
+        namespace, _, name = str(tag).strip().lower().partition(":")
+        if namespace in HEAVY_NAMESPACES and name in heavy:
+            return name
+    return None
+
+
+def heavy_search_term(term: str, heavy: frozenset[str]) -> str | None:
+    """搜索关键词本身就是屏蔽的重口标签时返回标签名。
+
+    只认标签写法（中文关键词会先被翻译成这种写法）；不带命名空间的英文词是标题搜索，
+    例如 blood 可能是在找《Blood+》，交给画廊复核过滤即可。
+    """
+    match = SEARCH_TAG_RE.match(term.strip().lower())
+    return match.group(2) if match and match.group(2) in heavy else None
+
+
 def request_gate(
     rating: str,
     is_private: bool,

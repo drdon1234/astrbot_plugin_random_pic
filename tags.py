@@ -32,6 +32,14 @@ INDEX_NAMESPACES = (
 # 下载失败后至少隔这么久再试
 RETRY_SECONDS = 600
 TRAILING_NOTE = re.compile(r"\s*[（(][^（()）]*[）)]$")
+# 部分中文名带表情符号，例如「粪便💩」「呕吐🤮」，用户输入时不会带
+EMOJI_RANGES = (
+    (0x1F000, 0x1FAFF),
+    (0x2600, 0x27BF),
+    (0xFE0F, 0xFE0F),
+    (0x200D, 0x200D),
+)
+EMOJI = re.compile("[" + "".join(f"{chr(a)}-{chr(b)}" for a, b in EMOJI_RANGES) + "]")
 
 
 def search_term(namespace: str, raw: str) -> str:
@@ -42,6 +50,7 @@ def name_variants(name: str) -> list[str]:
     """「榛名(鲑) | 春奈」→ ["榛名(鲑)", "春奈", "榛名"]，第一个是主名。"""
     names = [n.strip() for n in name.split("|") if n.strip()]
     stripped = [TRAILING_NOTE.sub("", n) for n in names]
+    stripped += [EMOJI.sub("", n).strip() for n in names + stripped]
     out = []
     for n in names + stripped:
         if n and n not in out:
