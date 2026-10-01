@@ -2,7 +2,7 @@
 
 import asyncio
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import aiohttp
@@ -19,8 +19,9 @@ from .ehentai import (
 )
 from .filters import TagBlacklist, check_gallery, heavy_hit, heavy_search_term
 from .imagecheck import is_colorful
-from .models import ANIME, EXPLICIT, RATINGS, STYLES, ImageItem, PicRequest
+from .models import ANIME, EXPLICIT, RATINGS, REAL, STYLES, ImageItem, PicRequest
 from .net import HttpError, ImageCache
+from .sixteenk import SixteenK
 from .tags import TagDB, TagIndex, search_term
 
 # 二次元擦边：无 H 画廊里带这些「擦边」属性之一的（实测纯画集有 78% 不带任何人物标签，
@@ -168,6 +169,9 @@ class Drawer:
         color_only: bool = True,
         heavy: frozenset[str] = frozenset(),
         tags: TagDB | None = None,
+        rating_enabled: bool = True,
+        sixteenk: SixteenK | None = None,
+        sixteenk_ratio: int = 0,
     ):
         self.eh = eh
         self.pools = pools
@@ -183,6 +187,9 @@ class Drawer:
         self.color_only = color_only
         self.heavy = heavy
         self.tags = tags
+        self.rating_enabled = rating_enabled
+        self.sixteenk = sixteenk
+        self.sixteenk_ratio = min(max(sixteenk_ratio, 0), 100)
 
     def _params(self, pool: Pool, terms: list[str]) -> dict:
         return build_search(
@@ -194,7 +201,45 @@ class Drawer:
             min_pages=self.min_pages,
         )
 
-    async def draw(self, req: PicRequest, is_private: bool) -> FetchResult:
+    def _sixteenk_share(self, req: PicRequest, allow_unrated: bool) -> int:
+        """这次抽卡里交给 16K 的张数。16K 不能搜索，带关键词或随机角色时不用。"""
+        if (
+            self.sixteenk is None
+            or not allow_unrated
+            or req.style != REAL
+            or req.tags
+            or req.random_character
+        ):
+            return 0
+        if self.same_gallery:
+            # 同一画廊模式整次抽卡只用一个图源
+            return req.count if random.randrange(100) < self.sixteenk_ratio else 0
+        return sum(random.randrange(100) < self.sixteenk_ratio for _ in range(req.count))
+
+    async def draw(
+        self, req: PicRequest, is_private: bool, allow_unrated: bool = False
+    ) -> FetchResult:
+        """allow_unrated：本次请求能否使用没有分级的图源（见 filters.unrated_allowed）。
+
+        16K 没抽够的张数由 E-Hentai 补上；两个图源的图片打乱顺序发送。
+        """
+        share = self._sixteenk_share(req, allow_unrated)
+        if not share:
+            return await self._draw_ehentai(req, is_private)
+        result = FetchResult()
+        result.images, result.errors = await self.sixteenk.draw(
+            share, req.rating, self.same_gallery
+        )
+        need = req.count - len(result.images)
+        if need > 0 and not (self.same_gallery and result.images):
+            rest = await self._draw_ehentai(replace(req, count=need), is_private)
+            result.images.extend(rest.images)
+            result.errors.extend(rest.errors)
+        if not self.same_gallery:
+            random.shuffle(result.images)
+        return result
+
+    async def _draw_ehentai(self, req: PicRequest, is_private: bool) -> FetchResult:
         result = FetchResult()
         pool = self.pools[(req.style, req.rating)]
         index = await self.tags.get() if self.tags else None
@@ -318,6 +363,7 @@ class Drawer:
             req.rating,
             is_private,
             self.blacklist,
+            self.rating_enabled,
         )
         if reason is None and (heavy := heavy_hit(gallery.tags, self.heavy)):
             reason = f"重口标签 {heavy}"

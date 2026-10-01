@@ -3,13 +3,19 @@
     "description": "启用 R18（总开关）",
     "type": "bool",
     "default": false,
-    "hint": "开启后 R18 仍然只允许私聊，群聊一律拒绝，此限制不可关闭。"
+    "hint": "开启「内容分级」时 R18 仍然只允许私聊，群聊一律拒绝；关闭「内容分级」后群聊也能使用 R18。"
   },
   "group_sensitive_enabled": {
     "description": "允许群聊使用擦边",
     "type": "bool",
     "default": false,
-    "hint": "私聊始终可用擦边；群聊需要开启此项，否则群聊中本插件不可用。"
+    "hint": "私聊始终可用擦边；群聊需要开启此项，否则群聊中本插件不可用。关闭「内容分级」后此项不再生效，群聊总是可用。"
+  },
+  "content_rating": {
+    "description": "内容分级",
+    "type": "bool",
+    "default": true,
+    "hint": "开启：R18 仅私聊，群聊擦边需单独开启，抽到的画廊按分类和标签复核分级；没有分级的 16K 按 R18 对待，只在私聊且开启 R18 时使用。关闭：不再区分分级，群聊和私聊可用的内容相同（R18 仍需「启用 R18」），画廊只复核风格，16K 在群聊也可用。未成年内容黑名单不受影响。"
   },
   "enable_aliases": {
     "description": "启用便捷别名 /二次元 /三次元 /擦边 /色图",
@@ -226,6 +232,25 @@
         "type": "float",
         "default": 0.5,
         "hint": "两次 E-Hentai 请求之间的最小间隔，过快可能被临时封禁 IP。"
+      }
+    }
+  },
+  "sixteenk": {
+    "description": "16K（三次元图源）",
+    "type": "object",
+    "hint": "16k.club：服务器端随机的三次元图源（自拍、cosplay、写真，夹杂少量 AI 图），图片没有标签和分级，擦边和露点都有。只用于不带关键词的三次元抽图（/随机角色 也不用），没抽到的张数由 E-Hentai 补上；帖子里的视频跳过，标题命中黑名单的帖子丢弃。16K 的图片不支持 /pdf。",
+    "items": {
+      "ratio": {
+        "description": "三次元使用 16K 的比例（%）",
+        "type": "int",
+        "default": 50,
+        "hint": "每张图按这个概率从 16K 抽，其余从 E-Hentai 抽；0 表示不用 16K，100 表示只用 16K。「多张图从同一画廊抽取」开启时整次抽卡只用一个图源。"
+      },
+      "use_proxy": {
+        "description": "走 E-Hentai 代理",
+        "type": "bool",
+        "default": true,
+        "hint": "16K 的接口和图片使用「E-Hentai / ExHentai」配置段里的 HTTP 代理。"
       }
     }
   },

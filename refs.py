@@ -71,20 +71,26 @@ def resolve_units(units: list[Unit], registry: SentRegistry) -> list[GalleryRef 
 def pick(
     refs: list[GalleryRef | None], index: int | None
 ) -> tuple[GalleryRef | None, str]:
-    """从候选里选出一个画廊；选不出时返回提示文字。"""
+    """从候选里选出一个画廊；选不出时返回提示文字。
+
+    16K 的图片登记为 gid 0：不加序号时忽略它们，只有全是 16K 图片时才返回（由调用方提示不支持）。
+    """
     if index is not None:
         if 1 <= index <= len(refs) and refs[index - 1]:
             return refs[index - 1], ""
         return None, f"序号 {index} 没有对应的画廊（共 {len(refs)} 项）。"
-    found = [r for r in refs if r]
+    found = [r for r in refs if r and r.gid]
     unique = {r.gid: r for r in found}
     if not unique:
+        other = next((r for r in refs if r), None)
+        if other:
+            return other, ""
         return None, "没有识别到画廊：请回复抽图发出的图片，或使用 /pdf <画廊链接>。"
     if len(unique) == 1:
         # 优先返回带标题的那条（来自登记表）
         return max(found, key=lambda r: bool(r.title)), ""
     lines = ["包含多个画廊，请加序号，例如 /pdf 2："]
     for i, ref in enumerate(refs, 1):
-        if ref:
+        if ref and ref.gid:
             lines.append(f"{i}. {ref.title or ref.gid}")
     return None, "\n".join(lines)

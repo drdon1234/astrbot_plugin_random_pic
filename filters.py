@@ -1,6 +1,7 @@
 """分级闸门、画廊分级判定与未成年内容标签过滤。
 
-这里的判定只依赖 E-Hentai 画廊的分类和标签，属于硬性规则，不开放配置。
+这里的判定只依赖 E-Hentai 画廊的分类和标签，不开放配置；只能用内容分级总开关整体关闭
+分级相关的判定，未成年内容过滤始终生效。
 """
 
 import re
@@ -177,16 +178,26 @@ def request_gate(
     is_private: bool,
     r18_enabled: bool,
     group_sensitive_enabled: bool,
+    rating_enabled: bool = True,
 ) -> str | None:
-    """请求阶段闸门。返回拒绝原因，允许时返回 None。"""
-    if rating == EXPLICIT:
-        if not is_private:
-            return "R18 内容仅限私聊。"
-        if not r18_enabled:
-            return "R18 功能未开启。"
+    """请求阶段闸门。返回拒绝原因，允许时返回 None。
+
+    关闭内容分级后不再区分私聊和群聊，只保留 R18 总开关。
+    """
+    if rating == EXPLICIT and not r18_enabled:
+        return "R18 功能未开启。"
+    if not rating_enabled:
+        return None
+    if rating == EXPLICIT and not is_private:
+        return "R18 内容仅限私聊。"
     if rating == SENSITIVE and not is_private and not group_sensitive_enabled:
         return "本群未开启擦边内容。"
     return None
+
+
+def unrated_allowed(is_private: bool, r18_enabled: bool, rating_enabled: bool) -> bool:
+    """没有分级的图源（16K）能否使用：开启内容分级时按 R18 对待。"""
+    return not rating_enabled or (is_private and r18_enabled)
 
 
 def check_gallery(
@@ -196,18 +207,23 @@ def check_gallery(
     rating: str,
     is_private: bool,
     blacklist: TagBlacklist,
+    rating_enabled: bool = True,
 ) -> str | None:
-    """结果阶段复核。返回丢弃原因，通过时返回 None。"""
+    """结果阶段复核。返回丢弃原因，通过时返回 None。
+
+    关闭内容分级后只复核风格和黑名单。
+    """
     real_style, real_rating = classify(category, tags)
     if real_style != style:
         return f"风格不符（{category}）"
-    if real_rating is None:
-        return "缺少可判定分级的标签"
-    if real_rating != rating:
-        return f"分级不符（请求 {rating}，实际 {real_rating}）"
-    # R18 双重闸门的第二道：以画廊实际分级为准复核私聊
-    if real_rating == EXPLICIT and not is_private:
-        return "R18 结果出现在非私聊会话"
+    if rating_enabled:
+        if real_rating is None:
+            return "缺少可判定分级的标签"
+        if real_rating != rating:
+            return f"分级不符（请求 {rating}，实际 {real_rating}）"
+        # R18 双重闸门的第二道：以画廊实际分级为准复核私聊
+        if real_rating == EXPLICIT and not is_private:
+            return "R18 结果出现在非私聊会话"
     if not tags:
         return "画廊缺少标签，无法做未成年过滤"
     term = blacklist.hit(tags)

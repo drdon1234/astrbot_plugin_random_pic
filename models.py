@@ -43,3 +43,4 @@ class ImageItem:
     tags: list[str] = field(default_factory=list)
     parodies: list[str] = field(default_factory=list)  # 中文名（标签库可用时）
     characters: list[str] = field(default_factory=list)
+    source: str = "ehentai"  # 图源：ehentai / 16k

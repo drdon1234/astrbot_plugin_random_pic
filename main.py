@@ -1,4 +1,4 @@
-"""E-Hentai 随机抽卡插件：指令与参数解析。"""
+"""E-Hentai / 16K 随机抽卡插件：指令与参数解析。"""
 
 import asyncio
 import re
@@ -16,7 +16,14 @@ from astrbot.api.star import Context, Star, StarTools
 
 from .drawer import Drawer, build_pools
 from .ehentai import EHentai, EHentaiError
-from .filters import HEAVY_TAGS, TagBlacklist, classify, heavy_hit, request_gate
+from .filters import (
+    HEAVY_TAGS,
+    TagBlacklist,
+    classify,
+    heavy_hit,
+    request_gate,
+    unrated_allowed,
+)
 from .models import (
     ANIME,
     EXPLICIT,
@@ -31,6 +38,7 @@ from .net import HttpClient, HttpError, ImageCache
 from .pdf import write_pdf
 from .refs import Unit, gallery_from_text, message_units, pick, resolve_units
 from .registry import GalleryRef, SentRegistry
+from .sixteenk import SOURCE as SIXTEENK, SixteenK
 from .tags import DEFAULT_DB_URL, TagDB
 
 PLUGIN_NAME = "astrbot_plugin_random_pic"
@@ -105,6 +113,12 @@ def parse_args(
 
 
 def format_caption(item: ImageItem) -> str:
+    if item.source == SIXTEENK:
+        lines = [f"标题：{item.title}"] if item.title else []
+        if item.pages > 1:
+            lines.append(f"16K · 第 {item.page}/{item.pages} 张")
+        lines.append(f"帖子：{item.gallery_url}")
+        return "\n".join(lines)
     lines = []
     if item.title:
         lines.append(f"标题：{item.title}")
@@ -165,6 +179,7 @@ class RandomPicPlugin(Star):
         )
         self.pdf_tmp = data_dir / "pdf_tmp"
         self._pdf_lock = asyncio.Lock()
+        self.rating_enabled = bool(config.get("content_rating", True))
         heavy = config.get("heavy_tags")
         self.heavy = (
             frozenset(
@@ -193,6 +208,15 @@ class RandomPicPlugin(Star):
             max_image_mb=float(cache_conf.get("max_image_mb", 10)),
         )
         proxy = (eh_conf.get("proxy") or "").strip() or None
+        blacklist = TagBlacklist(config.get("extra_blacklist", []))
+        sk_conf = config.get("sixteenk", {})
+        self.sixteenk_ratio = min(max(int(sk_conf.get("ratio", 50)), 0), 100)
+        sixteenk = SixteenK(
+            self.http,
+            cache,
+            proxy if sk_conf.get("use_proxy", True) else None,
+            blacklist,
+        )
         eh = EHentai(
             self.http,
             site_url,
@@ -214,7 +238,7 @@ class RandomPicPlugin(Star):
         self.drawer = Drawer(
             eh,
             build_pools(config.get("pools", {})),
-            TagBlacklist(config.get("extra_blacklist", [])),
+            blacklist,
             cache,
             int(config.get("max_retries", 3)),
             exclude_ai=bool(eh_conf.get("exclude_ai", True)),
@@ -226,6 +250,9 @@ class RandomPicPlugin(Star):
             color_only=bool(config.get("anime_color_only", True)),
             heavy=self.heavy,
             tags=self.tagdb,
+            rating_enabled=self.rating_enabled,
+            sixteenk=sixteenk,
+            sixteenk_ratio=self.sixteenk_ratio,
         )
 
     async def initialize(self):
@@ -329,11 +356,13 @@ class RandomPicPlugin(Star):
         req.random_character = random_character
         is_private = event.is_private_chat()
 
+        r18_enabled = bool(self.config.get("r18_enabled", False))
         denied = request_gate(
             req.rating,
             is_private,
-            bool(self.config.get("r18_enabled", False)),
+            r18_enabled,
             bool(self.config.get("group_sensitive_enabled", False)),
+            self.rating_enabled,
         )
         if denied:
             yield event.plain_result(denied)
@@ -345,7 +374,11 @@ class RandomPicPlugin(Star):
             return
         self._last_use[user_id] = time.monotonic()
 
-        result = await self.drawer.draw(req, is_private)
+        result = await self.drawer.draw(
+            req,
+            is_private,
+            unrated_allowed(is_private, r18_enabled, self.rating_enabled),
+        )
         if not result.images:
             detail = "；".join(result.errors[:6]) or "未知原因"
             logger.warning(f"[random_pic] 获取失败 {req}: {detail}")
@@ -407,6 +440,9 @@ class RandomPicPlugin(Star):
         ref, hint = await self._pdf_target(event, tokens)
         if ref is None:
             yield event.plain_result(hint)
+            return
+        if not ref.gid:
+            yield event.plain_result("16K 的图片没有画廊，不支持整本 PDF。")
             return
         try:
             gallery = await self.drawer.eh.gallery(ref.gid, ref.token)
@@ -503,6 +539,7 @@ class RandomPicPlugin(Star):
             is_private,
             bool(self.config.get("r18_enabled", False)),
             bool(self.config.get("group_sensitive_enabled", False)),
+            self.rating_enabled,
         )
 
     def _pages_per_file(self) -> int:
@@ -594,9 +631,20 @@ class RandomPicPlugin(Star):
             )
         if self.config.get("enable_aliases", True):
             lines.append("别名：/二次元 /三次元 /擦边 /色图")
+        r18 = on_off[bool(self.config.get("r18_enabled", False))]
+        if self.rating_enabled:
+            lines.append(
+                f"R18：仅限私聊（{r18}）；"
+                f"群聊擦边：{on_off[bool(self.config.get('group_sensitive_enabled', False))]}"
+            )
+        else:
+            lines.append(f"内容分级已关闭，群聊和私聊内容相同；R18：{r18}")
+        if self.sixteenk_ratio:
+            where = "私聊且开启 R18 时" if self.rating_enabled else ""
+            lines.append(
+                f"三次元不带关键词时，{where}部分图片来自 16K（没有分级，擦边和 R18 都可能抽到）"
+            )
         lines += [
-            f"R18：仅限私聊（{on_off[bool(self.config.get('r18_enabled', False))]}）；"
-            f"群聊擦边：{on_off[bool(self.config.get('group_sensitive_enabled', False))]}",
             "示例：/抽图 原神 2　/抽图 二次元 芙莉莲",
             "/抽图 帮助：显示本说明",
         ]
