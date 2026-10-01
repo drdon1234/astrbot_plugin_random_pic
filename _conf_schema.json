@@ -117,12 +117,6 @@
         "type": "bool",
         "default": true,
         "hint": "每个图集最后附作者、作品、角色、标签和画廊 / 帖子链接。"
-      },
-      "image_quality": {
-        "description": "图片质量",
-        "type": "int",
-        "default": 85,
-        "hint": "发送的图片和整本 PDF 的每一页都转成这个质量的 JPEG（1~100），图片更小、发送更快；0 表示原图。动图，以及转换后不会更小的 JPEG 保持原样。修改后已打包的 PDF 不会重新生成。"
       }
     }
   },
@@ -463,6 +457,19 @@
         "type": "string",
         "default": "",
         "hint": "留空为插件数据目录下的 pdf 文件夹。QQ 机器人（NapCat 等）与 AstrBot 分属不同容器时，必须填两边路径相同的共享目录，例如 /app/sharedFolder/random_pic_pdf，否则文件发不出去。"
+      },
+      "compress": {
+        "description": "压缩图片",
+        "type": "bool",
+        "default": true,
+        "hint": "开启：每页转成下面质量的 JPEG，PDF 更小；原图是 JPEG 且转换后不会更小时保留原图。关闭：JPEG 页面原样放入，其他格式（如 webp）按质量 95 转成 JPEG（PDF 只能放 JPEG）。修改后已打包的 PDF 不会重新生成。"
+      },
+      "jpeg_quality": {
+        "description": "JPEG 质量",
+        "type": "int",
+        "default": 85,
+        "condition": {"compress": true},
+        "hint": "1~100，越小文件越小、画质越差。"
       },
       "keep_galleries": {
         "description": "保留的画廊数",

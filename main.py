@@ -122,7 +122,6 @@ class RandomPicPlugin(Star):
             data_dir / "cache",
             s.network.cache_mb,
             s.network.max_image_mb,
-            s.send.image_quality,
         )
         self.content = ContentFilter(s.draw.extra_blacklist, s.draw.heavy)
         opts = DrawOptions(
@@ -175,7 +174,7 @@ class RandomPicPlugin(Star):
             data_dir / "pdf_tmp",
             s.pdf.pages_per_file,
             s.pdf.keep_galleries,
-            s.send.image_quality,
+            s.pdf.quality,
         )
         self._preload: asyncio.Task | None = None
 

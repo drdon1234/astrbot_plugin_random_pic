@@ -59,10 +59,6 @@ class Send:
     mode: str
     header: bool
     caption: bool
-    image_quality: int
-
-    def __post_init__(self):
-        self.image_quality = min(max(self.image_quality, 0), 100)
 
 
 @dataclass
@@ -165,12 +161,20 @@ class Pdf:
     enabled: bool
     pages_per_file: int
     output_dir: str
+    compress: bool
+    jpeg_quality: int
     keep_galleries: int
 
     def __post_init__(self):
         self.pages_per_file = max(1, self.pages_per_file)
         self.output_dir = self.output_dir.strip()
         self.keep_galleries = max(1, self.keep_galleries)
+        self.jpeg_quality = min(max(self.jpeg_quality, 1), 100)
+
+    @property
+    def quality(self) -> int:
+        """页面的 JPEG 质量，0 表示不压缩。"""
+        return self.jpeg_quality if self.compress else 0
 
 
 @dataclass

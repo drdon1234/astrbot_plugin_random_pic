@@ -2,7 +2,7 @@ name: astrbot_plugin_random_pic
 display_name: 随机图片
 desc: 随机抽图：风格（二次元/三次元）× 分级（擦边/R18），二次元来自 E-Hentai，三次元按权重混合 E-Hentai、16K 和哔咔 Cosplay；按图集抽取，支持中文关键词与随机角色、合并转发 / 图文混合发送、回复图片获取整本 PDF，R18 仅私聊并做未成年内容过滤。
 short_desc: 随机抽图：二次元/三次元 × 擦边/R18，支持中文关键词与随机角色。
-version: 3.1.0
+version: 3.2.0
 author: drdon1234
 repo: https://github.com/drdon1234/astrbot_plugin_random_pic
 astrbot_version: ">=4.10.4"
