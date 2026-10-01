@@ -213,6 +213,7 @@ class RandomPicPlugin(Star):
             cover_only=eh_conf.get("page_pick", "随机页") == "封面",
             explicit_skip=float(eh_conf.get("explicit_skip_ratio", 0.3)),
             same_gallery=bool(config.get("same_gallery", False)),
+            color_only=bool(config.get("anime_color_only", True)),
             tags=self.tagdb,
         )
 

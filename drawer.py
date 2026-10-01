@@ -18,20 +18,34 @@ from .ehentai import (
     build_search,
 )
 from .filters import TagBlacklist, check_gallery
-from .models import EXPLICIT, RATINGS, STYLES, ImageItem, PicRequest
+from .imagecheck import is_colorful
+from .models import ANIME, EXPLICIT, RATINGS, STYLES, ImageItem, PicRequest
 from .net import HttpError, ImageCache
 from .tags import TagDB, TagIndex, search_term
 
+# 二次元擦边：无 H 画廊里带这些「擦边」属性之一的（实测纯画集有 78% 不带任何人物标签，
+# 多是设定集、线稿和教程）
+ANIME_SENSITIVE_SEARCH = (
+    '~female:swimsuit$ ~female:bikini$ ~female:"micro bikini$" ~female:lingerie$ '
+    '~female:"bunny girl$" ~female:leotard$ ~female:"big breasts$" ~female:"huge breasts$" '
+    '~female:"big ass$" ~female:pantyhose$ ~female:stockings$ ~female:"garter belt$" '
+    '~female:"exposed clothing$" ~female:"school swimsuit$" ~female:bodysuit$ '
+    '~female:"thigh high boots$" ~female:maid$ '
+    '-other:"nudity only$" -other:"sketch lines$" -other:"how to$"'
+)
+
 DEFAULT_POOLS = {
-    # 画集与无 H 图集，避免抽到整页文字的漫画
+    # 再要求是画集或图集，排除整页文字的漫画
     "anime_sensitive": {
         "categories": ["Non-H"],
-        "search": '~other:artbook$ ~other:"non-h imageset$" -other:"nudity only$"',
+        "search": ANIME_SENSITIVE_SEARCH,
+        "require": ["other:artbook", "other:non-h imageset"],
     },
-    # 单张 CG 比同人志、漫画的随机一页更适合抽卡
+    # 单张 CG 比同人志、漫画的随机一页更适合抽卡；要求有人物标签，排除未打标签的杂图
     "anime_explicit": {
         "categories": ["Artist CG", "Game CG", "Image Set"],
-        "search": '-other:"non-nude$"',
+        "search": '-other:"non-nude$" -other:"sketch lines$"',
+        "require": ["female:*", "male:*", "mixed:*"],
     },
     # Asian Porn 的无露点画廊以杂志写真为主
     "real_sensitive": {
@@ -49,8 +63,12 @@ DEFAULT_POOLS = {
     },
 }
 
-# 每次随机跳转后最多尝试的画廊数，未通过复核或下载失败时换同一页的下一个
+# 每次随机跳转后最多尝试的画廊数，未通过复核或下载失败时换同一页的下一个；
+# 画廊池有本地标签要求时多取一些（一页最多 25 个，一次元数据请求就能查完）
 CANDIDATES_PER_JUMP = 3
+CANDIDATES_WITH_REQUIRE = 10
+# 二次元黑白页被丢弃时，同一画廊里最多多试这么多页
+COLOR_RETRIES = 4
 AUTHOR_NAMESPACES = ("artist", "cosplayer", "group")
 # 随机角色模式下，每张图最多换这么多个角色（没有画廊的角色每个只花一次请求）
 CHARACTER_TRIES = 10
@@ -62,6 +80,21 @@ MAX_NAMES = 3
 class Pool:
     categories: list[str]
     search: str
+    # 画廊至少要带其中一个标签；「female:*」表示该命名空间下任意标签
+    require: list[str] = field(default_factory=list)
+
+    def missing_required(self, tags: list[str]) -> bool:
+        if not self.require:
+            return False
+        tagset = {t.lower() for t in tags}
+        namespaces = {t.split(":", 1)[0] for t in tagset}
+        for want in self.require:
+            want = want.strip().lower()
+            if want.endswith(":*") and want[:-2] in namespaces:
+                return False
+            if want in tagset:
+                return False
+        return True
 
 
 @dataclass
@@ -82,11 +115,22 @@ def build_pools(conf: dict) -> dict[tuple[str, str], Pool]:
             default = DEFAULT_POOLS[key]
             categories = conf.get(f"{key}_categories") or default["categories"]
             search = conf.get(f"{key}_search")
+            require = conf.get(f"{key}_require")
             pools[(style, rating)] = Pool(
                 [str(c).strip() for c in categories],
                 default["search"] if search is None else str(search),
+                list(default.get("require", []) if require is None else require),
             )
     return pools
+
+
+def colorful(path: Path) -> bool:
+    """图片损坏无法判断时按黑白处理（丢弃换页）。"""
+    try:
+        return is_colorful(path)
+    except Exception as e:
+        logger.warning(f"[random_pic] 无法判断是否彩图 {path}: {e!r}")
+        return False
 
 
 def gallery_author(gallery: Gallery) -> str:
@@ -121,6 +165,7 @@ class Drawer:
         cover_only: bool,
         explicit_skip: float = 0.0,
         same_gallery: bool = False,
+        color_only: bool = True,
         tags: TagDB | None = None,
     ):
         self.eh = eh
@@ -134,6 +179,7 @@ class Drawer:
         self.cover_only = cover_only
         self.explicit_skip = min(max(explicit_skip, 0.0), 0.9)
         self.same_gallery = same_gallery
+        self.color_only = color_only
         self.tags = tags
 
     def _params(self, pool: Pool, terms: list[str]) -> dict:
@@ -208,7 +254,8 @@ class Drawer:
             listing = await self._listing(req, pool, terms, index)
             candidates = [g for g in listing if g[0] not in seen]
             random.shuffle(candidates)
-            groups.append(candidates[:CANDIDATES_PER_JUMP])
+            per_jump = CANDIDATES_WITH_REQUIRE if pool.require else CANDIDATES_PER_JUMP
+            groups.append(candidates[:per_jump])
         metas = await self.eh.gdata([g for group in groups for g in group])
 
         discarded = 0
@@ -218,7 +265,7 @@ class Drawer:
                     continue
                 seen.add(gid)
                 gallery = metas.get(gid)
-                reason = self._reject(gallery, req, is_private)
+                reason = self._reject(gallery, req, is_private, pool)
                 if reason:
                     logger.info(f"[random_pic] 丢弃画廊 {gid}: {reason}")
                     discarded += 1
@@ -247,7 +294,7 @@ class Drawer:
         raise EHentaiError(f"连续 {CHARACTER_TRIES} 个随机角色都没有符合条件的画廊")
 
     def _reject(
-        self, gallery: Gallery | None, req: PicRequest, is_private: bool
+        self, gallery: Gallery | None, req: PicRequest, is_private: bool, pool: Pool
     ) -> str | None:
         if gallery is None:
             return "元数据缺失"
@@ -255,7 +302,7 @@ class Drawer:
             return "画廊已被删除"
         if gallery.filecount <= 0:
             return "画廊没有图片"
-        return check_gallery(
+        reason = check_gallery(
             gallery.category,
             gallery.tags,
             req.style,
@@ -263,9 +310,12 @@ class Drawer:
             is_private,
             self.blacklist,
         )
+        if reason is None and pool.missing_required(gallery.tags):
+            reason = "缺少画廊池要求的标签"
+        return reason
 
-    def _page_indices(self, gallery: Gallery, req: PicRequest, n: int) -> list[int]:
-        """选 n 个不重复的页（从 0 开始），按页码升序。"""
+    def _page_candidates(self, gallery: Gallery, req: PicRequest, n: int) -> list[int]:
+        """按尝试顺序返回至多 n 个不重复的页（从 0 开始）。"""
         if self.cover_only:
             return list(range(min(n, gallery.filecount)))
         # R18 画廊通常从穿着完整开始，跳过前一段
@@ -273,18 +323,30 @@ class Drawer:
             int(gallery.filecount * self.explicit_skip) if req.rating == EXPLICIT else 0
         )
         population = range(start, gallery.filecount)
-        return sorted(random.sample(population, min(n, len(population))))
+        return random.sample(population, min(n, len(population)))
 
     async def _fetch_images(
         self, gallery: Gallery, req: PicRequest, index: TagIndex | None, n: int
     ) -> list[tuple[ImageItem, Path]]:
-        """按页码顺序逐张取图，保证同一画廊的多张图按顺序发送。"""
+        """取 n 张图，按页码排序后返回，保证同一画廊的多张图按顺序发送。
+
+        二次元只要彩图时，黑白页（线稿、黑白漫画）丢弃后换一页，最多多试 COLOR_RETRIES 页。
+        """
+        check_color = self.color_only and req.style == ANIME
+        tries = n + (COLOR_RETRIES if check_color else 0)
         items = []
-        for page_index in self._page_indices(gallery, req, n):
+        for page_index in self._page_candidates(gallery, req, tries):
+            if len(items) >= n:
+                break
             item = await self._fetch_image(gallery, req, index, page_index)
-            if item:
-                items.append(item)
-        return items
+            if item is None:
+                continue
+            if check_color and not await asyncio.to_thread(colorful, item[1]):
+                logger.info(f"[random_pic] 丢弃黑白页 {item[0].page_url}")
+                item[1].unlink(missing_ok=True)
+                continue
+            items.append(item)
+        return sorted(items, key=lambda it: it[0].page)
 
     async def _fetch_image(
         self,

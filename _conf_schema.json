@@ -64,6 +64,12 @@
     "default": false,
     "hint": "开启后一次抽卡只选一个画廊，从中随机抽多页并按页码顺序发送；画廊页数不足时少发几张。"
   },
+  "anime_color_only": {
+    "description": "二次元只发彩图",
+    "type": "bool",
+    "default": true,
+    "hint": "下载后检查图片，黑白页（线稿、黑白漫画、草图）丢弃并换同一画廊的另一页，每个画廊最多多试 4 页。三次元不检查。"
+  },
   "default_count": {
     "description": "单次抽卡张数",
     "type": "int",
@@ -91,7 +97,7 @@
     "description": "追加的标签黑名单",
     "type": "list",
     "default": [],
-    "hint": "内置基线黑名单（loli、lolicon、shota、shotacon、toddlercon、child、toddler、萝莉、正太、幼女、幼児、ロリ、ショタ 等）始终生效且不可删除，这里只能追加。匹配 E-Hentai 标签，忽略大小写，例如 guro。"
+    "hint": "内置基线黑名单（loli、lolicon、shota、shotacon、toddlercon、child、toddler、randoseru、kindergarten uniform、age regression、萝莉、正太、幼女、幼児、ロリ、ショタ 等）始终生效且不可删除，这里只能追加。匹配 E-Hentai 标签，忽略大小写，例如 guro。"
   },
   "ehentai": {
     "description": "E-Hentai / ExHentai",
@@ -190,8 +196,17 @@
       "anime_sensitive_search": {
         "description": "二次元 × 擦边：搜索条件",
         "type": "string",
-        "default": "~other:artbook$ ~other:\"non-h imageset$\" -other:\"nudity only$\"",
-        "hint": "默认只取画集和无 H 图集，避免抽到满页文字的漫画。"
+        "default": "~female:swimsuit$ ~female:bikini$ ~female:\"micro bikini$\" ~female:lingerie$ ~female:\"bunny girl$\" ~female:leotard$ ~female:\"big breasts$\" ~female:\"huge breasts$\" ~female:\"big ass$\" ~female:pantyhose$ ~female:stockings$ ~female:\"garter belt$\" ~female:\"exposed clothing$\" ~female:\"school swimsuit$\" ~female:bodysuit$ ~female:\"thigh high boots$\" ~female:maid$ -other:\"nudity only$\" -other:\"sketch lines$\" -other:\"how to$\"",
+        "hint": "默认：无 H 画廊中带泳装、比基尼、内衣、兔女郎、大胸等擦边属性之一，排除裸露、线稿和绘画教程。"
+      },
+      "anime_sensitive_require": {
+        "description": "二次元 × 擦边：必须带其一的标签",
+        "type": "list",
+        "default": [
+          "other:artbook",
+          "other:non-h imageset"
+        ],
+        "hint": "抽到的画廊至少要带其中一个标签，否则换下一个；写 female:* 表示 female 命名空间下任意标签。留空表示不要求。默认要求是画集或图集，排除整页文字的漫画。"
       },
       "anime_explicit_categories": {
         "description": "二次元 × R18：分类",
@@ -206,7 +221,17 @@
       "anime_explicit_search": {
         "description": "二次元 × R18：搜索条件",
         "type": "string",
-        "default": "-other:\"non-nude$\""
+        "default": "-other:\"non-nude$\" -other:\"sketch lines$\""
+      },
+      "anime_explicit_require": {
+        "description": "二次元 × R18：必须带其一的标签",
+        "type": "list",
+        "default": [
+          "female:*",
+          "male:*",
+          "mixed:*"
+        ],
+        "hint": "抽到的画廊至少要带其中一个标签，否则换下一个；写 female:* 表示 female 命名空间下任意标签。留空表示不要求。默认要求带人物标签，排除没打标签的杂图。"
       },
       "real_sensitive_categories": {
         "description": "三次元 × 擦边：分类",
@@ -222,6 +247,12 @@
         "type": "string",
         "default": "other:\"non-nude$\" -other:\"nudity only$\""
       },
+      "real_sensitive_require": {
+        "description": "三次元 × 擦边：必须带其一的标签",
+        "type": "list",
+        "default": [],
+        "hint": "抽到的画廊至少要带其中一个标签，否则换下一个；写 female:* 表示 female 命名空间下任意标签。留空表示不要求。"
+      },
       "real_explicit_categories": {
         "description": "三次元 × R18：分类",
         "type": "list",
@@ -235,6 +266,12 @@
         "type": "string",
         "default": "~other:\"nudity only$\" ~other:uncensored$ ~other:\"mosaic censorship$\" ~other:\"full censorship$\" ~other:hardcore$ ~other:\"no penetration$\" ~other:\"object insertion only$\"",
         "hint": "默认只取带裸露或性内容标签的画廊（任一即可）。"
+      },
+      "real_explicit_require": {
+        "description": "三次元 × R18：必须带其一的标签",
+        "type": "list",
+        "default": [],
+        "hint": "抽到的画廊至少要带其中一个标签，否则换下一个；写 female:* 表示 female 命名空间下任意标签。留空表示不要求。"
       }
     }
   },

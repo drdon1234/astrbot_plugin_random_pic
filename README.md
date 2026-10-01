@@ -107,8 +107,14 @@ gid 随上传时间递增，所以这是按时间近似均匀的抽样。每张�
 
 | 风格 \ 分级 | 擦边 | R18 |
 |---|---|---|
-| 二次元 | Non-H，且带 `artbook` 或 `non-h imageset` 标签 | Artist CG / Game CG / Image Set，排除 `non-nude` |
+| 二次元 | Non-H，带泳装 / 比基尼 / 内衣 / 兔女郎 / 大胸等擦边属性之一，且是画集或图集（`artbook` / `non-h imageset`） | Artist CG / Game CG / Image Set，必须带人物标签（`female:` / `male:` / `mixed:`），排除 `non-nude` |
 | 三次元 | Cosplay / Asian Porn，带 `non-nude`，排除 `nudity only` | Cosplay，带任一裸露 / 性内容标签（见下） |
+
+二次元两个池都排除线稿（`sketch lines`），擦边池还排除裸露和绘画教程。
+
+为什么这样定：抽样 200 个旧版二次元擦边池（纯画集 / 图集）的画廊，78% 不带任何人物标签，多是设定集、线稿和教程，例如机甲动画画集、速写本；无 H 分类本身也不是擦边分类（还有百合漫画、游戏说明书等）。所以改为先按擦边属性搜索，再在本地要求是画集或图集（排除整页文字的漫画）。「必须带其一的标签」可以在 `pools` 配置段修改，`female:*` 表示该命名空间下任意标签。
+
+**二次元只发彩图**（`anime_color_only`，默认开启）：图片下载后检查颜色，黑白页（黑白漫画、线稿、草图）丢弃并换同一画廊的另一页，每个画廊最多多试 4 页。实测黑白页的彩色像素占比为 0，最素淡的彩色画集页也有 17%，阈值取 5%。画廊标签无法保证这一点：标了 `full color` 的画集里也有黑白线稿页。
 
 全局还会加上 `ehentai` 配置段的条件：最低评分（默认 4 星）、排除 AI 生成画廊（默认开启）、最少页数（默认不限）。
 
@@ -129,7 +135,8 @@ gid 随上传时间递增，所以这是按时间近似均匀的抽样。每张�
    - 抽样实测（500 个 Cosplay 画廊）：约 78% 带 `non-nude`，约 20% 带裸露 / 性内容标签，约 2% 两者都没有；另有约 0.5% 同时带 `non-nude` 和打码标签。
    - 标签是画廊级的。R18 画廊里的随机一页可能是还穿着衣服的开头部分；擦边画廊同理不会露出。
 3. **未成年内容过滤**：检查画廊的全部标签，命中黑名单就丢弃并重抽；没有标签的画廊也会被丢弃。内置基线黑名单不可删除，只能通过 `extra_blacklist` 追加：
-   `loli, lolicon, shota, shotacon, toddlercon, child, female_child, male_child, toddler, 萝莉, 正太, 幼女, 幼児, ロリ, ショタ`
+   `loli, lolicon, shota, shotacon, toddlercon, child, female_child, male_child, toddler, randoseru, kindergarten uniform, age regression, 萝莉, 正太, 幼女, 幼児, ロリ, ショタ`
+   - `randoseru`（小学生书包）等低龄指向标签：无 H 画廊不会打 `lolicon`，但常带这类标签。
    - 匹配忽略大小写。英文词按整词匹配（`:`、`_`、空格等视为分隔，所以 `female:lolicon` 会命中，`lolita fashion` 不会）；中日文词按子串匹配。
    - 匿名访问 E-Hentai 表站时，`lolicon`、`shotacon` 等内容本来就搜不到（只在里站），黑名单是第二道保险。
 4. **访问控制**：群白名单（留空表示所有群可用）、用户黑名单、每人冷却时间和每人每日图片上限（按成功发出的张数计）。黑名单用户和白名单以外的群不会收到任何回复。冷却和每日计数保存在内存中，重启插件后清零。

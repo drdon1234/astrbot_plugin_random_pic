@@ -18,6 +18,10 @@ BASE_BLACKLIST = (
     "female_child",
     "male_child",
     "toddler",
+    # 低龄指向的服饰 / 设定：无 H 画廊不会打 lolicon，但常带这些标签
+    "randoseru",
+    "kindergarten uniform",
+    "age regression",
     "萝莉",
     "正太",
     "幼女",
