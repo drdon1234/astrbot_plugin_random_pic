@@ -57,7 +57,7 @@ LISTING_TTL = 3600
 # 搜索结果的总页数缓存 10 分钟
 SEARCH_TTL = 600
 SEARCH_CACHE_SIZE = 256
-# 每张图最多看这么多页列表（一页里没有符合分级、黑名单的本子或下载失败时换一页）
+# 每个图集最多看这么多页列表（一页里没有符合分级、黑名单的本子或下载失败时换一页）
 LISTINGS_PER_IMAGE = 4
 # 搜索结果不带标签时，每页最多查这么多本的详情
 DETAIL_TRIES = 3
@@ -308,53 +308,43 @@ class Picacomic:
     async def draw(
         self,
         n: int,
+        per_album: int,
         rating: str,
-        same_comic: bool,
         terms: list[str] = (),
         concurrency: int = 1,
-    ) -> tuple[list[tuple[ImageItem, Path]], list[str]]:
-        """抽 n 张图。same_comic 时只取一本，按页码顺序取至多 n 张；否则每本取一张，并发抽取。
+    ) -> tuple[list[list[tuple[ImageItem, Path]]], list[str]]:
+        """抽 n 本，每本取至多 per_album 张（按页码排序），并发抽取。
 
         terms 是关键词（只支持普通词，见 supports_terms），以 - 开头的词表示排除。
         """
         keyword, exclude = split_terms(list(terms))
-        images: list[tuple[ImageItem, Path]] = []
+        albums: list[list[tuple[ImageItem, Path]]] = []
         errors: list[str] = []
         seen: set[str] = set()
         skipped = 0
 
-        async def attempt(count: int) -> list[tuple[ImageItem, Path]]:
+        async def attempt() -> list[tuple[ImageItem, Path]] | None:
             nonlocal skipped
             try:
                 comic = await self._pick(keyword, exclude, rating, seen)
-                items = await self._fetch(comic, count, concurrency) if comic else []
+                items = await self._fetch(comic, per_album, concurrency) if comic else []
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 logger.warning(f"[random_pic] 哔咔请求失败: {e!r}")
                 if "哔咔请求失败" not in errors:
                     errors.append("哔咔请求失败")
-                return []
+                return None
             if not items:
                 skipped += 1
-            return items
-
-        async def one() -> tuple[ImageItem, Path] | None:
-            items = await attempt(1)
-            return items[0] if items else None
+            return items or None
 
         try:
-            if same_comic:
-                for _ in range(LISTINGS_PER_IMAGE):
-                    images.extend(await attempt(n))
-                    if images:
-                        break
-            else:
-                await fill(images, n, LISTINGS_PER_IMAGE * n, concurrency, one)
+            await fill(albums, n, LISTINGS_PER_IMAGE * n, concurrency, attempt)
         except PicaError as e:
             logger.warning(f"[random_pic] {e}")
             errors.append(str(e))
         if skipped:
             errors.append(f"{skipped} 次哔咔抽取没有符合条件的本子或下载失败")
-        return images, errors
+        return albums, errors
 
     async def _episode_page(self, cid: str, order: int, page: int) -> dict:
         data = await self._request(f"comics/{cid}/order/{order}/pages?page={page}")

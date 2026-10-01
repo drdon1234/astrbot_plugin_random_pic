@@ -21,8 +21,13 @@ class PicRequest:
     tags: list[str] = field(
         default_factory=list
     )  # 追加到 E-Hentai 搜索词，中文名经标签库翻译
-    count: int = 1
-    random_character: bool = False  # 每张图先随机抽一个角色，再在该角色的画廊中抽
+    count: int = 1  # 图集数：抽几个画廊 / 帖子 / 本子
+    per_album: int = 1  # 每个图集抽几张
+    random_character: bool = False  # 每个图集先随机抽一个角色，再在该角色的画廊中抽
+
+    @property
+    def images(self) -> int:
+        return self.count * self.per_album
 
 
 @dataclass

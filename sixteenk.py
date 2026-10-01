@@ -28,7 +28,7 @@ from .workers import fill
 API_URL = "https://16k.club/api.php"
 POST_URL = "https://16k.club/post/{}/"
 SOURCE = "16k"
-# 每张图最多看这么多个帖子（全是视频、命中黑名单或下载失败时换下一个）
+# 每个图集最多看这么多个帖子（全是视频、命中黑名单或下载失败时换下一个）
 POSTS_PER_IMAGE = 4
 # 单次请求失败（偶发 TLS 握手中断）时的重试次数
 REQUEST_RETRIES = 2
@@ -106,19 +106,20 @@ class SixteenK:
         return pid, data
 
     async def draw(
-        self, n: int, rating: str, concurrency: int = 1
-    ) -> tuple[list[tuple[ImageItem, Path]], list[str]]:
-        """抽 n 张图，每个帖子随机取一张；帖子 API 依次请求，图片并发下载。
+        self, n: int, per_album: int, rating: str, concurrency: int = 1
+    ) -> tuple[list[list[tuple[ImageItem, Path]]], list[str]]:
+        """抽 n 个帖子，每个帖子随机取至多 per_album 张（按页码排序）。
 
-        帖子大多只有一张图，所以不跟随「同一画廊」模式，总是从多个帖子凑够张数。
+        帖子 API 依次请求，图片并发下载。帖子大多只有一张图，图不够时少几张。
         rating 只是记在结果上的请求分级，16K 本身没有分级。
         """
-        images: list[tuple[ImageItem, Path]] = []
+        albums: list[list[tuple[ImageItem, Path]]] = []
         errors: list[str] = []
         seen: set[int] = set()
         skipped = 0
+        semaphore = asyncio.Semaphore(max(1, concurrency))
 
-        async def attempt() -> tuple[ImageItem, Path] | None:
+        async def attempt() -> list[tuple[ImageItem, Path]] | None:
             nonlocal skipped
             pid, data = await self.random_post()
             if pid in seen:
@@ -130,21 +131,29 @@ class SixteenK:
                 skipped += 1
                 return None
             urls = post_images(data)
-            item = await self._download(
-                pid, data, urls, random.randrange(len(urls)), rating
-            )
-            if item is None:
+            indices = sorted(random.sample(range(len(urls)), min(per_album, len(urls))))
+
+            async def download(index: int):
+                async with semaphore:
+                    return await self._download(pid, data, urls, index, rating)
+
+            items = [
+                item
+                for item in await asyncio.gather(*(download(i) for i in indices))
+                if item is not None
+            ]
+            if not items:
                 skipped += 1
-            return item
+            return items or None
 
         try:
-            await fill(images, n, POSTS_PER_IMAGE * n, concurrency, attempt)
+            await fill(albums, n, POSTS_PER_IMAGE * n, concurrency, attempt)
         except SixteenKError as e:
             logger.warning(f"[random_pic] {e}")
             errors.append(str(e))
         if skipped:
             errors.append(f"{skipped} 个 16K 帖子被过滤或下载失败")
-        return images, errors
+        return albums, errors
 
     def _reject(self, data: dict) -> str | None:
         if not data:

@@ -105,10 +105,18 @@ class Pool:
         return True
 
 
+# 一个图集：同一画廊 / 帖子 / 本子里抽到的几张图，按页码排序
+Album = list[tuple[ImageItem, Path]]
+
+
 @dataclass
 class FetchResult:
-    images: list[tuple[ImageItem, Path]] = field(default_factory=list)
+    albums: list[Album] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+
+    @property
+    def images(self) -> list[tuple[ImageItem, Path]]:
+        return [image for album in self.albums for image in album]
 
 
 def pool_key(style: str, rating: str) -> str:
@@ -172,7 +180,6 @@ class Drawer:
         min_pages: int,
         cover_only: bool,
         explicit_skip: float = 0.0,
-        same_gallery: bool = False,
         color_only: bool = True,
         heavy: frozenset[str] = frozenset(),
         tags: TagDB | None = None,
@@ -193,7 +200,6 @@ class Drawer:
         self.min_pages = min_pages
         self.cover_only = cover_only
         self.explicit_skip = min(max(explicit_skip, 0.0), 0.9)
-        self.same_gallery = same_gallery
         self.color_only = color_only
         self.heavy = heavy
         self.tags = tags
@@ -215,9 +221,9 @@ class Drawer:
         )
 
     def _source_counts(self, req: PicRequest, allow_unrated: bool) -> dict[str, int]:
-        """这次抽卡里每个图源（EH / SIXTEENK / PICA）分到的张数。
+        """这次抽卡里每个图源（EH / SIXTEENK / PICA）分到的图集数。
 
-        每张图按配置的比例选图源。某个图源这次不能用时（不支持关键词、随机角色、未分级），
+        每个图集按配置的比例选图源。某个图源这次不能用时（不支持关键词、随机角色、未分级），
         它的比例按其余可用图源的比例分给它们。两个比例之和超过 100 时 E-Hentai 的比例为 0；
         可用图源的比例全为 0 时全部由 E-Hentai 抽。
         """
@@ -234,13 +240,7 @@ class Drawer:
         if sum(weights.values()) <= 0 or len(weights) == 1:
             counts[EH] = req.count
             return counts
-        # 同一画廊模式整次抽卡只用一个图源，避免把画廊的连续几页和别处的散图混在一起
-        picks = random.choices(
-            list(weights), list(weights.values()), k=1 if self.same_gallery else req.count
-        )
-        if self.same_gallery:
-            picks *= req.count
-        for name in picks:
+        for name in random.choices(list(weights), list(weights.values()), k=req.count):
             counts[name] += 1
         return counts
 
@@ -262,8 +262,8 @@ class Drawer:
     ) -> FetchResult:
         """allow_unrated：本次请求能否使用没有分级的图源（见 filters.unrated_allowed）。
 
-        各图源同时抽取；16K、哔咔没抽够的张数在它们结束时马上由 E-Hentai 补上。各图源的图片打乱顺序发送
-        （同一画廊模式不打乱，保证画廊的几页按页码顺序）。
+        req.count 个图集、每个图集 req.per_album 张（画廊页数不够时少几张）。各图源同时抽取；
+        16K、哔咔没抽够的图集在它们结束时马上由 E-Hentai 补上。图集之间打乱顺序，图集内按页码排序。
         """
         result = FetchResult()
         index = await self.tags.get() if self.tags else None
@@ -281,26 +281,28 @@ class Drawer:
         async def run(name: str, job) -> tuple[list, list[str]]:
             """抽一个图源；16K、哔咔没抽够时马上由 E-Hentai 补，不等其他图源。"""
             try:
-                images, errors = await job
+                albums, errors = await job
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 logger.error(
                     f"[random_pic] {SOURCE_NAMES[name]} 抽取出错: {e!r}", exc_info=e
                 )
-                images, errors = [], [f"{SOURCE_NAMES[name]} 出错：{e!r}"]
-            short = counts[name] - len(images)
+                albums, errors = [], [f"{SOURCE_NAMES[name]} 出错：{e!r}"]
+            short = counts[name] - len(albums)
             if name != EH and short > 0:
                 more, more_errors = await ehentai(replace(req, count=short))
-                images, errors = images + more, errors + more_errors
-            return images, errors
+                albums, errors = albums + more, errors + more_errors
+            return albums, errors
 
         jobs = []
         if counts[SIXTEENK]:
             jobs.append(
                 run(
                     SIXTEENK,
-                    self.sixteenk.draw(counts[SIXTEENK], req.rating, self.concurrency),
+                    self.sixteenk.draw(
+                        counts[SIXTEENK], req.per_album, req.rating, self.concurrency
+                    ),
                 )
             )
         if counts[PICA]:
@@ -309,8 +311,8 @@ class Drawer:
                     PICA,
                     self.pica.draw(
                         counts[PICA],
+                        req.per_album,
                         req.rating,
-                        self.same_gallery,
                         req.tags,
                         self.concurrency,
                     ),
@@ -318,11 +320,10 @@ class Drawer:
             )
         if counts[EH]:
             jobs.append(run(EH, ehentai(replace(req, count=counts[EH]))))
-        for images, errors in await asyncio.gather(*jobs):
-            result.images.extend(images)
+        for albums, errors in await asyncio.gather(*jobs):
+            result.albums.extend(albums)
             result.errors.extend(errors)
-        if not self.same_gallery:
-            random.shuffle(result.images)
+        random.shuffle(result.albums)
         return result
 
     async def _draw_ehentai(
@@ -331,24 +332,23 @@ class Drawer:
         is_private: bool,
         terms: list[str],
         index: TagIndex | None,
-    ) -> tuple[list[tuple[ImageItem, Path]], list[str]]:
+    ) -> tuple[list[Album], list[str]]:
         result = FetchResult()
         pool = self.pools[(req.style, req.rating)]
         if req.random_character and (index is None or not index.characters):
             result.errors.append("标签库不可用，无法随机角色")
-            return result.images, result.errors
+            return result.albums, result.errors
         try:
             self._params(pool, terms)
         except ValueError as e:
             result.errors.append(f"画廊池配置错误：{e}")
-            return result.images, result.errors
+            return result.albums, result.errors
 
         seen: set[int] = set()
         discarded = 0
         for _ in range(self.max_rounds):
-            need = req.count - len(result.images)
-            # 同一画廊模式只取一个画廊；画廊页数不足时就少发几张
-            if need <= 0 or (self.same_gallery and result.images):
+            need = req.count - len(result.albums)
+            if need <= 0:
                 break
             try:
                 discarded += await self._round(
@@ -364,7 +364,7 @@ class Drawer:
                     result.errors.append("E-Hentai 请求失败")
         if discarded:
             result.errors.append(f"{discarded} 个画廊被过滤或下载失败")
-        return result.images, result.errors
+        return result.albums, result.errors
 
     async def _round(
         self,
@@ -377,12 +377,10 @@ class Drawer:
         seen: set[int],
         result: FetchResult,
     ) -> int:
-        """并发跳转若干次，每次跳转选中一个画廊。元数据一轮只查一次 API。
+        """并发跳转 need 次，每次跳转选中一个画廊、取 req.per_album 张。元数据一轮只查一次 API。
 
-        普通模式跳转 need 次、每个画廊取一张；同一画廊模式只跳一次、取 need 张。
         E-Hentai 的页面请求仍受 request_interval 限速，并发省下的是等待网络和下载图片的时间。
         """
-        jumps, per_gallery = (1, need) if self.same_gallery else (need, 1)
         semaphore = asyncio.Semaphore(self.concurrency)
 
         async def jump():
@@ -390,7 +388,7 @@ class Drawer:
                 return await self._listing(req, pool, terms, index)
 
         listings = await asyncio.gather(
-            *(jump() for _ in range(jumps)), return_exceptions=True
+            *(jump() for _ in range(need)), return_exceptions=True
         )
         failures = [r for r in listings if isinstance(r, BaseException)]
         for failure in failures:
@@ -411,8 +409,8 @@ class Drawer:
             groups.append(group)
         metas = await self.eh.gdata([g for group in groups for g in group])
 
-        async def take(group) -> tuple[list[tuple[ImageItem, Path]], int]:
-            """依次试分组里的画廊，取到图就停。返回 (图片, 丢弃的画廊数)。"""
+        async def take(group) -> tuple[Album, int]:
+            """依次试分组里的画廊，取到图就停。返回 (图集, 丢弃的画廊数)。"""
             discarded = 0
             for gid, _ in group:
                 gallery = metas.get(gid)
@@ -422,7 +420,9 @@ class Drawer:
                     discarded += 1
                     continue
                 async with semaphore:
-                    items = await self._fetch_images(gallery, req, index, per_gallery)
+                    items = await self._fetch_images(
+                        gallery, req, index, req.per_album
+                    )
                 if items:
                     return items, discarded
                 discarded += 1
@@ -439,7 +439,8 @@ class Drawer:
                     raise outcome
                 blocked = blocked or outcome
                 continue
-            result.images.extend(outcome[0])
+            if outcome[0]:
+                result.albums.append(outcome[0])
             discarded += outcome[1]
         if blocked is not None:
             # 已经取到的图片保留，IP 被封、额度用尽时停止抽卡
