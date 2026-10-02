@@ -109,9 +109,7 @@ class Source:
     # ---- 抽图 ----
 
     def rating_reason(self, actual: str | None, ctx: DrawContext) -> str | None:
-        return rating_reason(
-            actual, ctx.req.rating, ctx.is_private, self.opts.rating_enabled
-        )
+        return rating_reason(actual, ctx.req.rating, ctx.allow_explicit)
 
     async def pick_pages(self, total: int, n: int, rating: str | None, fetch) -> list:
         """从作品的 total 页里取 n 张，失败的页换别的页补上，按页码排序。

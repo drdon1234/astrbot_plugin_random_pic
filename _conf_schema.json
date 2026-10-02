@@ -8,13 +8,19 @@
         "description": "默认风格",
         "type": "string",
         "default": "三次元",
-        "options": ["三次元", "二次元"]
+        "options": [
+          "三次元",
+          "二次元"
+        ]
       },
       "default_rating": {
         "description": "默认分级",
         "type": "string",
         "default": "擦边",
-        "options": ["擦边", "R18"]
+        "options": [
+          "擦边",
+          "R18"
+        ]
       },
       "album_count": {
         "description": "默认图集数",
@@ -36,7 +42,10 @@
         "description": "取图位置",
         "type": "string",
         "default": "随机页",
-        "options": ["随机页", "从第一页起"]
+        "options": [
+          "随机页",
+          "从第一页起"
+        ]
       },
       "aliases": {
         "description": "启用别名 /二次元 /三次元 /擦边 /色图",
@@ -51,49 +60,8 @@
       }
     }
   },
-  "rating": {
-    "description": "分级与过滤",
-    "type": "object",
-    "hint": "未成年内容始终过滤。",
-    "items": {
-      "content_rating": {
-        "description": "区分群聊和私聊",
-        "type": "bool",
-        "default": true,
-        "hint": "开启：R18 只能私聊，群聊擦边需单独允许。关闭：群聊和私聊内容相同。"
-      },
-      "r18_enabled": {
-        "description": "允许 R18",
-        "type": "bool",
-        "default": false
-      },
-      "group_sensitive": {
-        "description": "群聊允许擦边",
-        "type": "bool",
-        "default": false,
-        "condition": {"content_rating": true},
-        "hint": "关闭时群聊里不能抽图。"
-      },
-      "block_heavy": {
-        "description": "屏蔽重口作品",
-        "type": "bool",
-        "default": true
-      },
-      "block_ai": {
-        "description": "屏蔽 AI 作品",
-        "type": "bool",
-        "default": true
-      },
-      "extra_blacklist": {
-        "description": "额外屏蔽的标签",
-        "type": "list",
-        "default": [],
-        "hint": "匹配作品的标签和标题，忽略大小写。"
-      }
-    }
-  },
   "access": {
-    "description": "使用限制",
+    "description": "使用权限",
     "type": "object",
     "items": {
       "group_enabled": {
@@ -101,13 +69,34 @@
         "type": "bool",
         "default": true,
         "obvious_hint": true,
-        "hint": "关闭后不处理任何群聊消息，推送任务也不再推送到群。优先于其他所有设置。"
+        "hint": "关闭后不处理任何群聊消息（管理员也不例外），推送任务也不再推送到群。"
+      },
+      "group_r18": {
+        "description": "群聊允许 R18",
+        "type": "bool",
+        "default": false,
+        "condition": {
+          "group_enabled": true
+        }
+      },
+      "private_r18": {
+        "description": "私聊允许 R18",
+        "type": "bool",
+        "default": false
+      },
+      "admins": {
+        "description": "管理员",
+        "type": "list",
+        "default": [],
+        "hint": "QQ 号。管理员不受白名单、黑名单、R18、冷却和每日上限限制。"
       },
       "group_whitelist": {
         "description": "群白名单",
         "type": "list",
         "default": [],
-        "condition": {"group_enabled": true},
+        "condition": {
+          "group_enabled": true
+        },
         "hint": "留空表示所有群可用。"
       },
       "user_blacklist": {
@@ -128,6 +117,29 @@
       }
     }
   },
+  "filter": {
+    "description": "内容过滤",
+    "type": "object",
+    "hint": "未成年内容始终过滤。",
+    "items": {
+      "block_heavy": {
+        "description": "屏蔽重口作品",
+        "type": "bool",
+        "default": true
+      },
+      "block_ai": {
+        "description": "屏蔽 AI 作品",
+        "type": "bool",
+        "default": true
+      },
+      "extra_blacklist": {
+        "description": "额外屏蔽的标签",
+        "type": "list",
+        "default": [],
+        "hint": "匹配作品的标签和标题，忽略大小写。"
+      }
+    }
+  },
   "send": {
     "description": "发送",
     "type": "object",
@@ -136,7 +148,11 @@
         "description": "发送方式",
         "type": "string",
         "default": "合并转发",
-        "options": ["合并转发", "图文混合", "逐条发送"],
+        "options": [
+          "合并转发",
+          "图文混合",
+          "逐条发送"
+        ],
         "hint": "合并转发仅 QQ 可用，其他平台改为图文混合。"
       },
       "header": {
@@ -165,7 +181,10 @@
         "description": "/全集 的发送方式",
         "type": "string",
         "default": "合并转发",
-        "options": ["合并转发", "PDF"],
+        "options": [
+          "合并转发",
+          "PDF"
+        ],
         "hint": "/pdf 始终发 PDF。非 QQ 平台改为 PDF。"
       },
       "pdf_dir": {
@@ -185,46 +204,74 @@
         "description": "E-Hentai",
         "type": "int",
         "default": 5,
-        "slider": {"min": 0, "max": 10, "step": 1}
+        "slider": {
+          "min": 0,
+          "max": 10,
+          "step": 1
+        }
       },
       "pica": {
         "description": "哔咔",
         "type": "int",
         "default": 5,
-        "slider": {"min": 0, "max": 10, "step": 1},
+        "slider": {
+          "min": 0,
+          "max": 10,
+          "step": 1
+        },
         "hint": "需要填写哔咔账号。"
       },
       "cosplaytele": {
         "description": "CosplayTele",
         "type": "int",
         "default": 5,
-        "slider": {"min": 0, "max": 10, "step": 1}
+        "slider": {
+          "min": 0,
+          "max": 10,
+          "step": 1
+        }
       },
       "xiuren": {
         "description": "XiuRen",
         "type": "int",
         "default": 5,
-        "slider": {"min": 0, "max": 10, "step": 1},
+        "slider": {
+          "min": 0,
+          "max": 10,
+          "step": 1
+        },
         "hint": "只有擦边。"
       },
       "nudecosplay": {
         "description": "NudeCosplay",
         "type": "int",
         "default": 5,
-        "slider": {"min": 0, "max": 10, "step": 1}
+        "slider": {
+          "min": 0,
+          "max": 10,
+          "step": 1
+        }
       },
       "pixibb": {
         "description": "PixiBB",
         "type": "int",
         "default": 5,
-        "slider": {"min": 0, "max": 10, "step": 1},
+        "slider": {
+          "min": 0,
+          "max": 10,
+          "step": 1
+        },
         "hint": "只用于 R18。"
       },
       "jmcomic": {
         "description": "禁漫天堂",
         "type": "int",
         "default": 5,
-        "slider": {"min": 0, "max": 10, "step": 1},
+        "slider": {
+          "min": 0,
+          "max": 10,
+          "step": 1
+        },
         "hint": "只用于 R18。"
       }
     }
@@ -243,7 +290,10 @@
         "description": "E-Hentai 站点",
         "type": "string",
         "default": "e-hentai",
-        "options": ["e-hentai", "exhentai"],
+        "options": [
+          "e-hentai",
+          "exhentai"
+        ],
         "hint": "exhentai 需要填齐下面三个 cookie。"
       },
       "ipb_member_id": {
@@ -263,7 +313,9 @@
         "type": "string",
         "default": "",
         "secret": true,
-        "condition": {"ehentai_site": "exhentai"}
+        "condition": {
+          "ehentai_site": "exhentai"
+        }
       },
       "pica_email": {
         "description": "哔咔账号",
@@ -346,7 +398,10 @@
               "times": {
                 "description": "推送时间",
                 "type": "list",
-                "default": ["08:00", "20:00"],
+                "default": [
+                  "08:00",
+                  "20:00"
+                ],
                 "hint": "24 小时制，每项一个，例如 08:00。"
               },
               "groups": {

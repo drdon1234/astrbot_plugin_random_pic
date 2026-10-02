@@ -57,7 +57,6 @@ MAX_BATCH = 100
 # 一次抽卡最多取这么多批候选帖子（都被过滤时停止）
 MAX_BATCHES = 5
 RATING_QUERY = {SENSITIVE: "rating:s", EXPLICIT: "rating:q,e"}
-ANY_RATING = "rating:s,q,e"
 POST_RATINGS = {"s": SENSITIVE, "q": EXPLICIT, "e": EXPLICIT}
 CHARACTER_CATEGORY = 4
 FIELDS = ",".join(
@@ -292,8 +291,7 @@ class DanbooruSource(Source):
     # ---- 抽帖子 ----
 
     def _query(self, rating: str, tags: list[str], score: int) -> str:
-        rating_tag = RATING_QUERY[rating] if self.opts.rating_enabled else ANY_RATING
-        parts = [rating_tag, *tags]
+        parts = [RATING_QUERY[rating], *tags]
         if score > 0:
             parts.append(f"score:>={score}")
         return " ".join(parts)

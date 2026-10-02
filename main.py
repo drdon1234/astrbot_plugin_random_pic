@@ -115,11 +115,11 @@ class RandomPicPlugin(Star):
         super().__init__(context)
         self.settings = s = Settings.load(config)
         data_dir = Path(StarTools.get_data_dir(PLUGIN_NAME))
-        self.access = AccessControl(s.rating, s.access)
+        self.access = AccessControl(s.access)
         self.content = ContentFilter(
-            s.rating.extra_blacklist,
-            HEAVY_TAGS if s.rating.block_heavy else frozenset(),
-            s.rating.block_ai,
+            s.filter.extra_blacklist,
+            HEAVY_TAGS if s.filter.block_heavy else frozenset(),
+            s.filter.block_ai,
         )
 
         cookies = s.sites.cookies
@@ -127,7 +127,6 @@ class RandomPicPlugin(Star):
         self.http = HttpClient(s.sites.proxy, site_cookies(site, cookies))
         cache = ImageCache(self.http, data_dir / "cache")
         opts = DrawOptions(
-            rating_enabled=s.rating.content_rating,
             from_start=s.draw.from_start,
             explicit_skip=EXPLICIT_SKIP,
             concurrency=CONCURRENCY,
@@ -278,7 +277,7 @@ class RandomPicPlugin(Star):
             return
         is_private = event.is_private_chat()
         user_id = str(event.get_sender_id())
-        denied = self.access.gate(req.rating, is_private) or self.access.take(
+        denied = self.access.gate(req.rating, is_private, user_id) or self.access.take(
             user_id, req
         )
         if denied:
@@ -289,7 +288,9 @@ class RandomPicPlugin(Star):
                 yield result
             return
 
-        result = await self.drawer.draw(req, is_private)
+        result = await self.drawer.draw(
+            req, self.access.explicit_allowed(is_private, user_id)
+        )
         if not result.albums:
             logger.warning(f"[random_pic] 获取失败 {req}: {result.reason()}")
             yield event.plain_result(
@@ -320,7 +321,7 @@ class RandomPicPlugin(Star):
         self, event: AstrMessageEvent, req: DrawRequest, user_id: str
     ):
         """/抽图 全集：随机抽一个完整作品发送。"""
-        picked = await self.works.random(req, event.is_private_chat())
+        picked = await self.works.random(req, event.is_private_chat(), user_id)
         if isinstance(picked, str):
             logger.warning(f"[random_pic] 获取完整作品失败 {req}: {picked}")
             yield event.plain_result(f"获取完整作品失败：{picked}")
@@ -345,11 +346,8 @@ class RandomPicPlugin(Star):
     def _send_failed_text(self, failed: int, total: int, is_private: bool) -> str:
         what = "这条消息" if total == 1 else f"其中 {failed}/{total} 条消息"
         text = f"发送失败：QQ 拒发了{what}。"
-        if not is_private and not self.settings.rating.content_rating:
-            return (
-                text
-                + "目前群聊和私聊内容相同，裸露较多的结果会被 QQ 拒发，建议私聊重新抽图。"
-            )
+        if not is_private:
+            return text + "群聊里裸露较多的图容易被 QQ 拦截，可以私聊重新抽图。"
         return text + "可能是图片内容被 QQ 拦截，可换个关键词或稍后重试。"
 
     # ---- 完整作品 ----
@@ -376,7 +374,9 @@ class RandomPicPlugin(Star):
                 f"或使用 /{word} <作品链接>。"
             )
             return
-        source, work, why = await self.works.lookup(album.work, event.is_private_chat())
+        source, work, why = await self.works.lookup(
+            album.work, event.is_private_chat(), str(event.get_sender_id())
+        )
         if source is None:
             yield event.plain_result(why)
             return
@@ -496,7 +496,7 @@ class RandomPicPlugin(Star):
 
     def help_text(self) -> str:
         s = self.settings
-        draw, rating = s.draw, s.rating
+        draw, access = s.draw, s.access
         on = {True: "允许", False: "不允许"}
         lines = [
             "【抽图用法】",
@@ -517,13 +517,7 @@ class RandomPicPlugin(Star):
             ]
         if draw.aliases:
             lines.append("别名：/二次元 /三次元 /擦边 /色图")
-        if rating.content_rating:
-            lines.append(
-                f"R18：仅限私聊（{on[rating.r18_enabled]}）；"
-                f"群聊擦边：{on[rating.group_sensitive]}"
-            )
-        else:
-            lines.append(f"群聊和私聊内容相同；R18：{on[rating.r18_enabled]}")
+        lines.append(f"R18：群聊{on[access.group_r18]}，私聊{on[access.private_r18]}")
         lines += self.sources.help_lines()
         lines += [
             "示例：/抽图 原神 2　/抽图 二次元 芙莉莲　/抽图 全集 原神",

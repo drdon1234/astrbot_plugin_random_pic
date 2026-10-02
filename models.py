@@ -38,7 +38,7 @@ class DrawContext:
     """一次抽卡交给各图源的信息。"""
 
     req: DrawRequest
-    is_private: bool
+    allow_explicit: bool  # 这个会话能否出 R18 结果
     terms: list[str]  # 关键词经标签库翻译成的 E-Hentai 搜索词
     index: TagIndex | None
 
@@ -91,7 +91,6 @@ CONCURRENCY = 4
 class DrawOptions:
     """各图源共用的取图选项。"""
 
-    rating_enabled: bool = True
     from_start: bool = False
     explicit_skip: float = 0.0
     concurrency: int = 1

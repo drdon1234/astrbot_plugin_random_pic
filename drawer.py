@@ -51,8 +51,8 @@ class Drawer:
             counts[source] += 1
         return {s: k for s, k in counts.items() if k}
 
-    async def draw(self, req: DrawRequest, is_private: bool) -> DrawResult:
-        """抽 req.albums 个图集，图集之间打乱顺序。"""
+    async def draw(self, req: DrawRequest, allow_explicit: bool) -> DrawResult:
+        """抽 req.albums 个图集，图集之间打乱顺序。allow_explicit：这个会话能否出 R18 结果。"""
         index = await self.tagdb.get()
         terms = [index.translate(t) for t in req.keywords] if index else req.keywords
         reason = self.content.keyword_reason(req.keywords, terms)
@@ -66,7 +66,7 @@ class Drawer:
         ):
             return DrawResult(errors=["标签库不可用，无法随机角色"])
 
-        ctx = DrawContext(req, is_private, list(terms), index)
+        ctx = DrawContext(req, allow_explicit, list(terms), index)
         fallback = self.sources.ehentai
 
         async def run(source, n: int) -> tuple[list[Album], list[str]]:

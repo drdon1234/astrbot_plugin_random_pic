@@ -264,21 +264,21 @@ class WordPressSource(Source):
         return post_images(content, self.site.image_marker)
 
     def query(self, rating: str) -> dict[str, str] | None:
-        """筛选帖子的参数，站点没有这个分级的帖子时返回 None。关闭内容分级时不按分级筛选。"""
-        site, enabled = self.site, self.opts.rating_enabled
+        """筛选帖子的参数，站点没有这个分级的帖子时返回 None。"""
+        site = self.site
         params: dict[str, str] = {}
         exclude_categories, exclude_tags = self._excludes()
         if site.ratings:
-            wanted = [c for c, r in site.ratings.items() if not enabled or r == rating]
+            wanted = [c for c, r in site.ratings.items() if r == rating]
             if not wanted:
                 return None
             params["categories"] = ",".join(map(str, wanted))
             # 同时在 R18 分类里的帖子按 R18 处理
-            if enabled and rating != EXPLICIT:
+            if rating != EXPLICIT:
                 exclude_categories += [
                     c for c, r in site.ratings.items() if r == EXPLICIT
                 ]
-        elif enabled and site.default_rating != rating:
+        elif site.default_rating != rating:
             return None
         elif site.categories:
             params["categories"] = ",".join(map(str, site.categories))

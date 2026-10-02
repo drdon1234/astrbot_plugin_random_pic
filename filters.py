@@ -180,18 +180,16 @@ class ContentFilter:
 
 
 def rating_reason(
-    actual: str | None, requested: str, is_private: bool, rating_enabled: bool
+    actual: str | None, requested: str, allow_explicit: bool
 ) -> str | None:
-    """结果阶段的分级复核，关闭内容分级时不复核。
+    """结果阶段的分级复核：作品的实际分级必须和请求一致。
 
-    R18 双重闸门的第二道：请求阶段已经拒绝了群聊 R18，这里再按作品的实际分级确认是私聊。
+    R18 双重闸门的第二道：请求阶段已经拒绝了不允许 R18 的会话，这里再按作品的实际分级确认。
     """
-    if not rating_enabled:
-        return None
     if actual is None:
         return "无法判定分级"
     if actual != requested:
         return f"分级不符（请求 {requested}，实际 {actual}）"
-    if actual == EXPLICIT and not is_private:
-        return "R18 结果出现在非私聊会话"
+    if actual == EXPLICIT and not allow_explicit:
+        return "这个会话不允许 R18"
     return None

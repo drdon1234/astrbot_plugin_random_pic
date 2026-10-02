@@ -236,7 +236,9 @@ class Pusher:
         if req.whole:
             failed, total = await self._push_work(target, umo, req, bot, send, when)
         else:
-            result = await self.drawer.draw(req, is_private)
+            result = await self.drawer.draw(
+                req, self.access.explicit_allowed(is_private)
+            )
             if not result.albums:
                 logger.warning(
                     f"[random_pic] 定时推送到{target}抽图失败 {req}: {result.reason()}"

@@ -49,7 +49,7 @@ class WorkService:
         self._downloads = asyncio.Semaphore(DOWNLOAD_CONCURRENCY)
 
     async def lookup(
-        self, ref: WorkRef, is_private: bool
+        self, ref: WorkRef, is_private: bool, user_id: str | None = None
     ) -> tuple[Source | None, Work | None, str]:
         """查询作品并检查能否在这个会话发送，返回 (图源, 作品, 不能发送的原因)。"""
         source, why = self.sources.find(ref.source)
@@ -65,28 +65,29 @@ class WorkService:
             return None, None, f"查询作品失败：{str(e) or repr(e)}"
         if work is None:
             return None, None, "作品不存在或已被删除。"
-        denied = self.access.work_gate(work, is_private)
+        denied = self.access.work_gate(work, is_private, user_id)
         if denied:
             return None, None, denied
         return source, work, ""
 
     async def random(
-        self, req: DrawRequest, is_private: bool
+        self, req: DrawRequest, is_private: bool, user_id: str | None = None
     ) -> tuple[Album, Source, Work] | str:
         """按请求抽一个图集并查询它所在的作品，返回 (图集, 图源, 作品)，抽不到时返回原因。
 
         作品查不到或不能发送时重抽，最多 WORK_ATTEMPTS 次。
         """
         why = ""
+        allow_explicit = self.access.explicit_allowed(is_private, user_id)
         for _ in range(WORK_ATTEMPTS):
-            result = await self.drawer.draw(req, is_private)
+            result = await self.drawer.draw(req, allow_explicit)
             if not result.albums:
                 return result.reason()
             album = result.albums[0]
             if album.work is None:
                 why = f"《{album.title}》没有作品信息"
                 continue
-            source, work, why = await self.lookup(album.work, is_private)
+            source, work, why = await self.lookup(album.work, is_private, user_id)
             if source is not None:
                 return album, source, work
             logger.info(f"[random_pic] 随机完整作品《{album.title}》不能发送：{why}")

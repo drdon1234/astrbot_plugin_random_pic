@@ -99,18 +99,11 @@ class Draw:
 
 
 @dataclass
-class Rating:
-    content_rating: bool
-    r18_enabled: bool
-    group_sensitive: bool
-    block_heavy: bool
-    block_ai: bool
-    extra_blacklist: list[str]
-
-
-@dataclass
 class Access:
     group_enabled: bool
+    group_r18: bool
+    private_r18: bool
+    admins: list[str]
     group_whitelist: list[str]
     user_blacklist: list[str]
     cooldown_seconds: int
@@ -119,6 +112,13 @@ class Access:
     def __post_init__(self):
         self.cooldown_seconds = _clamp(self.cooldown_seconds, 0)
         self.daily_limit = _clamp(self.daily_limit, 0)
+
+
+@dataclass
+class Filter:
+    block_heavy: bool
+    block_ai: bool
+    extra_blacklist: list[str]
 
 
 @dataclass
@@ -233,8 +233,8 @@ class Push:
 @dataclass
 class Settings:
     draw: Draw
-    rating: Rating
     access: Access
+    filter: Filter
     send: Send
     whole: Whole
     sources: Sources

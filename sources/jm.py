@@ -244,7 +244,7 @@ class JMComicSource(Source):
         return (
             req.style == REAL
             and not req.random_character
-            and (req.rating == EXPLICIT or not self.opts.rating_enabled)
+            and req.rating == EXPLICIT
             and not has_tag_syntax(req.keywords)
         )
 
