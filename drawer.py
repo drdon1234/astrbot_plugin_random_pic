@@ -7,10 +7,8 @@ from dataclasses import dataclass, field
 from astrbot.api import logger
 
 from .filters import ContentFilter
-from .models import ANIME, Album, DrawRequest
-from .sources import DrawContext
-from .sources.danbooru import DanbooruSource
-from .sources.ehentai import EHentaiSource
+from .models import ANIME, Album, DrawContext, DrawRequest
+from .sources import SourceSet
 from .tags import TagDB
 
 
@@ -23,20 +21,14 @@ class DrawResult:
     def images(self) -> int:
         return sum(len(album.pictures) for album in self.albums)
 
+    def reason(self) -> str:
+        """抽不到时给用户看的原因。"""
+        return "；".join(self.errors[:6]) or "未知原因"
+
 
 class Drawer:
-    def __init__(
-        self,
-        ehentai: EHentaiSource,
-        danbooru: DanbooruSource,
-        weights: list[tuple[object, int]],
-        content: ContentFilter,
-        tagdb: TagDB | None,
-    ):
-        """weights：[(图源, 三次元权重)]，必须包含 ehentai。其他三次元图源没抽够时由 E-Hentai 补。"""
-        self.ehentai = ehentai
-        self.danbooru = danbooru
-        self.weights = [(s, w) for s, w in weights if w > 0 or s is ehentai]
+    def __init__(self, sources: SourceSet, content: ContentFilter, tagdb: TagDB):
+        self.sources = sources
         self.content = content
         self.tagdb = tagdb
 
@@ -45,26 +37,24 @@ class Drawer:
 
         能用的三次元图源权重全为 0 时全部由 E-Hentai 抽。
         """
+        sources, n = self.sources, ctx.req.albums
         if ctx.req.style == ANIME:
-            return {self.danbooru: ctx.req.albums}
+            return {sources.danbooru: n}
         usable = [
-            (s, w) for s, w in self.weights if s is self.ehentai or s.accepts(ctx)
+            (s, w) for s, w in sources.real if s is sources.ehentai or s.accepts(ctx)
         ]
-        total = sum(w for _, w in usable)
-        if total <= 0 or len(usable) == 1:
-            return {self.ehentai: ctx.req.albums}
-        sources, weights = zip(*usable)
-        counts = dict.fromkeys(sources, 0)
-        for source in random.choices(sources, weights, k=ctx.req.albums):
+        if len(usable) == 1 or sum(w for _, w in usable) <= 0:
+            return {sources.ehentai: n}
+        picked, weights = zip(*usable)
+        counts = dict.fromkeys(picked, 0)
+        for source in random.choices(picked, weights, k=n):
             counts[source] += 1
-        return {s: n for s, n in counts.items() if n}
+        return {s: k for s, k in counts.items() if k}
 
     async def draw(self, req: DrawRequest, is_private: bool) -> DrawResult:
         """抽 req.albums 个图集，图集之间打乱顺序。"""
-        index = await self.tagdb.get() if self.tagdb else None
-        terms = (
-            [index.translate(t) for t in req.keywords] if index else list(req.keywords)
-        )
+        index = await self.tagdb.get()
+        terms = [index.translate(t) for t in req.keywords] if index else req.keywords
         reason = self.content.keyword_reason(req.keywords, terms)
         if reason:
             return DrawResult(errors=[reason])
@@ -76,7 +66,8 @@ class Drawer:
         ):
             return DrawResult(errors=["标签库不可用，无法随机角色"])
 
-        ctx = DrawContext(req, is_private, terms, index)
+        ctx = DrawContext(req, is_private, list(terms), index)
+        fallback = self.sources.ehentai
 
         async def run(source, n: int) -> tuple[list[Album], list[str]]:
             """抽一个图源；其他三次元图源没抽够时马上由 E-Hentai 补，不等别的图源。"""
@@ -88,8 +79,8 @@ class Drawer:
                 logger.error(f"[random_pic] {source.name} 抽取出错: {e!r}", exc_info=e)
                 albums, errors = [], [f"{source.name} 出错：{e!r}"]
             short = n - len(albums)
-            if short > 0 and source is not self.ehentai and self.ehentai.accepts(ctx):
-                more, more_errors = await self.ehentai.draw(ctx, short)
+            if short > 0 and source is not fallback and fallback.accepts(ctx):
+                more, more_errors = await fallback.draw(ctx, short)
                 albums, errors = albums + more, errors + more_errors
             return albums, errors
 

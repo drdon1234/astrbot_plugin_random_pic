@@ -6,10 +6,12 @@
 
 /pdf 回复某条消息时按消息 ID 查；查不到（AstrBot 代发、其他平台）时解析被回复消息的文字，
 按【序号】标题行分段，每段里找作品链接（说明文字附带；哔咔没有公开链接，只能按消息 ID 查）。
+认链接交给各图源（SourceSet.links）。
 """
 
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,47 +23,10 @@ MAX_MESSAGES = 1000
 MAX_SESSIONS = 500
 # 提示选序号时最多列出的条数
 MAX_LISTED = 30
-# 各图源的作品链接：(图源键, 正则)，第一个分组是作品 id，E-Hentai 的第二个分组是 token
-WORK_URLS = (
-    (
-        "ehentai",
-        re.compile(r"https?://(?:e-hentai|exhentai)\.org/g/(\d+)/([0-9a-f]{10})"),
-    ),
-    ("danbooru", re.compile(r"https?://danbooru\.donmai\.us/posts/(\d+)")),
-    # WordPress 帖子是一级路径的 slug（非 ASCII 字符是 %xx），分类、标签页是两级路径
-    (
-        "cosplaytele",
-        re.compile(
-            r"https?://(?:www\.)?cosplaytele\.com/([\w%-]+)/?(?![\w%/-])", re.ASCII
-        ),
-    ),
-    (
-        "xiuren",
-        re.compile(r"https?://(?:www\.)?xiuren\.biz/([\w%-]+)/?(?![\w%/-])", re.ASCII),
-    ),
-    (
-        "nudecosplay",
-        re.compile(
-            r"https?://(?:www\.)?nudecosplay\.biz/([\w%-]+)/?(?![\w%/-])", re.ASCII
-        ),
-    ),
-    # PixiBB 的 sexy.、cosplay.、hub. 等子域名是同一个站
-    (
-        "pixibb",
-        re.compile(
-            r"https?://(?:[\w-]+\.)?pixibb\.com/([\w%-]+)/?(?![\w%/-])", re.ASCII
-        ),
-    ),
-    # 禁漫的域名经常更换，认域名里带 18comic、jm 的
-    (
-        "jmcomic",
-        re.compile(
-            r"https?://[\w.-]*(?:18comic|jm)[\w.-]*/album/(\d+)(?![\w%-])", re.ASCII
-        ),
-    ),
-)
 # 图集标题行：「【序号】标题」换行「第 x/y 张 · 来源」
 HEADER_RE = re.compile(r"(?m)^【(\d+)】(.*)\n第 \d+/\d+ 张 · (.*)$")
+# 文字 → 其中的作品链接（按出现顺序去重）
+Links = Callable[[str], list[WorkRef]]
 
 
 @dataclass
@@ -79,12 +44,7 @@ class SentAlbum:
 
     @classmethod
     def from_json(cls, data: dict) -> "SentAlbum":
-        if data.get("work"):
-            work = WorkRef(*map(str, data["work"]))
-        elif data.get("gid"):  # 3.3.0 以前只记 E-Hentai 画廊
-            work = WorkRef("ehentai", str(data["gid"]), data["token"])
-        else:
-            work = None
+        work = WorkRef(*map(str, data["work"])) if data.get("work") else None
         return cls(int(data["idx"]), data["title"], data["source"], work)
 
 
@@ -102,38 +62,21 @@ def page_text(page: int, total: int) -> str:
     return f"第 {page}/{total} 张"
 
 
-def works_in_text(text: str) -> list[WorkRef]:
-    """文字里的作品链接，按出现顺序去重。"""
-    found = []
-    for source, pattern in WORK_URLS:
-        for match in pattern.finditer(text or ""):
-            token = match.group(2) if pattern.groups > 1 else ""
-            found.append((match.start(), WorkRef(source, match.group(1), token)))
-    return list(dict.fromkeys(ref for _, ref in sorted(found, key=lambda f: f[0])))
-
-
-def work_from_text(text: str) -> WorkRef | None:
-    works = works_in_text(text)
-    return works[0] if works else None
-
-
-def albums_from_text(text: str) -> list[SentAlbum]:
+def albums_from_text(text: str, links: Links) -> list[SentAlbum]:
     """从消息文字里认出图集：有标题行时按【序号】分段，否则每个作品链接算一个图集。"""
     headers = list(HEADER_RE.finditer(text or ""))
     if not headers:
-        return [
-            SentAlbum(i, "", ref.source, ref)
-            for i, ref in enumerate(works_in_text(text), 1)
-        ]
+        return [SentAlbum(i, "", "", ref) for i, ref in enumerate(links(text), 1)]
     albums = []
     for i, match in enumerate(headers):
         end = headers[i + 1].start() if i + 1 < len(headers) else len(text)
+        works = links(text[match.end() : end])
         albums.append(
             SentAlbum(
                 int(match.group(1)),
                 match.group(2).strip(),
                 match.group(3).strip(),
-                work_from_text(text[match.end() : end]),
+                works[0] if works else None,
             )
         )
     return albums

@@ -1,11 +1,11 @@
-"""内容过滤：未成年内容黑名单、重口标签与 E-Hentai 画廊的风格 / 分级判定。
+"""内容过滤：未成年内容黑名单、重口标签与结果阶段的分级复核，对所有图源生效。
 
-分级判定只依赖画廊的分类和标签，不开放配置；未成年内容过滤始终生效。
+未成年内容过滤始终生效；各图源怎么判定作品的分级见各自的模块。
 """
 
 import re
 
-from .models import ANIME, EXPLICIT, REAL, SENSITIVE
+from .models import EXPLICIT
 
 # 内置基线黑名单，不可删除，用户只能追加
 BASE_BLACKLIST = (
@@ -29,36 +29,6 @@ BASE_BLACKLIST = (
     "幼児",
     "ロリ",
     "ショタ",
-)
-
-# 每次搜索都排除的标签（ExHentai 上能搜到这类画廊），本地黑名单是第二道保险
-SEARCH_EXCLUDES = (
-    "-female:lolicon$",
-    "-male:shotacon$",
-    '-female:"low lolicon$"',
-    '-male:"low shotacon$"',
-    '-female:"oppai loli$"',
-    "-female:toddlercon$",
-    "-male:toddlercon$",
-)
-
-# 三次元分类，其余分类一律视为二次元
-REAL_CATEGORIES = frozenset({"Cosplay", "Asian Porn"})
-# 「无性内容」的分类与标签：命中即为擦边
-SENSITIVE_CATEGORIES = frozenset({"Non-H"})
-SENSITIVE_TAGS = frozenset({"other:non-nude"})
-# 裸露或性内容的证据（打码类标签只用于露出性器官的画廊）：
-# 优先级高于上面两项，与 non-nude 矛盾时按 R18 处理
-EXPLICIT_TAGS = frozenset(
-    {
-        "other:nudity only",
-        "other:uncensored",
-        "other:mosaic censorship",
-        "other:full censorship",
-        "other:hardcore",
-        "other:no penetration",
-        "other:object insertion only",
-    }
 )
 
 HEAVY_NAMESPACES = ("female", "male", "mixed")
@@ -160,21 +130,6 @@ class ContentFilter:
         """没有标签的图源只能检查标题、简介等文字。"""
         term = self.blacklist.hit(texts)
         return f"命中黑名单 {term}" if term else None
-
-
-def classify(category: str, tags: list[str]) -> tuple[str, str | None]:
-    """按画廊分类和标签判定 (风格, 分级)，无法判定分级时为 None。
-
-    二次元 H 分类本身就是 R18；三次元必须有标签证据，两种标签都没有的画廊
-    （实测约 2%）里既有性内容也有穿着完整的写真，无法判定。
-    """
-    style = REAL if category in REAL_CATEGORIES else ANIME
-    tagset = {t.lower() for t in tags}
-    if tagset & EXPLICIT_TAGS:
-        return style, EXPLICIT
-    if category in SENSITIVE_CATEGORIES or tagset & SENSITIVE_TAGS:
-        return style, SENSITIVE
-    return style, (None if style == REAL else EXPLICIT)
 
 
 def rating_reason(

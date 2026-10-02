@@ -28,19 +28,25 @@ import html
 import json
 import random
 import re
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import aiohttp
-
 from astrbot.api import logger
 
-from ..filters import ContentFilter, rating_reason
-from ..models import EXPLICIT, REAL, SENSITIVE, Album, DrawOptions, Work, WorkRef
-from ..net import HttpClient, HttpError, ImageCache, download_all
-from ..util import fetch_pages, fill, shared
-from . import DrawContext
+from ..filters import ContentFilter
+from ..models import (
+    EXPLICIT,
+    REAL,
+    SENSITIVE,
+    Album,
+    DrawContext,
+    DrawOptions,
+    Work,
+    WorkRef,
+)
+from ..net import NETWORK_ERRORS, HttpClient, HttpError, ImageCache
+from ..util import TTLCache
+from .base import Source, SourceError, plain_word, split_terms
 
 # 帖子总数缓存：不带关键词时一小时，带关键词时 10 分钟
 TOTAL_TTL = 3600
@@ -59,17 +65,14 @@ POST_FIELDS = "id,link,title,content,categories,tags,_links,_embedded"
 
 IMG_RE = re.compile(r"<img\b[^>]*>", re.I)
 ATTR_RE = re.compile(r"""\b(src|width|height)\s*=\s*["']([^"']*)["']""", re.I)
-# E-Hentai 搜索词形式的标签，例如 character:"hu tao$"、female:swimsuit$
-TAG_TERM_RE = re.compile(r'^(?:[a-z]+:)?"?([^":$]+?)\$?"?$', re.I)
-TAG_SYNTAX = frozenset(':$"')
 
 
 @dataclass(frozen=True)
 class Site:
-    key: str  # 配置里的权重名
+    key: str  # 图源键
     name: str  # 显示名
-    host: str
-    help: str  # 帮助里的一行说明
+    host: str  # 接口所在的域名
+    intro: str  # 帮助里的一行介绍
     ratings: dict[int, str] = field(default_factory=dict)  # 分类 id → 分级
     default_rating: str | None = None  # 没有分级分类的站点：所有帖子的分级
     categories: tuple[int, ...] = ()  # 没有分级分类的站点：只抽这些分类，空为不限
@@ -83,17 +86,27 @@ class Site:
     image_marker: str = "/wp-content/uploads/"
     # 显示标题时去掉的部分（张数、站点名一类的后缀）
     title_noise: re.Pattern | None = None
+    # 帖子链接的域名（任意子域名都认），空为 host
+    domain: str = ""
 
     @property
     def api(self) -> str:
         return f"https://{self.host}/wp-json/wp/v2/posts"
+
+    @property
+    def link_re(self) -> re.Pattern:
+        """帖子链接是一级路径的 slug（非 ASCII 字符是 %xx），分类、标签页是两级路径。"""
+        domain = re.escape(self.domain or self.host)
+        return re.compile(
+            rf"https?://(?:[\w-]+\.)?{domain}/([\w%-]+)/?(?![\w%/-])", re.ASCII
+        )
 
 
 COSPLAYTELE = Site(
     key="cosplaytele",
     name="CosplayTele",
     host="cosplaytele.com",
-    help="三次元部分图集来自 CosplayTele 的 Cosplay 写真（可搜角色、作品名）",
+    intro="Cosplay 写真，可搜角色、作品名",
     ratings={194: SENSITIVE, 193: EXPLICIT},  # Cosplay Ero / Cosplay Nude
     exclude_categories=(589,),  # AI Art
     translate=True,
@@ -102,7 +115,7 @@ XIUREN = Site(
     key="xiuren",
     name="XiuRen",
     host="xiuren.biz",
-    help="三次元擦边部分图集来自 XiuRen 的工作室写真",
+    intro="工作室棚拍写真，只有擦边",
     default_rating=SENSITIVE,
     exclude_categories=(1558,),  # AI Generated
     exclude_tags=(1559, 1560),  # AI、AI Generated
@@ -111,7 +124,7 @@ NUDECOSPLAY = Site(
     key="nudecosplay",
     name="NudeCosplay",
     host="nudecosplay.biz",
-    help="三次元部分图集来自 NudeCosplay 的 Cosplay 写真（可搜角色、作品名）",
+    intro="Cosplay 写真，可搜角色、作品名",
     ratings={1790: SENSITIVE, 1794: EXPLICIT},  # Ero Cosplay / Nude
     exclude_categories=(3373,),  # Waifu AI
     translate=True,
@@ -121,7 +134,7 @@ PIXIBB = Site(
     key="pixibb",
     name="PixiBB",
     host="sexy.pixibb.com",
-    help="三次元 R18 部分图集来自 PixiBB 的 Cosplay 和写真（可搜角色、作品、模特名）",
+    intro="Cosplay 与写真，只用于 R18，可搜角色、作品、模特名",
     default_rating=EXPLICIT,
     categories=(10, 112),  # Cosplay、Sexy Girls
     # AI Lookbook、Anime、Almost Real、Toon Girls
@@ -130,6 +143,7 @@ PIXIBB = Site(
     exclude_tags=(3535, 3881, 3472, 3821),
     bilingual=True,
     image_marker=".pixibb.com/",
+    domain="pixibb.com",  # sexy.、cosplay.、hub. 等子域名是同一个站
     # 例如「(54 photos + 1 video) Sexy Cosplay」
     title_noise=re.compile(
         r"\s*\(\d+ photos?(?: \+ \d+ videos?)?\)|\s*\bSexy (?:Cosplay|Girls?)\s*$", re.I
@@ -138,7 +152,7 @@ PIXIBB = Site(
 SITES = (COSPLAYTELE, XIUREN, NUDECOSPLAY, PIXIBB)
 
 
-class WordPressError(Exception):
+class WordPressError(SourceError):
     pass
 
 
@@ -147,19 +161,16 @@ def search_terms(terms: list[str]) -> tuple[list[str], list[str]] | None:
 
     E-Hentai 标签写法取出标签名（character:"hu tao$" → hu tao）；其他带 : $ " 的写法搜不了，返回 None。
     """
-    positive, negative = [], []
-    for term in terms:
-        exclude = term.startswith("-")
-        word = term[1:] if exclude else term
-        if TAG_SYNTAX & set(word):
-            match = TAG_TERM_RE.match(word.strip())
-            if not match:
+    out: tuple[list[str], list[str]] = ([], [])
+    for words, target in zip(split_terms(terms), out):
+        for term in words:
+            if not term.strip():
+                continue
+            word = plain_word(term)
+            if word is None:
                 return None
-            word = match.group(1)
-        word = " ".join(word.split()).lower()
-        if word:
-            (negative if exclude else positive).append(word)
-    return positive, negative
+            target.append(word.lower())
+    return out
 
 
 def search_query(words: list[str]) -> str:
@@ -201,7 +212,9 @@ def term_names(post: dict) -> tuple[list[str], list[str]]:
     return categories, tags
 
 
-class WordPressSource:
+class WordPressSource(Source):
+    style = REAL
+
     def __init__(
         self,
         site: Site,
@@ -210,16 +223,15 @@ class WordPressSource:
         content: ContentFilter,
         opts: DrawOptions,
     ):
+        super().__init__(cache, content, opts)
         self.site = site
         self.key = site.key
         self.name = site.name
+        self.intro = site.intro
+        self.link_re = site.link_re
         self.http = http
-        self.cache = cache
-        self.content = content
-        self.opts = opts
-        # 查询参数 → (过期时间, 帖子总数)
-        self._totals: dict[str, tuple[float, int]] = {}
-        self._inflight: dict = {}
+        # 查询参数 → 帖子总数
+        self._totals = TTLCache(TOTAL_TTL, TOTAL_CACHE_SIZE)
 
     def _searches(self, ctx: DrawContext) -> list[tuple[list[str], list[str]]]:
         """可用的 (搜索词, 排除词)：原词、翻译后的词，或两者都试（去重）；关键词搜不了时为空。"""
@@ -234,9 +246,12 @@ class WordPressSource:
                 searches.append(search)
         return searches
 
+    def _raw_title(self, post: dict) -> str:
+        return html.unescape(str((post.get("title") or {}).get("rendered") or ""))
+
     def _title(self, post: dict) -> str:
         """显示用的标题：去掉站点的标题噪声。"""
-        title = html.unescape(str((post.get("title") or {}).get("rendered") or ""))
+        title = self._raw_title(post)
         if self.site.title_noise:
             title = self.site.title_noise.sub("", title)
         return title.strip()
@@ -308,24 +323,15 @@ class WordPressSource:
         return data, headers
 
     async def _total(self, params: dict[str, str]) -> int:
-        key = json.dumps(params, sort_keys=True)
-        cached = self._totals.get(key)
-        if cached and cached[0] > time.monotonic():
-            return cached[1]
-
         async def count() -> int:
             _, headers = await self._get({**params, "per_page": "1", "_fields": "id"})
             try:
-                total = int(headers.get("x-wp-total") or 0)
+                return int(headers.get("x-wp-total") or 0)
             except ValueError:
-                total = 0
-            ttl = SEARCH_TTL if "search" in params else TOTAL_TTL
-            self._totals[key] = (time.monotonic() + ttl, total)
-            while len(self._totals) > TOTAL_CACHE_SIZE:
-                self._totals.pop(next(iter(self._totals)))
-            return total
+                return 0
 
-        return await shared(self._inflight, key, count)
+        ttl = SEARCH_TTL if "search" in params else TOTAL_TTL
+        return await self._totals.load(json.dumps(params, sort_keys=True), count, ttl)
 
     async def random_post(self, params: dict[str, str]) -> dict | None:
         """随机一个帖子；总数变少导致页码越界时清掉缓存的总数，返回 None。"""
@@ -350,7 +356,7 @@ class WordPressSource:
         except HttpError as e:
             if e.status != 400:
                 raise
-            self._totals.pop(json.dumps(params, sort_keys=True), None)
+            self._totals.pop(json.dumps(params, sort_keys=True))
             return None
         if isinstance(posts, list) and posts and isinstance(posts[0], dict):
             return posts[0]
@@ -368,17 +374,14 @@ class WordPressSource:
     ) -> str | None:
         if not images:
             return "没有图片"
-        title = html.unescape(str((post.get("title") or {}).get("rendered") or ""))
         categories, tags = term_names(post)
-        reason = rating_reason(
-            self.post_rating(post),
-            ctx.req.rating,
-            ctx.is_private,
-            self.opts.rating_enabled,
-        ) or self.content.text_reason([title, *categories, *tags])
+        words = [self._raw_title(post), *categories, *tags]
+        reason = self.rating_reason(
+            self.post_rating(post), ctx
+        ) or self.content.text_reason(words)
         if reason:
             return reason
-        text = "\n".join([title, *categories, *tags]).lower()
+        text = "\n".join(words).lower()
         if any(word in text for word in exclude):
             return "命中排除的关键词"
         return None
@@ -407,25 +410,14 @@ class WordPressSource:
             return [], [f"{self.name} 不支持这次请求"]
         try:
             params, exclude = await self._search_params(params, searches)
-        except (HttpError, aiohttp.ClientError, asyncio.TimeoutError) as e:
+        except NETWORK_ERRORS as e:
             logger.warning(f"[random_pic] {self.name} 请求失败: {e!r}")
             return [], [f"{self.name} 请求失败"]
-        albums: list[Album] = []
-        errors: list[str] = []
         seen: set[int] = set()
-        skipped = 0
         semaphore = asyncio.Semaphore(self.opts.concurrency)
 
         async def attempt() -> Album | None:
-            nonlocal skipped
-            try:
-                post = await self.random_post(params)
-            except (HttpError, aiohttp.ClientError, asyncio.TimeoutError) as e:
-                logger.warning(f"[random_pic] {self.name} 请求失败: {e!r}")
-                message = f"{self.name} 请求失败"
-                if message not in errors:
-                    errors.append(message)
-                return None
+            post = await self.random_post(params)
             if post is None or post.get("id") in seen:
                 return None
             seen.add(post.get("id"))
@@ -435,39 +427,21 @@ class WordPressSource:
                 logger.info(
                     f"[random_pic] 丢弃 {self.name} 帖子 {post.get('id')}: {reason}"
                 )
-                skipped += 1
                 return None
-            album = await self._album(post, images, ctx.req.per_album, semaphore)
-            if album is None:
-                skipped += 1
-            return album
+            return await self._album(post, images, ctx.req.per_album, semaphore)
 
-        try:
-            await fill(albums, n, POSTS_PER_ALBUM * n, self.opts.concurrency, attempt)
-        except WordPressError as e:
-            logger.warning(f"[random_pic] {e}")
-            errors.append(str(e))
-        if skipped:
-            errors.append(f"{skipped} 个 {self.name} 帖子被过滤或下载失败")
-        return albums, errors
+        return await self.collect(n, POSTS_PER_ALBUM, attempt)
 
     async def _album(
         self, post: dict, images: list[str], n: int, semaphore: asyncio.Semaphore
     ) -> Album | None:
-        skip = self.opts.explicit_skip if self.post_rating(post) == EXPLICIT else 0.0
-
         async def download(index: int) -> tuple[int, Path] | None:
             async with semaphore:
                 path = await self.cache.download(images[index])
             return (index + 1, path) if path else None
 
-        pictures = await fetch_pages(
-            len(images),
-            n,
-            self.opts.concurrency,
-            download,
-            from_start=self.opts.from_start,
-            skip=skip,
+        pictures = await self.pick_pages(
+            len(images), n, self.post_rating(post), download
         )
         if not pictures:
             return None
@@ -481,10 +455,12 @@ class WordPressSource:
             source=self.name,
             title=self._title(post),
             total=len(images),
-            pictures=sorted(pictures),
+            pictures=pictures,
             details=details,
             work=WorkRef(self.key, str(post.get("id"))),
         )
+
+    # ---- 整本打包 ----
 
     async def work(self, ref: WorkRef) -> Work | None:
         """按帖子 id 或链接里的 slug 取帖子，不存在时返回 None。"""
@@ -502,11 +478,10 @@ class WordPressSource:
         if not isinstance(post, dict) or not post.get("id"):
             return None
         images = self._images(post)
-        title = html.unescape(str((post.get("title") or {}).get("rendered") or ""))
         categories, tags = term_names(post)
         blocked = (
             ("是 AI 生成的作品" if self.excluded(post) else None)
-            or self.content.text_reason([title, *categories, *tags])
+            or self.content.text_reason([self._raw_title(post), *categories, *tags])
             or (None if images else "没有图片")
         )
         return Work(
@@ -517,6 +492,3 @@ class WordPressSource:
             blocked=blocked,
             data=images,
         )
-
-    async def download_work(self, work: Work, dest: Path) -> tuple[list[Path], int]:
-        return await download_all(self.cache, work.data, dest, self.opts.concurrency)

@@ -26,20 +26,26 @@ import asyncio
 import json
 import random
 import re
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import aiohttp
-
 from astrbot.api import logger
 
-from ..filters import ContentFilter, rating_reason
-from ..models import ANIME, EXPLICIT, SENSITIVE, Album, DrawOptions, Work, WorkRef
-from ..net import HttpClient, HttpError, ImageCache, RateLimiter, download_all
+from ..filters import ContentFilter
+from ..models import (
+    ANIME,
+    EXPLICIT,
+    SENSITIVE,
+    Album,
+    DrawContext,
+    DrawOptions,
+    Work,
+    WorkRef,
+)
+from ..net import NETWORK_ERRORS, HttpClient, HttpError, ImageCache, RateLimiter
 from ..tags import TagIndex
-from ..util import fill, shared
-from . import DrawContext
+from ..util import TTLCache
+from .base import Source, SourceError, plain_word, split_terms
 
 API = "https://danbooru.donmai.us"
 HEADERS = {"User-Agent": "astrbot_plugin_random_pic"}
@@ -92,10 +98,6 @@ CACHE_SIZE = 4096
 MAX_NAMES = 3
 # 标签末尾的消歧义括号，例如 hu_tao_(genshin_impact)、toki_(bunny)_(blue_archive)
 QUALIFIER_RE = re.compile(r"(?:_\([^()]*\))+$")
-# E-Hentai 搜索词形式的标签，例如 character:"hu tao$"、female:swimsuit$
-TAG_TERM_RE = re.compile(r'^(?:[a-z]+:)?"?([^":$]+?)\$?"?$', re.I)
-TAG_SYNTAX = frozenset(':$"')
-NETWORK_ERRORS = (HttpError, aiohttp.ClientError, asyncio.TimeoutError)
 
 
 @dataclass(frozen=True)
@@ -105,20 +107,14 @@ class Pool:
     uniform: bool  # 还有一个标签的额度，可以用 random:N
 
 
-class DanbooruError(Exception):
+class DanbooruError(SourceError):
     pass
 
 
 def tag_word(term: str) -> str | None:
     """关键词 → 补全用的词：E-Hentai 标签写法取出标签名，空格换成下划线。"""
-    word = term.strip()
-    if TAG_SYNTAX & set(word):
-        match = TAG_TERM_RE.match(word)
-        if not match:
-            return None
-        word = match.group(1)
-    word = "_".join(word.lower().split())
-    return word or None
+    word = plain_word(term)
+    return "_".join(word.lower().split()) if word else None
 
 
 def display_names(tags: str, namespace: str, index: TagIndex | None) -> list[str]:
@@ -134,30 +130,12 @@ def display_names(tags: str, namespace: str, index: TagIndex | None) -> list[str
     return list(dict.fromkeys(names))
 
 
-class TTLCache:
-    """带过期时间、数量上限的字典，超出时丢掉最早放入的。"""
-
-    def __init__(self, size: int = CACHE_SIZE):
-        self.size = size
-        self._data: dict = {}
-
-    def __contains__(self, key) -> bool:
-        hit = self._data.get(key)
-        return hit is not None and hit[0] >= time.monotonic()
-
-    def get(self, key, default=None):
-        return self._data[key][1] if key in self else default
-
-    def put(self, key, value, ttl: float):
-        self._data.pop(key, None)
-        self._data[key] = (time.monotonic() + ttl, value)
-        while len(self._data) > self.size:
-            self._data.pop(next(iter(self._data)))
-
-
-class DanbooruSource:
+class DanbooruSource(Source):
     key = "danbooru"
     name = "Danbooru"
+    style = ANIME
+    intro = "高分插画，可搜中文角色、作品名，支持 /随机角色"
+    link_re = re.compile(r"https?://danbooru\.donmai\.us/posts/(\d+)")
 
     def __init__(
         self,
@@ -169,23 +147,21 @@ class DanbooruSource:
         min_score: int,
         exclude_tags: list[str],
     ):
+        super().__init__(cache, content, opts)
         self.http = http
-        self.cache = cache
-        self.content = content
-        self.opts = opts
-        self.min_score = max(0, min_score)
+        self.min_score = min_score
         self.exclude = ALWAYS_EXCLUDE | {
             "_".join(t.lower().split()) for t in exclude_tags if t.strip()
         }
         self.limiter = RateLimiter(REQUEST_INTERVAL)
-        self._bounds = TTLCache()
-        self._tags = TTLCache()  # 补全用的词 → (标签, 分类)，找不到时为 None
-        self._ratios = TTLCache()  # 角色 → q、e 帖子里 loli / shota 的比例
-        self._characters = TTLCache()  # 关键词标签（不带时为 ""）→ 随机角色候选
-        self._inflight: dict = {}
-
-    def accepts(self, ctx: DrawContext) -> bool:
-        return ctx.req.style == ANIME
+        # 搜索条件 → 最旧、最新帖子的 id，没有帖子时为 None
+        self._bounds = TTLCache(BOUNDS_TTL, CACHE_SIZE)
+        # 补全用的词 → (标签, 分类)，找不到时为 None
+        self._tags = TTLCache(BOUNDS_TTL, CACHE_SIZE)
+        # 角色 → q、e 帖子里 loli / shota 的比例
+        self._ratios = TTLCache(CHARACTERS_TTL, CACHE_SIZE)
+        # 关键词标签（不带时为 ""）→ 随机角色候选
+        self._characters = TTLCache(CHARACTERS_TTL, CACHE_SIZE)
 
     async def _get(self, path: str, params: dict):
         await self.limiter.wait()
@@ -219,18 +195,6 @@ class DanbooruSource:
                 out[str(name)] = float(item.get("frequency") or 0)
         return out
 
-    async def _cached(self, cache: TTLCache, key, ttl: float, load):
-        """先查缓存，没有时同一个 key 只请求一次；请求失败不缓存。"""
-        if key in cache:
-            return cache.get(key)
-
-        async def run():
-            value = await load()
-            cache.put(key, value, ttl)
-            return value
-
-        return await shared(self._inflight, (id(cache), key), run)
-
     # ---- 关键词 ----
 
     async def resolve(
@@ -257,7 +221,7 @@ class DanbooruSource:
                     return found
             return None
 
-        return await self._cached(self._tags, word, BOUNDS_TTL, lookup)
+        return await self._tags.load(word, lookup)
 
     async def _autocomplete(self, word: str) -> tuple[str, int | None] | None:
         data = await self._get(
@@ -280,10 +244,7 @@ class DanbooruSource:
         匿名搜索最多 2 个标签：随机角色占 1 个，其余给关键词。排除词全部在本地过滤，
         放进搜索条件容易让数据库超时。
         """
-        positive_words = [w for w in ctx.req.keywords if not w.startswith("-")]
-        negative_words = [
-            w[1:] for w in ctx.req.keywords if w.startswith("-") and w[1:]
-        ]
+        positive_words, negative_words = split_terms(ctx.req.keywords)
         resolved = await asyncio.gather(
             *(self.resolve(w, ctx.index) for w in [*positive_words, *negative_words])
         )
@@ -333,7 +294,7 @@ class DanbooruSource:
             ids = [int(p["id"]) for p in [*oldest, *newest] if "id" in p]
             return (min(ids), max(ids)) if ids else None
 
-        return await self._cached(self._bounds, query, ttl, load)
+        return await self._bounds.load(query, load, ttl)
 
     async def _pool(self, ctx: DrawContext, tags: list[str]) -> Pool | None:
         narrowed = bool(tags)
@@ -396,7 +357,7 @@ class DanbooruSource:
                 if isinstance(t, dict) and t.get("name")
             ]
 
-        return await self._cached(self._characters, key, CHARACTERS_TTL, load)
+        return await self._characters.load(key, load)
 
     async def _character_pool(self, ctx: DrawContext, tags: list[str]) -> Pool:
         names = await self.characters(tags)
@@ -418,7 +379,7 @@ class DanbooruSource:
             related = await self._related(f"{character} rating:q,e", 0, RELATED_LIMIT)
             return sum(related.get(tag, 0.0) for tag in CHILD_TAGS)
 
-        ratio = await self._cached(self._ratios, character, CHARACTERS_TTL, load)
+        ratio = await self._ratios.load(character, load)
         return ratio >= CHILD_RATIO
 
     def _reject(self, post: dict, ctx: DrawContext, local: set[str]) -> str | None:
@@ -427,11 +388,8 @@ class DanbooruSource:
         if str(post.get("file_ext") or "").lower() not in IMAGE_EXTS:
             return f"不是静态图片（{post.get('file_ext')}）"
         tags = str(post.get("tag_string") or "").split()
-        reason = rating_reason(
-            POST_RATINGS.get(str(post.get("rating"))),
-            ctx.req.rating,
-            ctx.is_private,
-            self.opts.rating_enabled,
+        reason = self.rating_reason(
+            POST_RATINGS.get(str(post.get("rating"))), ctx
         ) or self.content.plain_tags_reason(tags)
         if reason:
             return reason
@@ -446,10 +404,6 @@ class DanbooruSource:
 
     async def draw(self, ctx: DrawContext, n: int) -> tuple[list[Album], list[str]]:
         """抽 n 个帖子，每个帖子一个图集（一张图），帖子之间并发抽取。"""
-        albums: list[Album] = []
-        errors: list[str] = []
-        seen: set[int] = set()
-        skipped = 0
         try:
             tags, local = await self._plan(ctx)
             pool = None
@@ -461,12 +415,13 @@ class DanbooruSource:
                         if tags
                         else f"{self.name} 没有符合条件的帖子"
                     )
-        except DanbooruError as e:
-            return albums, [str(e)]
+        except SourceError as e:
+            return [], [str(e)]
         except NETWORK_ERRORS as e:
             logger.warning(f"[random_pic] {self.name} 请求失败: {e!r}")
-            return albums, [f"{self.name} 请求失败"]
+            return [], [f"{self.name} 请求失败"]
 
+        seen: set[int] = set()
         queue: list[dict] = []
         batches = 0
         lock = asyncio.Lock()
@@ -496,42 +451,23 @@ class DanbooruSource:
                 post = take(queue)
                 while post is None and batches < MAX_BATCHES:
                     batches += 1
-                    queue.extend(await self._batch(pool, 2 * (n - len(albums))))
+                    queue.extend(await self._batch(pool, 2 * n))
                     post = take(queue)
                 return post
 
         async def attempt() -> Album | None:
-            nonlocal skipped
-            try:
-                post = await pick()
-                child = post and await self._child_character(post)
-            except NETWORK_ERRORS as e:
-                logger.warning(f"[random_pic] {self.name} 请求失败: {e!r}")
-                message = f"{self.name} 请求失败"
-                if message not in errors:
-                    errors.append(message)
-                return None
+            post = await pick()
             if post is None:
                 return None  # 候选帖子都被过滤了
+            child = await self._child_character(post)
             if child:
                 logger.info(
                     f"[random_pic] 丢弃 Danbooru 帖子 {post.get('id')}: {child} 多为儿童设定"
                 )
-            album = None if child else await self._album(post, ctx)
-            if album is None:
-                skipped += 1
-            return album
+                return None
+            return await self._album(post, ctx)
 
-        try:
-            await fill(albums, n, POSTS_PER_ALBUM * n, self.opts.concurrency, attempt)
-        except DanbooruError as e:
-            logger.warning(f"[random_pic] {e}")
-            errors.append(str(e))
-        if skipped:
-            errors.append(f"{skipped} 个 {self.name} 帖子被过滤或下载失败")
-        if len(albums) < n and not errors:
-            errors.append(f"{self.name} 符合条件的帖子大多被过滤了")
-        return albums, errors
+        return await self.collect(n, POSTS_PER_ALBUM, attempt)
 
     async def _album(self, post: dict, ctx: DrawContext) -> Album | None:
         """下载原图，超过大小上限或下载失败时改用 850px 宽的缩小图。"""
@@ -650,7 +586,5 @@ class DanbooruSource:
             data=[self._url(p) for p in kept],
         )
 
-    async def download_work(self, work: Work, dest: Path) -> tuple[list[Path], int]:
-        return await download_all(
-            self.cache, work.data, dest, self.opts.concurrency, headers=HEADERS
-        )
+    async def download_page(self, url: str, dest: Path) -> Path | None:
+        return await self.cache.download(url, dest, headers=HEADERS)

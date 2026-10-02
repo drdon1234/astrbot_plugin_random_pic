@@ -1,20 +1,37 @@
-"""E-Hentai 图源（只用于三次元）：分级 → 画廊池，随机跳转、复核过滤后取随机几页。"""
+"""E-Hentai 图源（只用于三次元）：分级 → 画廊池，随机跳转、复核过滤后取随机几页。
+
+真人内容基本只在 Cosplay、Asian Porn 两个分类里（Western、Image Set、Non-H 几乎都是绘画，
+Misc 七成是 3D 渲染），站上没有通用的「真人照片」标签。分级只看画廊级的标签（2026-10 抽样
+500 个 Cosplay 画廊）：约 20% 带裸露 / 性内容标签，为 R18；约 78% 带 other:non-nude，为擦边；
+约 2% 两者都没有，里面既有性内容也有穿着完整的写真，无法判定、直接丢弃。打码类标签只用于露出
+性器官的画廊，和 non-nude 同时出现时（约 0.5%）按 R18 处理。
+
+两个画廊池就按这个分级搜索：擦边池加入 Asian Porn（无露点的多是杂志写真）；R18 池不加，
+因为其中有业余和流出内容，真人年龄也无法靠标签过滤。
+"""
 
 import asyncio
 import random
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
-import aiohttp
-
 from astrbot.api import logger
 
-from ..filters import ContentFilter, classify, rating_reason
-from ..models import EXPLICIT, RATINGS, REAL, Album, DrawOptions, Work, WorkRef
-from ..net import HttpError, ImageCache
+from ..filters import ContentFilter
+from ..models import (
+    EXPLICIT,
+    REAL,
+    SENSITIVE,
+    Album,
+    DrawContext,
+    DrawOptions,
+    Work,
+    WorkRef,
+)
+from ..net import NETWORK_ERRORS, ImageCache
 from ..tags import TagIndex, search_term
-from ..util import fetch_pages
-from . import DrawContext
+from .base import Source
 from .ehentai_api import (
     BlockedError,
     EHentai,
@@ -24,53 +41,58 @@ from .ehentai_api import (
     build_search,
 )
 
+REAL_CATEGORIES = ("Cosplay", "Asian Porn")
+NON_NUDE = "other:non-nude"
+# 裸露或性内容的证据，优先级高于 non-nude
+EXPLICIT_TAGS = (
+    "other:nudity only",
+    "other:uncensored",
+    "other:mosaic censorship",
+    "other:full censorship",
+    "other:hardcore",
+    "other:no penetration",
+    "other:object insertion only",
+)
+
+
+@dataclass(frozen=True)
+class Pool:
+    categories: tuple[str, ...]
+    search: str
+
+
+POOLS = {
+    SENSITIVE: Pool(
+        REAL_CATEGORIES, f'{search_term("other", "non-nude")} -other:"nudity only$"'
+    ),
+    # 带任一裸露 / 性内容标签（~ 表示「或」）
+    EXPLICIT: Pool(
+        ("Cosplay",),
+        " ".join("~" + search_term(*t.split(":", 1)) for t in EXPLICIT_TAGS),
+    ),
+}
+
 # 抽取轮数：画廊被复核丢弃、取图失败时重新随机跳转
 MAX_ROUNDS = 3
-# 每次随机跳转后最多尝试的画廊数，未通过复核或下载失败时换同一页的下一个；
-# 画廊池有本地标签要求时多取一些（一页最多 25 个，一次元数据请求就能查完）
+# 每次随机跳转后最多尝试的画廊数，未通过复核或下载失败时换同一页的下一个
 CANDIDATES_PER_JUMP = 3
-CANDIDATES_WITH_REQUIRE = 10
 AUTHOR_NAMESPACES = ("artist", "cosplayer", "group")
 # 随机角色模式下，每个图集最多换这么多个角色（没有画廊的角色每个只花一次请求）
 CHARACTER_TRIES = 10
 # 说明文字中最多列出的作品、角色数
 MAX_NAMES = 3
-NETWORK_ERRORS = (EHentaiError, HttpError, aiohttp.ClientError, asyncio.TimeoutError)
 
 Picture = tuple[int, Path]
 
 
-@dataclass
-class Pool:
-    categories: list[str]
-    search: str
-    # 画廊至少要带其中一个标签；「female:*」表示该命名空间下任意标签
-    require: list[str]
-
-    def missing_required(self, tags: list[str]) -> bool:
-        if not self.require:
-            return False
-        tagset = {t.lower() for t in tags}
-        namespaces = {t.split(":", 1)[0] for t in tagset}
-        for want in self.require:
-            if want.endswith(":*") and want[:-2] in namespaces:
-                return False
-            if want in tagset:
-                return False
-        return True
-
-
-def build_pools(conf: dict) -> dict[str, Pool]:
-    """conf 为配置的 pools 段，键为 real_<分级>_categories / _search / _require。"""
-    pools = {}
-    for rating in RATINGS:
-        key = f"{REAL}_{rating}"
-        pools[rating] = Pool(
-            list(conf[f"{key}_categories"]),
-            conf[f"{key}_search"].strip(),
-            [t.lower() for t in conf[f"{key}_require"]],
-        )
-    return pools
+def gallery_rating(tags: list[str]) -> str | None:
+    """按画廊标签判定分级，无法判定时为 None。"""
+    tagset = {t.lower() for t in tags}
+    if tagset & set(EXPLICIT_TAGS):
+        return EXPLICIT
+    if NON_NUDE in tagset:
+        return SENSITIVE
+    return None
 
 
 def gallery_author(gallery: Gallery) -> str:
@@ -90,13 +112,15 @@ def gallery_names(
     return [index.zh(t) if index else t.split(":", 1)[1] for t in tags]
 
 
-class EHentaiSource:
-    key = "ehentai"  # 图源键，ExHentai 也用它
+class EHentaiSource(Source):
+    key = "ehentai"  # ExHentai 也用它
+    style = REAL
+    intro = "Cosplay 与写真画廊，支持 E-Hentai 标签语法和 /随机角色"
+    link_re = re.compile(r"https?://(?:e-hentai|exhentai)\.org/g/(\d+)/([0-9a-f]{10})")
 
     def __init__(
         self,
         api: EHentai,
-        pools: dict[str, Pool],
         cache: ImageCache,
         content: ContentFilter,
         opts: DrawOptions,
@@ -105,18 +129,12 @@ class EHentaiSource:
         min_stars: int,
         min_pages: int,
     ):
+        super().__init__(cache, content, opts)
         self.api = api
         self.name = api.name
-        self.pools = pools
-        self.cache = cache
-        self.content = content
-        self.opts = opts
         self.exclude_ai = exclude_ai
         self.min_stars = min_stars
         self.min_pages = min_pages
-
-    def accepts(self, ctx: DrawContext) -> bool:
-        return ctx.req.style == REAL
 
     def _params(self, pool: Pool, terms: list[str]) -> dict:
         return build_search(
@@ -131,14 +149,7 @@ class EHentaiSource:
     async def draw(self, ctx: DrawContext, n: int) -> tuple[list[Album], list[str]]:
         albums: list[Album] = []
         errors: list[str] = []
-        if not self.accepts(ctx):
-            return albums, [f"{self.name} 只用于三次元"]
-        pool = self.pools[ctx.req.rating]
-        try:
-            self._params(pool, ctx.terms)
-        except ValueError as e:
-            return albums, [f"画廊池配置错误：{e}"]
-
+        pool = POOLS[ctx.req.rating]
         seen: set[int] = set()
         discarded = 0
         for _ in range(MAX_ROUNDS):
@@ -150,7 +161,7 @@ class EHentaiSource:
             except EHentaiError as e:
                 errors.append(str(e))
                 break
-            except (aiohttp.ClientError, asyncio.TimeoutError, HttpError) as e:
+            except NETWORK_ERRORS as e:
                 # 网络抖动（连接被重置、超时）多半是偶发的，下一轮重试
                 logger.warning(f"[random_pic] {self.name} 请求失败: {e!r}")
                 if f"{self.name} 请求失败" not in errors:
@@ -188,13 +199,12 @@ class EHentaiSource:
         if len(failures) == len(listings):
             raise failures[0]
         groups = []
-        per_jump = CANDIDATES_WITH_REQUIRE if pool.require else CANDIDATES_PER_JUMP
         for listing in listings:
             if isinstance(listing, BaseException):
                 continue
             candidates = [g for g in listing if g[0] not in seen]
             random.shuffle(candidates)
-            group = candidates[:per_jump]
+            group = candidates[:CANDIDATES_PER_JUMP]
             # 几次跳转可能落在同一页，同一个画廊只给一个分组
             seen.update(gid for gid, _ in group)
             groups.append(group)
@@ -205,7 +215,7 @@ class EHentaiSource:
             discarded = 0
             for gid, _ in group:
                 gallery = metas.get(gid)
-                reason = self._reject(gallery, ctx, pool)
+                reason = self._reject(gallery, ctx)
                 if reason:
                     logger.info(f"[random_pic] 丢弃画廊 {gid}: {reason}")
                     discarded += 1
@@ -250,24 +260,18 @@ class EHentaiSource:
                 continue
         raise EHentaiError(f"连续 {CHARACTER_TRIES} 个随机角色都没有符合条件的画廊")
 
-    def _reject(
-        self, gallery: Gallery | None, ctx: DrawContext, pool: Pool
-    ) -> str | None:
+    def _reject(self, gallery: Gallery | None, ctx: DrawContext) -> str | None:
         if gallery is None:
             return "元数据缺失"
         if gallery.expunged:
             return "画廊已被删除"
         if gallery.filecount <= 0:
             return "画廊没有图片"
-        style, rating = classify(gallery.category, gallery.tags)
-        if style != ctx.req.style:
-            return f"风格不符（{gallery.category}）"
-        reason = rating_reason(
-            rating, ctx.req.rating, ctx.is_private, self.opts.rating_enabled
+        if gallery.category not in REAL_CATEGORIES:
+            return f"不是三次元分类（{gallery.category}）"
+        return self.rating_reason(
+            gallery_rating(gallery.tags), ctx
         ) or self.content.tags_reason(gallery.tags)
-        if reason is None and pool.missing_required(gallery.tags):
-            reason = "缺少画廊池要求的标签"
-        return reason
 
     def _album(
         self, gallery: Gallery, pictures: list[Picture], index: TagIndex | None
@@ -281,8 +285,7 @@ class EHentaiSource:
             if names:
                 details.append(f"{label}：{'、'.join(names)}")
         info = [gallery.category, f"★{gallery.stars:.1f}" if gallery.stars else ""]
-        if any(info):
-            details.append(" · ".join(i for i in info if i))
+        details.append(" · ".join(i for i in info if i))
         details.append(f"画廊：{self.api.gallery_url(gallery.gid, gallery.token)}")
         return Album(
             source=self.name,
@@ -295,32 +298,21 @@ class EHentaiSource:
 
     async def _pictures(self, gallery: Gallery, ctx: DrawContext) -> list[Picture]:
         """从画廊取 ctx.req.per_album 张（多张时并发），失败的页换别的页补上，按页码排序。"""
-        explicit = classify(gallery.category, gallery.tags)[1] == EXPLICIT
 
         async def picture(index: int) -> Picture | None:
-            return await self._picture(gallery, index)
+            try:
+                page, page_url = await self.api.page_url(gallery, index)
+                path = await self._download_page(page_url)
+            except BlockedError:
+                raise
+            except NETWORK_ERRORS + (EHentaiError,) as e:
+                logger.warning(f"[random_pic] 画廊 {gallery.gid} 取图失败: {e}")
+                return None
+            return (page, path) if path else None
 
-        pictures = await fetch_pages(
-            gallery.filecount,
-            ctx.req.per_album,
-            self.opts.concurrency,
-            picture,
-            from_start=self.opts.from_start,
-            skip=self.opts.explicit_skip if explicit else 0.0,
+        return await self.pick_pages(
+            gallery.filecount, ctx.req.per_album, gallery_rating(gallery.tags), picture
         )
-        return sorted(pictures)
-
-    async def _picture(self, gallery: Gallery, index: int) -> Picture | None:
-        """取画廊第 index 张（从 0 开始），返回 (实际页码, 本地文件)。"""
-        try:
-            page, page_url = await self.api.page_url(gallery, index)
-            path = await self._download_page(page_url)
-        except BlockedError:
-            raise
-        except NETWORK_ERRORS as e:
-            logger.warning(f"[random_pic] 画廊 {gallery.gid} 取图失败: {e}")
-            return None
-        return (page, path) if path else None
 
     async def _download_page(
         self, page_url: str, dest: Path | None = None
@@ -333,6 +325,8 @@ class EHentaiSource:
             path = await self.cache.download(image, dest)
         return path
 
+    # ---- 整本打包 ----
+
     async def work(self, ref: WorkRef) -> Work | None:
         """查询画廊，不存在或已被删除时返回 None。分级和过滤与抽图相同，没有标签的不予打包。"""
         gallery = await self.api.gallery(int(ref.id), ref.token)
@@ -342,39 +336,21 @@ class EHentaiSource:
             ref=WorkRef(self.key, str(gallery.gid), gallery.token),
             title=gallery.title,
             pages=gallery.filecount,
-            rating=classify(gallery.category, gallery.tags)[1],
+            rating=gallery_rating(gallery.tags),
             blocked=self.content.tags_reason(gallery.tags),
             data=gallery,
         )
 
-    async def download_work(self, work: Work, dest: Path) -> tuple[list[Path], int]:
-        return await self.download_gallery(work.data, dest)
+    async def page_items(self, work: Work) -> list[str]:
+        """画廊全部单页的地址。"""
+        return [url for _, url in await self.api.all_page_urls(work.data)]
 
-    async def download_gallery(
-        self, gallery: Gallery, dest: Path
-    ) -> tuple[list[Path], int]:
-        """下载整个画廊到 dest（文件以页码命名），返回 (按页码排序的图片路径, 失败页数)。"""
-        dest.mkdir(parents=True, exist_ok=True)
-        pages = await self.api.all_page_urls(gallery)
-        semaphore = asyncio.Semaphore(self.opts.concurrency)
-
-        async def fetch(number: int, url: str) -> Path | None:
-            async with semaphore:
-                try:
-                    return await self._download_page(url, dest / f"{number:05d}")
-                except BlockedError:
-                    raise
-                except NETWORK_ERRORS as e:
-                    logger.warning(
-                        f"[random_pic] 画廊 {gallery.gid} 第 {number} 页失败: {e}"
-                    )
-                    return None
-
-        results = await asyncio.gather(
-            *(fetch(n, u) for n, u in pages), return_exceptions=True
-        )
-        for r in results:
-            if isinstance(r, BaseException):
-                raise r
-        paths = [p for p in results if p]
-        return paths, gallery.filecount - len(paths)
+    async def download_page(self, page_url: str, dest: Path) -> Path | None:
+        """IP 被封、额度用尽时整本打包停止，其他错误只算这一页失败。"""
+        try:
+            return await self._download_page(page_url, dest)
+        except BlockedError:
+            raise
+        except NETWORK_ERRORS + (EHentaiError,) as e:
+            logger.warning(f"[random_pic] 下载画廊单页 {page_url} 失败: {e}")
+            return None

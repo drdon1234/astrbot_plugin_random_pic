@@ -3,7 +3,7 @@
 import time
 from datetime import date
 
-from .models import EXPLICIT, SENSITIVE, DrawRequest
+from .models import EXPLICIT, SENSITIVE, DrawRequest, Work
 from .settings import Access
 
 
@@ -33,6 +33,12 @@ class AccessControl:
         if rating == SENSITIVE and not self.conf.group_sensitive:
             return "本群未开启擦边内容。"
         return None
+
+    def work_gate(self, work: Work, is_private: bool) -> str | None:
+        """整本作品（/pdf、定时推送完整图集）的闸门：过滤与抽图相同，无法判定分级的按 R18 处理。"""
+        if work.blocked:
+            return f"作品{work.blocked}，不予打包。"
+        return self.gate(work.rating or EXPLICIT, is_private)
 
     def take(self, user_id: str, req: DrawRequest) -> str | None:
         """检查冷却和每日额度，通过时开始冷却。额度不够时缩小请求：先减图集数，再减每集张数。"""

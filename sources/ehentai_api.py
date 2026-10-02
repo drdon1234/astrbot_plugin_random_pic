@@ -6,18 +6,16 @@ E-Hentai 的列表页只能用游标翻页（next=<gid> 返回 gid 更小的下�
 一种按时间近似均匀的抽样。
 """
 
-import asyncio
 import random
 import re
-import time
 from dataclasses import dataclass
 from html import unescape
 
 from astrbot.api import logger
 
-from ..filters import SEARCH_EXCLUDES
 from ..net import HttpClient, HttpError, RateLimiter
-from ..util import shared
+from ..util import TTLCache
+from .base import SourceError
 
 # 站点 → (首页, API, cookie 域名)
 SITES = {
@@ -33,8 +31,17 @@ SITES = {
     ),
 }
 SITE_NAMES = {"e-hentai": "E-Hentai", "exhentai": "ExHentai"}
-EH_NAMES = frozenset(SITE_NAMES.values())
 EX_COOKIES = ("ipb_member_id", "ipb_pass_hash", "igneous")
+# 每次搜索都排除的标签（ExHentai 上能搜到这类画廊），本地黑名单是第二道保险
+SEARCH_EXCLUDES = (
+    "-female:lolicon$",
+    "-male:shotacon$",
+    '-female:"low lolicon$"',
+    '-male:"low shotacon$"',
+    '-female:"oppai loli$"',
+    "-female:toddlercon$",
+    "-male:toddlercon$",
+)
 
 # f_cats 是「排除」位掩码：位为 1 表示不显示该分类
 CATEGORY_BITS = {
@@ -59,13 +66,14 @@ BANNED_MARK = "Your IP address has been temporarily banned"
 # 匿名访问时画廊页每页 20 张缩略图；登录后可在站点设置里修改，运行时会自动校正
 THUMBS_PER_PAGE = 20
 GDATA_BATCH = 25
-# 游标范围缓存的条目上限（随机角色模式会产生大量不同的搜索条件）
+# 游标范围缓存一小时；条目上限（随机角色模式会产生大量不同的搜索条件）
+RANGE_TTL = 3600
 RANGE_CACHE_SIZE = 4096
 # 画廊缩略图页的缓存条目数：同一画廊连抽多页时，每个缩略图页只取一次
 THUMB_CACHE_SIZE = 64
 
 
-class EHentaiError(Exception):
+class EHentaiError(SourceError):
     pass
 
 
@@ -104,21 +112,21 @@ def resolve_site(site: str, cookies: dict[str, str]) -> str:
     return site
 
 
-def category_mask(categories: list[str]) -> int:
-    """把要包含的分类名转换为 f_cats 排除掩码。未知分类名会抛出 ValueError。"""
+def site_cookies(site: str, cookies: dict[str, str]) -> dict[str, dict[str, str]]:
+    """只发给站点域名的 cookie；nw=1 跳过画廊的内容警告页。"""
+    return {SITES[site][2]: {"nw": "1", **cookies}}
+
+
+def category_mask(categories: tuple[str, ...]) -> int:
+    """把要包含的分类名转换为 f_cats 排除掩码。"""
     included = 0
     for name in categories:
-        name = str(name).strip()
-        if name not in CATEGORY_BITS:
-            raise ValueError(f"未知分类 {name!r}")
         included |= CATEGORY_BITS[name]
-    if not included:
-        raise ValueError("至少需要一个分类")
     return ALL_CATEGORIES & ~included
 
 
 def build_search(
-    categories: list[str],
+    categories: tuple[str, ...],
     search: str,
     user_tags: list[str],
     *,
@@ -194,22 +202,17 @@ def parse_gallery(meta: dict) -> Gallery:
 
 
 class EHentai:
-    def __init__(
-        self, http: HttpClient, site: str, interval: float, range_ttl: float = 3600
-    ):
+    def __init__(self, http: HttpClient, site: str, interval: float):
         self.http = http
         self.name = SITE_NAMES[site]
         self.base, self.api_url, _ = SITES[site]
         self.limiter = RateLimiter(interval)
-        self.range_ttl = range_ttl
         self.thumbs_per_page = THUMBS_PER_PAGE
-        # 搜索参数 → (过期时间, 最旧 gid, 最新 gid, 单页结果)；
+        # 搜索参数 → (最旧 gid, 最新 gid, 单页结果)；
         # 结果只有一页时缓存这一页，没有结果时缓存空列表
-        self._ranges: dict[tuple, tuple[float, int, int, list | None]] = {}
-        self._range_pending: dict[tuple, asyncio.Future] = {}
+        self._ranges = TTLCache(RANGE_TTL, RANGE_CACHE_SIZE)
         # (gid, 缩略图页) → 画廊页 HTML
-        self._thumbs: dict[tuple[int, int], str] = {}
-        self._thumb_pending: dict[tuple[int, int], asyncio.Future] = {}
+        self._thumbs = TTLCache(RANGE_TTL, THUMB_CACHE_SIZE)
 
     def gallery_url(self, gid: int, token: str) -> str:
         return f"{self.base}/g/{gid}/{token}/"
@@ -233,29 +236,17 @@ class EHentai:
         return parse_listing(await self._get(self.base + "/", params))
 
     async def _range(self, params: dict) -> tuple[int, int, list | None]:
-        key = tuple(sorted(params.items()))
-        cached = self._ranges.get(key)
-        if cached and cached[0] > time.monotonic():
-            return cached[1:]
-        # 并发抽取时多个跳转同时遇到未缓存的条件，只查一次
-        return await shared(
-            self._range_pending, key, lambda: self._fetch_range(key, params)
-        )
+        """搜索结果的游标范围；并发抽取时多个跳转同时遇到未缓存的条件，只查一次。"""
 
-    async def _fetch_range(
-        self, key: tuple, params: dict
-    ) -> tuple[int, int, list | None]:
-        newest, has_next = await self.listing(params)
-        if has_next and newest:
+        async def fetch():
+            newest, has_next = await self.listing(params)
+            if not (has_next and newest):
+                return 0, 0, newest
             oldest, _ = await self.listing({**params, "prev": "1"})
             lo = min(g for g, _ in oldest or newest)
-            entry = (lo, max(g for g, _ in newest), None)
-        else:
-            entry = (0, 0, newest)
-        if len(self._ranges) >= RANGE_CACHE_SIZE:
-            self._ranges.pop(next(iter(self._ranges)))
-        self._ranges[key] = (time.monotonic() + self.range_ttl, *entry)
-        return entry
+            return lo, max(g for g, _ in newest), None
+
+        return await self._ranges.load(tuple(sorted(params.items())), fetch)
 
     async def random_listing(self, params: dict) -> list[tuple[int, str]]:
         """随机跳转到搜索结果中的某一页，返回该页的画廊。"""
@@ -291,19 +282,11 @@ class EHentai:
         return out
 
     async def _thumb_page(self, gallery: Gallery, page: int) -> str:
-        key = (gallery.gid, page)
-        html = self._thumbs.get(key)
-        if html is None:
-            url = self.gallery_url(gallery.gid, gallery.token)
-            html = await shared(
-                self._thumb_pending,
-                key,
-                lambda: self._get(url, {"p": str(page)} if page else None),
-            )
-            self._thumbs[key] = html
-            while len(self._thumbs) > THUMB_CACHE_SIZE:
-                self._thumbs.pop(next(iter(self._thumbs)))
-        return html
+        url = self.gallery_url(gallery.gid, gallery.token)
+        return await self._thumbs.load(
+            (gallery.gid, page),
+            lambda: self._get(url, {"p": str(page)} if page else None),
+        )
 
     async def page_url(self, gallery: Gallery, index: int) -> tuple[int, str]:
         """取画廊第 index 张（从 0 开始）的单页 URL，返回 (实际页码, URL)。"""

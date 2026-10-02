@@ -1,10 +1,10 @@
-"""并发与抽样工具。"""
+"""并发、抽样与缓存工具。"""
 
 import asyncio
 import random
+import time
 from collections.abc import Awaitable, Callable, Hashable
 from typing import Any
-
 
 # 一个图集里有页下载失败时换别的页补上，多试的页数和要的张数一样多，但至少这么多页
 MIN_SPARE_PAGES = 2
@@ -104,3 +104,46 @@ async def shared(
         future.add_done_callback(done)
     # 某个调用者被取消时不取消共享的请求
     return await asyncio.shield(future)
+
+
+class TTLCache:
+    """带过期时间、数量上限的缓存，超出上限时丢掉最早放入的。值可以是 None。"""
+
+    def __init__(self, ttl: float, size: int = 256):
+        self.ttl = ttl
+        self.size = size
+        self._data: dict = {}
+        self._inflight: dict = {}
+
+    def __contains__(self, key) -> bool:
+        hit = self._data.get(key)
+        return hit is not None and hit[0] >= time.monotonic()
+
+    def get(self, key, default=None):
+        return self._data[key][1] if key in self else default
+
+    def put(self, key, value, ttl: float | None = None):
+        self._data.pop(key, None)
+        self._data[key] = (time.monotonic() + (self.ttl if ttl is None else ttl), value)
+        while len(self._data) > self.size:
+            self._data.pop(next(iter(self._data)))
+
+    def pop(self, key):
+        self._data.pop(key, None)
+
+    async def load(
+        self,
+        key,
+        factory: Callable[[], Awaitable[Any]],
+        ttl: float | None = None,
+    ) -> Any:
+        """先查缓存；没有时调用 factory()，同一个 key 并发只调用一次。出错时不缓存。"""
+        if key in self:
+            return self.get(key)
+
+        async def run():
+            value = await factory()
+            self.put(key, value, ttl)
+            return value
+
+        return await shared(self._inflight, key, run)

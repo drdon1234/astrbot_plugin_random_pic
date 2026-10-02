@@ -4,6 +4,7 @@ import asyncio
 import time
 import urllib.request
 import uuid
+from collections.abc import Awaitable, Callable
 from http.cookies import SimpleCookie
 from pathlib import Path
 
@@ -34,6 +35,10 @@ class HttpError(Exception):
     def __init__(self, message: str, status: int | None = None):
         super().__init__(message)
         self.status = status
+
+
+# 网络抖动、站点出错一类可以换一次再试的错误
+NETWORK_ERRORS = (HttpError, aiohttp.ClientError, asyncio.TimeoutError)
 
 
 def scoped_cookies(domain: str, values: dict[str, str]) -> SimpleCookie:
@@ -253,23 +258,28 @@ class ImageCache:
 
 
 async def download_all(
-    cache: ImageCache,
-    urls: list[str],
+    items: list,
     dest: Path,
     concurrency: int,
-    headers: dict | None = None,
+    fetch: Callable[[object, Path], Awaitable[Path | None]],
 ) -> tuple[list[Path], int]:
-    """整本下载：urls 依次是第 1、2……页，存到 dest（文件以页码命名）。
+    """整本下载：items 依次是第 1、2……页，fetch(页, 不含扩展名的目标路径) 下载一页。
 
-    返回 (按页码排序的图片路径, 失败页数)。
+    文件以页码命名存到 dest，返回 (按页码排序的图片路径, 失败页数)。
+    fetch 抛出的异常在所有页结束后向上传递。
     """
     dest.mkdir(parents=True, exist_ok=True)
     semaphore = asyncio.Semaphore(max(1, concurrency))
 
-    async def fetch(number: int, url: str) -> Path | None:
+    async def one(number: int, item) -> Path | None:
         async with semaphore:
-            return await cache.download(url, dest / f"{number:05d}", headers=headers)
+            return await fetch(item, dest / f"{number:05d}")
 
-    results = await asyncio.gather(*(fetch(n, url) for n, url in enumerate(urls, 1)))
+    results = await asyncio.gather(
+        *(one(n, item) for n, item in enumerate(items, 1)), return_exceptions=True
+    )
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
     paths = [p for p in results if p]
-    return paths, len(urls) - len(paths)
+    return paths, len(items) - len(paths)

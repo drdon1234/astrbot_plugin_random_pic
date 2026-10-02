@@ -1,12 +1,14 @@
-"""把图集排成要发送的消息，QQ（OneBot）上直接调用发送接口拿到消息 ID。"""
+"""把图集排成要发送的消息、逐条发出并登记，QQ（OneBot）上直接调用发送接口拿到消息 ID。"""
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import astrbot.api.message_components as Comp
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
-from .history import header_text, page_text
+from .history import History, SentAlbum, clean_title, header_text, page_text
 from .models import Album
 
 FORWARD = "合并转发"
@@ -17,9 +19,13 @@ ONEBOT = "aiocqhttp"
 MIXED_PER_MESSAGE = 10
 # 一条合并转发最多这么多个节点（QQ 的上限）
 FORWARD_MAX_NODES = 100
+# 两条消息之间的间隔（秒），和 AstrBot 分段发送一致
+SEND_INTERVAL = 0.5
 
 # 一条消息：(消息段, 其中的图集序号)
 Message = tuple[list, list[int]]
+# 发送一条消息，返回消息 ID（拿不到时为 None），QQ 拒发时抛出 SendFailed
+Send = Callable[[list], Awaitable[str | None]]
 
 
 def resolve_mode(mode: str, platform: str, albums: int) -> str:
@@ -77,7 +83,9 @@ class Composer:
         messages = []
         for start in range(0, len(pictures), FORWARD_MAX_NODES):
             nodes = []
-            for i, (page, path) in enumerate(pictures[start : start + FORWARD_MAX_NODES]):
+            for i, (page, path) in enumerate(
+                pictures[start : start + FORWARD_MAX_NODES]
+            ):
                 content = self.picture_content(1, album, page, path, i == 0)
                 if start + i == len(pictures) - 1:
                     content += self.caption_content(album)
@@ -193,3 +201,47 @@ async def send_onebot(
         logger.warning(f"[random_pic] 发送接口没有返回消息 ID: {ret!r}")
         return True, None
     return True, str(message_id)
+
+
+class Dispatcher:
+    """发送抽到的图集：登记到会话、排成消息逐条发送，并按消息 ID 登记其中的图集（/pdf 按回复查）。"""
+
+    def __init__(self, history: History, composer: Composer, mode: str):
+        self.history = history
+        self.composer = composer
+        self.mode = mode
+
+    def record(self, session: str, albums: list[Album]) -> list[SentAlbum]:
+        """登记本会话这次抽到的图集，序号从 1 开始。"""
+        sent = [
+            SentAlbum(idx, clean_title(album.title), album.source, album.work)
+            for idx, album in enumerate(albums, 1)
+        ]
+        self.history.record_draw(session, sent)
+        return sent
+
+    async def deliver(
+        self, albums: list[Album], session: str, platform: str, uin: str, send: Send
+    ) -> tuple[int, int]:
+        """登记并发送抽到的图集，uin 是合并转发节点的发送者。返回 (失败条数, 总条数)。"""
+        sent = self.record(session, albums)
+        mode = resolve_mode(self.mode, platform, len(albums))
+        messages = self.composer.compose(albums, mode, uin)
+        return await self.send_all(messages, sent, send), len(messages)
+
+    async def send_all(
+        self, messages: list[Message], sent: list[SentAlbum], send: Send
+    ) -> int:
+        """依次发送消息并按消息 ID 登记其中的图集，返回失败条数。"""
+        failed = 0
+        for i, (chain, idxs) in enumerate(messages):
+            if i:
+                await asyncio.sleep(SEND_INTERVAL)
+            try:
+                message_id = await send(chain)
+            except SendFailed:
+                failed += 1
+                continue
+            if message_id and idxs:
+                self.history.record_message(message_id, [sent[idx - 1] for idx in idxs])
+        return failed

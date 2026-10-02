@@ -26,24 +26,32 @@ import asyncio
 import html
 import random
 import re
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode
 
-import aiohttp
+from curl_cffi.requests import AsyncSession
+from curl_cffi.requests.exceptions import RequestException
 from jmcomic import JmcomicText, JmImageTool
 from jmcomic.jm_exception import JmcomicException
 from PIL import Image
 
 from astrbot.api import logger
 
-from ..filters import ContentFilter, rating_reason
-from ..models import EXPLICIT, REAL, SENSITIVE, Album, DrawOptions, Work, WorkRef
+from ..filters import ContentFilter
+from ..models import (
+    EXPLICIT,
+    REAL,
+    SENSITIVE,
+    Album,
+    DrawContext,
+    DrawOptions,
+    Work,
+    WorkRef,
+)
 from ..net import ImageCache
-from ..util import fetch_pages, fill, shared
-from . import DrawContext
-from .pica import split_terms, supports_terms
+from ..util import TTLCache, shared
+from .base import Source, SourceError, has_tag_syntax, keyword_and_excludes
 
 CATEGORY_PATH = "/albums/another/sub/cosplay"
 SEARCH_PATH = "/search/photos/another/sub/cosplay"
@@ -78,7 +86,7 @@ ACTIVE_RE = re.compile(r'<li class="active">\s*<span>(\d+)</span>')
 COUNT_RE = re.compile(r"^([\d.]+)\s*([KkMm]?)$")
 
 
-class JMError(Exception):
+class JMError(SourceError):
     pass
 
 
@@ -180,9 +188,15 @@ def photo_pages(photo) -> list[Page]:
     return pages
 
 
-class JMComicSource:
+class JMComicSource(Source):
     key = "jmcomic"
     name = "禁漫天堂"
+    style = REAL
+    intro = "Cosplay 分类，只用于 R18，可搜普通关键词"
+    # 禁漫的域名经常更换，认域名里带 18comic、jm 的
+    link_re = re.compile(
+        r"https?://[\w.-]*(?:18comic|jm)[\w.-]*/album/(\d+)(?![\w%-])", re.ASCII
+    )
 
     def __init__(
         self,
@@ -196,20 +210,17 @@ class JMComicSource:
         min_likes: int,
         exclude_tags: list[str],
     ):
-        self.cache = cache
-        self.content = content
-        self.opts = opts
+        super().__init__(cache, content, opts)
         self.domain = domain
         self.proxy = proxy or None
         self.timeout = timeout
         self.min_likes = min_likes
         self.exclude_tags = frozenset(t.lower() for t in exclude_tags)
-        self._sessions: dict = {}
+        self._sessions: dict[str, AsyncSession] = {}
         self._fingerprint = 0
-        # 关键词 → (过期时间, 总页数)，空字符串是整个分类
-        self._pages: dict[str, tuple[float, int]] = {}
-        # 关键词 → 没有一本达到点赞数下限的页码（分类末尾的老图），随机翻页时跳过
-        self._barren: dict[str, set[int]] = {}
+        # 关键词（不带时为 ""，即整个分类）→ (总页数, 没有一本达到点赞数下限的页码)；
+        # 后者是分类末尾的老图，随机翻页时跳过，总页数变了就重新记
+        self._pages = TTLCache(LISTING_TTL, PAGES_CACHE_SIZE)
         self._inflight: dict = {}
 
     @property
@@ -226,15 +237,13 @@ class JMComicSource:
             req.style == REAL
             and not req.random_character
             and (req.rating == EXPLICIT or not self.opts.rating_enabled)
-            and supports_terms(req.keywords)
+            and not has_tag_syntax(req.keywords)
         )
 
     # ---- 网页请求 ----
 
     async def _fetch(self, url: str, fingerprint: str) -> tuple[int, str, str]:
         """用指定的浏览器指纹请求，返回 (状态码, 最终地址, 文本)。"""
-        from curl_cffi.requests import AsyncSession
-
         session = self._sessions.get(fingerprint)
         if session is None:
             proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
@@ -247,8 +256,6 @@ class JMComicSource:
 
     async def _get(self, path: str) -> tuple[str, str]:
         """请求网页，返回 (最终地址, 文本)。被 Cloudflare 拦截或连接出错时换指纹重试。"""
-        from curl_cffi.requests.exceptions import RequestException
-
         url = self.base + path
         last = ""
         count = len(FINGERPRINTS)
@@ -287,36 +294,32 @@ class JMComicSource:
         _, text = await self._get(self._listing_path(keyword, page))
         return parse_listing(text, page)
 
-    def _remember(self, keyword: str, pages: int):
-        ttl = SEARCH_TTL if keyword else LISTING_TTL
+    def _remember(self, keyword: str, pages: int) -> set[int]:
+        """记下总页数，返回这些页里已知没有达标本子的页码。"""
         old = self._pages.get(keyword)
-        if old is None or old[1] != pages:
-            self._barren.pop(keyword, None)
-        self._pages[keyword] = (time.monotonic() + ttl, pages)
-        while len(self._pages) > PAGES_CACHE_SIZE:
-            self._barren.pop(next(iter(self._pages)), None)
-            self._pages.pop(next(iter(self._pages)))
+        barren = old[1] if old and old[0] == pages else set()
+        self._pages.put(keyword, (pages, barren), SEARCH_TTL if keyword else None)
+        return barren
 
     async def _random_listing(self, keyword: str) -> tuple[int, list[Item]]:
         """随机翻一页，返回 (页码, 本子)。总页数不知道时先取第一页；页码超出时以实际返回的
         页码修正总页数。"""
         cached = self._pages.get(keyword)
         first = None
-        if cached and cached[0] > time.monotonic():
-            pages = cached[1]
+        if cached:
+            pages, barren = cached
         else:
             first = await shared(
                 self._inflight, keyword, lambda: self._listing(keyword, 1)
             )
             pages = first.pages if first.items else 0
-            self._remember(keyword, pages)
+            barren = self._remember(keyword, pages)
         if pages <= 0:
             raise JMError(
                 f"禁漫 Cosplay 分类里搜不到「{keyword}」"
                 if keyword
                 else "禁漫 Cosplay 分类为空"
             )
-        barren = self._barren.get(keyword, set())
         choices = [p for p in range(1, pages + 1) if p not in barren]
         if not choices:
             raise JMError(f"禁漫没有点赞数达到 {self.min_likes} 的本子")
@@ -356,12 +359,9 @@ class JMComicSource:
         ) or self.content.text_reason([album.name, *album.authors])
 
     def _reject(self, album, ctx: DrawContext, exclude: list[str]) -> str | None:
-        reason = rating_reason(
-            content_rating(album.tags),
-            ctx.req.rating,
-            ctx.is_private,
-            self.opts.rating_enabled,
-        ) or self._blocked(album)
+        reason = self.rating_reason(content_rating(album.tags), ctx) or self._blocked(
+            album
+        )
         if reason:
             return reason
         words = [album.name, *album.tags, *album.works, *album.actors, *album.authors]
@@ -403,7 +403,9 @@ class JMComicSource:
         """随机翻一页，挑一本点赞数、标签、分级都符合的本子。"""
         page, items = await self._random_listing(keyword)
         if not any(item.likes >= self.min_likes for item in items):
-            self._barren.setdefault(keyword, set()).add(page)
+            cached = self._pages.get(keyword)
+            if cached:
+                cached[1].add(page)
         items = [
             item
             for item in items
@@ -424,36 +426,20 @@ class JMComicSource:
 
     async def draw(self, ctx: DrawContext, n: int) -> tuple[list[Album], list[str]]:
         """抽 n 本，每本随机取一个章节作为图集，并发抽取。关键词里 - 开头的词表示排除。"""
-        keyword, exclude = split_terms(ctx.req.keywords)
-        albums: list[Album] = []
-        errors: list[str] = []
+        keyword, exclude = keyword_and_excludes(ctx.req.keywords)
         seen: set[str] = set()
-        skipped = 0
 
         async def attempt() -> Album | None:
-            nonlocal skipped
             try:
                 album = await self._pick(ctx, keyword, exclude, seen)
-                result = (
+                return (
                     await self._make_album(album, ctx.req.per_album) if album else None
                 )
-            except (JmcomicException, aiohttp.ClientError, asyncio.TimeoutError) as e:
-                logger.warning(f"[random_pic] 禁漫解析或下载失败: {e!r}")
-                result = None
-            if result is None:
-                skipped += 1
-            return result
+            except JmcomicException as e:
+                logger.warning(f"[random_pic] 解析禁漫网页失败: {e!r}")
+                return None
 
-        try:
-            await fill(
-                albums, n, LISTINGS_PER_ALBUM * n, self.opts.concurrency, attempt
-            )
-        except JMError as e:
-            logger.warning(f"[random_pic] {e}")
-            errors.append(str(e))
-        if skipped:
-            errors.append(f"{skipped} 次禁漫抽取没有符合条件的本子或下载失败")
-        return albums, errors
+        return await self.collect(n, LISTINGS_PER_ALBUM, attempt)
 
     async def _make_album(self, album, n: int) -> Album | None:
         """从随机的一个章节里取 n 张，按页码排序。"""
@@ -461,20 +447,13 @@ class JMComicSource:
         pages = await self._photo_pages(photo_id)
         if not pages:
             return None
-        rating = content_rating(album.tags)
-        skip = self.opts.explicit_skip if rating == EXPLICIT else 0.0
 
         async def download(index: int) -> tuple[int, Path] | None:
             path = await self._download(pages[index])
             return (index + 1, path) if path else None
 
-        pictures = await fetch_pages(
-            len(pages),
-            n,
-            self.opts.concurrency,
-            download,
-            from_start=self.opts.from_start,
-            skip=skip,
+        pictures = await self.pick_pages(
+            len(pages), n, content_rating(album.tags), download
         )
         if not pictures:
             return None
@@ -491,7 +470,7 @@ class JMComicSource:
             source=self.name,
             title=album.name,
             total=len(pages),
-            pictures=sorted(pictures),
+            pictures=pictures,
             details=details,
             work=WorkRef(self.key, album.album_id),
         )
@@ -511,22 +490,12 @@ class JMComicSource:
             data=[episode[0] for episode in album.episode_list],
         )
 
-    async def download_work(self, work: Work, dest: Path) -> tuple[list[Path], int]:
-        """依次取每个章节的图片列表，再一起下载；所有章节连起来编页码。"""
+    async def page_items(self, work: Work) -> list[Page]:
+        """依次取每个章节的图片列表，所有章节连起来编页码。"""
         pages: list[Page] = []
         for photo_id in work.data:
             pages += await self._photo_pages(photo_id)
-        if not pages:
-            raise JMError("禁漫没有返回图片列表")
-        dest.mkdir(parents=True, exist_ok=True)
-        semaphore = asyncio.Semaphore(self.opts.concurrency)
+        return pages
 
-        async def fetch(number: int, page: Page) -> Path | None:
-            async with semaphore:
-                return await self._download(page, dest / f"{number:05d}")
-
-        results = await asyncio.gather(
-            *(fetch(n, page) for n, page in enumerate(pages, 1))
-        )
-        paths = [p for p in results if p]
-        return paths, len(pages) - len(paths) + max(0, work.pages - len(pages))
+    async def download_page(self, page: Page, dest: Path) -> Path | None:
+        return await self._download(page, dest)

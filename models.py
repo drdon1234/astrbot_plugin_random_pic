@@ -1,18 +1,25 @@
-"""统一数据结构：抽卡请求、图集与各图源共用的取图选项。"""
+"""统一数据结构：抽卡请求、图集、作品与各图源共用的取图选项。"""
+
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .tags import TagIndex
 
 ANIME = "anime"
 REAL = "real"
-STYLES = (ANIME, REAL)
 
 SENSITIVE = "sensitive"
 EXPLICIT = "explicit"
-RATINGS = (SENSITIVE, EXPLICIT)
 
 STYLE_NAMES = {ANIME: "二次元", REAL: "三次元"}
 RATING_NAMES = {SENSITIVE: "擦边", EXPLICIT: "R18"}
+# 指令参数和配置里的词 → 风格、分级（分级词不分大小写）
+STYLE_WORDS = {"二次元": ANIME, "三次元": REAL}
+RATING_WORDS = {"擦边": SENSITIVE, "r18": EXPLICIT, "色图": EXPLICIT}
 
 
 @dataclass
@@ -25,18 +32,28 @@ class DrawRequest:
     random_character: bool = False  # 每个图集先随机抽一个角色
 
 
+@dataclass
+class DrawContext:
+    """一次抽卡交给各图源的信息。"""
+
+    req: DrawRequest
+    is_private: bool
+    terms: list[str]  # 关键词经标签库翻译成的 E-Hentai 搜索词
+    index: TagIndex | None
+
+
 @dataclass(frozen=True)
 class WorkRef:
     """一个作品（E-Hentai 画廊、帖子、本子），/pdf 用。"""
 
-    source: str  # 图源键：ehentai、pica、danbooru、jmcomic、WordPress 站点的 Site.key
+    source: str  # 图源键
     id: str  # 作品 id；WordPress 站点从链接认出时可能是帖子的 slug
     token: str = ""  # E-Hentai 画廊的 token
 
     @property
     def key(self) -> str:
-        """PDF 的存储名：E-Hentai 画廊沿用画廊号（已打包的文件继续复用），其他为「图源_id」。"""
-        return self.id if self.source == "ehentai" else f"{self.source}_{self.id}"
+        """PDF 的存储名。"""
+        return f"{self.source}_{self.id}"
 
 
 @dataclass

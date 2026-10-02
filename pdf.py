@@ -1,21 +1,56 @@
 """整本 PDF：把图片按顺序写成 PDF（每张图一页），以及打包结果的复用与清理。
 
-每页按配置的图片质量转成 JPEG 嵌入（见 images.to_jpeg）。同一时间只有一张图在内存里，
+每页按配置的质量转成 JPEG 嵌入（PDF 只能直接放 JPEG）。同一时间只有一张图在内存里，
 几百页的画廊也不会占用太多内存。
 """
 
 import asyncio
+import io
 import re
 import shutil
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
 
-from .images import to_jpeg
+from PIL import Image
+
 from .models import Work
 from .util import shared
 
 COLOR_SPACES = {"RGB": "DeviceRGB", "L": "DeviceGray"}
+# 不压缩时，不是 JPEG 的页面仍要转成 JPEG，用这个质量
+ORIGINAL_QUALITY = 95
+
+
+def _flatten(im: Image.Image) -> Image.Image:
+    """取第一帧，透明部分铺白底，转成 JPEG 能存的 RGB 或灰度。"""
+    im.seek(0)
+    if im.mode == "L":
+        return im.copy()
+    if im.mode in ("RGBA", "LA", "P", "PA"):
+        rgba = im.convert("RGBA")
+        rgb = Image.new("RGB", rgba.size, (255, 255, 255))
+        rgb.paste(rgba, mask=rgba.split()[-1])
+        return rgb
+    return im.convert("RGB")
+
+
+def to_jpeg(path: Path, quality: int) -> tuple[bytes | None, int, int, str]:
+    """把图片编码成 JPEG，返回 (数据, 宽, 高, 模式 RGB / L)。
+
+    quality 为 0 表示不压缩：JPEG 原样使用，其他格式按 ORIGINAL_QUALITY 转换。
+    原图已经是 JPEG、重新编码后不会更小时也原样使用。原样使用时数据为 None。
+    """
+    with Image.open(path) as im:
+        jpeg = im.format == "JPEG" and im.mode in ("RGB", "L")
+        if jpeg and quality <= 0:
+            return None, im.width, im.height, im.mode
+        flat = _flatten(im)
+    buf = io.BytesIO()
+    flat.save(buf, "JPEG", quality=quality if quality > 0 else ORIGINAL_QUALITY)
+    if jpeg and buf.tell() >= path.stat().st_size:
+        return None, flat.width, flat.height, flat.mode
+    return buf.getvalue(), flat.width, flat.height, flat.mode
 
 
 def write_pdf(images: list[Path], out: Path, quality: int) -> Path:
@@ -84,12 +119,6 @@ def write_pdf(images: list[Path], out: Path, quality: int) -> Path:
 PACK_CONCURRENCY = 2
 # 这么多秒内生成的 PDF 不清理：可能是另一个打包刚完成、还没发出去的文件
 FRESH_SECONDS = 600
-# 本插件存储的 PDF：作品键[-incomplete][-第几卷of共几卷].pdf，作品键是 E-Hentai 画廊号或
-# 「图源_id」（id 是数字，哔咔是十六进制）。只认这些名字，不会误删共享目录里的其他 PDF
-OWN_PDF = re.compile(
-    r"(\d+|(?:pica|cosplaytele|xiuren|nudecosplay|pixibb|danbooru|jmcomic)_[0-9a-f]+)"
-    r"(?:-incomplete)?(?:-\d+of\d+)?\.pdf"
-)
 UNSAFE_FILENAME = re.compile(r'[\\/:*?"<>|\r\n\t]+')
 
 
@@ -109,6 +138,13 @@ def display_name(title: str, key: str, pages: tuple[int, int], parts: int) -> st
     return f"{name}.pdf"
 
 
+def own_pdf_pattern(sources: Iterable[str]) -> re.Pattern:
+    """本插件存储的 PDF：作品键[-incomplete][-第几卷of共几卷].pdf，作品键是「图源_id」
+    （id 是数字，哔咔是十六进制）。只认这些名字，不会误删共享目录里的其他 PDF。"""
+    keys = "|".join(map(re.escape, sources))
+    return re.compile(rf"((?:{keys})_[0-9a-f]+)(?:-incomplete)?(?:-\d+of\d+)?\.pdf")
+
+
 def stored_name(key: str, part: int, parts: int, incomplete: bool = False) -> str:
     """存储用的文件名，只含作品键，便于识别缓存和清理。"""
     name = f"{key}-incomplete" if incomplete else key
@@ -125,13 +161,21 @@ class PdfStore:
     """
 
     def __init__(
-        self, out_dir: Path, tmp_dir: Path, pages_per_file: int, keep: int, quality: int
+        self,
+        out_dir: Path,
+        tmp_dir: Path,
+        pages_per_file: int,
+        keep: int,
+        quality: int,
+        sources: Iterable[str],
     ):
+        """quality 为 0 表示不压缩；sources 是所有图源键，用来认出本插件生成的文件。"""
         self.dir = out_dir
         self.tmp = tmp_dir
         self.pages_per_file = pages_per_file
         self.keep = keep
         self.quality = quality
+        self.own = own_pdf_pattern(sources)
         self._slots = asyncio.Semaphore(PACK_CONCURRENCY)
         # 用户 → (锁, 正在使用的请求数)，没有请求时删除
         self._users: dict[str, tuple[asyncio.Lock, int]] = {}
@@ -222,7 +266,7 @@ class PdfStore:
         """按作品清理旧 PDF，只动本插件生成的文件（输出目录可能是共享目录）。"""
         groups: dict[str, list[Path]] = {}
         for path in self.dir.glob("*.pdf"):
-            match = OWN_PDF.fullmatch(path.name)
+            match = self.own.fullmatch(path.name)
             if match:
                 groups.setdefault(match.group(1), []).append(path)
         newest = {
