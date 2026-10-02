@@ -91,9 +91,9 @@ class SourceSet:
             and not source.unavailable
             and source.usable_ratings
         ]
-        # 其他三次元图源没抽够时由 E-Hentai 补（它停用时不补）
+        # 其他三次元图源没抽够时由配置的补位图源补（它停用或不参与抽图时不补）
         self.fallback: Source | None = next(
-            (s for s, _ in self.drawing if s is self.ehentai), None
+            (s for s, _ in self.drawing if s.key == conf.fallback), None
         )
 
     @property

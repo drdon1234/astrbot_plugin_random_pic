@@ -218,6 +218,32 @@
         "default": "",
         "hint": "例如 http://127.0.0.1:7890。国内通常需要。"
       },
+      "fallback": {
+        "description": "补位图源",
+        "type": "string",
+        "default": "ehentai",
+        "options": [
+          "off",
+          "ehentai",
+          "pica",
+          "cosplaytele",
+          "nudecosplay",
+          "xiuren",
+          "pixibb",
+          "jmcomic"
+        ],
+        "labels": [
+          "不补位",
+          "E-Hentai",
+          "哔咔",
+          "CosplayTele",
+          "NudeCosplay",
+          "XiuRen",
+          "PixiBB",
+          "禁漫天堂"
+        ],
+        "hint": "其他三次元图源没抽够时由它补上；它停用或不适用这次的分级时不补。E-Hentai 请求限速，补位多时较慢。"
+      },
       "danbooru": {
         "description": "Danbooru（二次元）",
         "type": "object",

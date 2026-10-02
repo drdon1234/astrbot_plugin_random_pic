@@ -229,9 +229,10 @@ class JMSite(Site):
 
 @dataclass
 class Sources:
-    """网络代理和各图源站点的设置，站点的键是图源键。"""
+    """网络代理、补位图源和各图源站点的设置，站点的键是图源键。"""
 
     proxy: str
+    fallback: str  # 补位图源的键，"off" 为不补位
     danbooru: DanbooruSite
     ehentai: EHentaiSite
     pica: PicaSite

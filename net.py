@@ -20,6 +20,9 @@ USER_AGENT = (
 
 # 请求超时（秒）
 TIMEOUT = 20
+# 建立连接（连上代理、经代理的 TLS 握手）的超时（秒）：个别 H@H 图片节点经代理握手会一直卡住，
+# 正常握手 1 秒左右，不能让它占满整个请求超时
+CONNECT_TIMEOUT = 8
 # 图片缓存总大小、单张图片的上限（MB）：超出缓存时删除最旧的图片，超过单张上限的图片丢弃换一张
 CACHE_MB = 200
 MAX_IMAGE_MB = 10
@@ -66,8 +69,11 @@ class HttpClient:
         proxy: str | None = None,
         cookies: dict[str, dict[str, str]] | None = None,
         timeout: float = TIMEOUT,
+        connect_timeout: float = CONNECT_TIMEOUT,
     ):
-        self.timeout = aiohttp.ClientTimeout(total=timeout)
+        self.timeout = aiohttp.ClientTimeout(
+            total=timeout, sock_connect=min(connect_timeout, timeout)
+        )
         self.proxy = proxy or None
         self.cookies = cookies or {}
         self._session: aiohttp.ClientSession | None = None
@@ -178,6 +184,9 @@ class ImageCache:
             try:
                 try:
                     fetched = await self._fetch(url, headers)
+                except aiohttp.ConnectionTimeoutError:
+                    # 连不上（握手超时）的服务器重试多半还是超时，直接算失败，由调用方换页或换服务器
+                    raise
                 except aiohttp.ClientConnectionError as e:
                     # 代理偶尔会重置新建的连接，稍等再试一次
                     logger.info(f"[random_pic] 连接失败，稍后重试 {url}: {e!r}")

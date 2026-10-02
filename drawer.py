@@ -68,7 +68,7 @@ class Drawer:
         fallback = self.sources.fallback
 
         async def run(source, n: int) -> tuple[list[Album], list[str]]:
-            """抽一个图源；其他三次元图源没抽够时马上由 E-Hentai 补，不等别的图源。"""
+            """抽一个图源；没抽够时马上由补位图源补，不等别的图源。"""
             try:
                 albums, errors = await source.draw(ctx, n)
             except asyncio.CancelledError:
