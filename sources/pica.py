@@ -51,7 +51,7 @@ SECRET = r"~d}$Q7$eIni=V)9\RK/P.RM4;9[7|@/CA}b~OW!3?EV`:<>M7pddUBL5n|0/*Cn"
 APP_HEADERS = {
     "api-key": API_KEY,
     "accept": "application/vnd.picacomic.com.v1+json",
-    "app-channel": "2",
+    "app-channel": "1",  # 分流 1：直接连域名（分流 2、3 是连 Cloudflare 的 IP）
     "app-version": "2.2.1.2.3.3",
     "app-uuid": "defaultUuid",
     "app-platform": "android",
@@ -325,9 +325,14 @@ class Picacomic(Source):
         }
         if self._token:
             headers["authorization"] = self._token
+        data = None
+        if body is not None:
+            # 和 App 一样带 charset（aiohttp 的 json= 只发 application/json）
+            headers["Content-Type"] = "application/json; charset=UTF-8"
+            data = json.dumps(body).encode()
         # 签名按原样的路径计算，不能让 aiohttp 重新编码
         url = URL(API_BASE + path, encoded=True)
-        async with self.http.request(method, url, json=body, headers=headers) as resp:
+        async with self.http.request(method, url, data=data, headers=headers) as resp:
             text = await resp.text(errors="replace")
             try:
                 data = json.loads(text)
