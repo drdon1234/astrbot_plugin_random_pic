@@ -18,6 +18,11 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
 )
 
+# 请求超时（秒）
+TIMEOUT = 20
+# 图片缓存总大小、单张图片的上限（MB）：超出缓存时删除最旧的图片，超过单张上限的图片丢弃换一张
+CACHE_MB = 200
+MAX_IMAGE_MB = 10
 # 这么多秒内下载的图片不清理：并发抽图时同一次抽卡的图片可能还没发出去
 FRESH_SECONDS = 600
 # 图片下载连接失败（例如代理重置连接）后等这么多秒重试一次
@@ -58,9 +63,9 @@ class HttpClient:
 
     def __init__(
         self,
-        timeout: float,
         proxy: str | None = None,
         cookies: dict[str, dict[str, str]] | None = None,
+        timeout: float = TIMEOUT,
     ):
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self.proxy = proxy or None
@@ -152,8 +157,8 @@ class ImageCache:
         self,
         http: HttpClient,
         cache_dir: Path,
-        max_total_mb: float,
-        max_image_mb: float,
+        max_total_mb: float = CACHE_MB,
+        max_image_mb: float = MAX_IMAGE_MB,
     ):
         self.http = http
         self.dir = cache_dir

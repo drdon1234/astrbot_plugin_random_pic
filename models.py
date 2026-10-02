@@ -30,6 +30,7 @@ class DrawRequest:
     albums: int = 1  # 图集数
     per_album: int = 1  # 每个图集几张
     random_character: bool = False  # 每个图集先随机抽一个角色
+    whole: str | None = None  # 随机抽一个完整作品时的发送方式（合并转发 / PDF）
 
 
 @dataclass
@@ -78,6 +79,12 @@ class Album:
     pictures: list[tuple[int, Path]]  # (页码，从 1 开始, 本地文件)，按页码排序
     details: list[str] = field(default_factory=list)  # 说明文字，每项一行
     work: WorkRef | None = None
+
+
+# R18 作品通常从穿着完整开始，随机取页时跳过开头这个比例
+EXPLICIT_SKIP = 0.3
+# 每个图源最多同时处理的图集数、整本下载最多同时下载的页数
+CONCURRENCY = 4
 
 
 @dataclass

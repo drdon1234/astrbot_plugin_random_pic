@@ -31,6 +31,46 @@ BASE_BLACKLIST = (
     "ショタ",
 )
 
+# 「屏蔽重口」开启时屏蔽的标签（E-Hentai 标签名，不带命名空间；Danbooru、禁漫按标签名匹配）
+HEAVY_TAGS = frozenset(
+    {
+        "guro",
+        "low guro",
+        "snuff",
+        "amputee",
+        "body modification",
+        "vore",
+        "unbirth",
+        "absorption",
+        "scat",
+        "scat insertion",
+        "vomit",
+        "torture",
+        "blood",
+        "necrophilia",
+        "cannibalism",
+        "eye penetration",
+        "brain fuck",
+        "skinsuit",
+        "ryona",
+        "abortion",
+        "bestiality",
+        "prolapse",
+        "dismantling",
+        "piss drinking",
+        "farting",
+        "hanging",
+        "electric shocks",
+        "cbt",
+        "nose hook",
+        "insect",
+        "worm",
+        "parasite",
+        "cervix penetration",
+        "infantilism",
+        "diaper",
+    }
+)
 HEAVY_NAMESPACES = ("female", "male", "mixed")
 # E-Hentai 搜索词形式的标签，例如 female:"body modification$"
 SEARCH_TAG_RE = re.compile(r'^(female|male|mixed):"?([^"$]+)\$?"?$')
@@ -69,13 +109,20 @@ class TagBlacklist:
 
 
 class ContentFilter:
-    """黑名单与重口标签，对所有图源生效。heavy 为空表示不屏蔽重口。"""
+    """黑名单、重口标签与 AI 作品，对所有图源生效。
+
+    heavy 为空表示不屏蔽重口；block_ai 时各图源排除站点标出的 AI 作品（分类、标签）。
+    """
 
     def __init__(
-        self, extra_blacklist: list[str] = (), heavy: frozenset[str] = frozenset()
+        self,
+        extra_blacklist: list[str] = (),
+        heavy: frozenset[str] = frozenset(),
+        block_ai: bool = True,
     ):
         self.blacklist = TagBlacklist(extra_blacklist)
         self.heavy = heavy
+        self.block_ai = block_ai
 
     def heavy_hit(self, tags: list[str]) -> str | None:
         """返回命中的重口标签名，未命中返回 None。"""

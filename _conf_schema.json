@@ -1,32 +1,113 @@
 {
-  "access": {
-    "description": "权限与分级",
+  "draw": {
+    "description": "抽图指令",
     "type": "object",
-    "hint": "谁能用、在哪儿能用哪种分级。黑名单用户和白名单以外的群不会收到任何回复。",
+    "hint": "一次抽若干个图集，每个图集是同一作品里的几张图。",
     "items": {
-      "content_rating": {
-        "description": "内容分级",
+      "default_style": {
+        "description": "默认风格",
+        "type": "string",
+        "default": "三次元",
+        "options": ["三次元", "二次元"]
+      },
+      "default_rating": {
+        "description": "默认分级",
+        "type": "string",
+        "default": "擦边",
+        "options": ["擦边", "R18"]
+      },
+      "album_count": {
+        "description": "默认图集数",
+        "type": "int",
+        "default": 1
+      },
+      "images_per_album": {
+        "description": "每个图集的张数",
+        "type": "int",
+        "default": 1,
+        "hint": "二次元一张图就是一个图集。"
+      },
+      "max_images": {
+        "description": "单次最多张数",
+        "type": "int",
+        "default": 5
+      },
+      "page_pick": {
+        "description": "取图位置",
+        "type": "string",
+        "default": "随机页",
+        "options": ["随机页", "从第一页起"]
+      },
+      "aliases": {
+        "description": "启用别名 /二次元 /三次元 /擦边 /色图",
+        "type": "bool",
+        "default": true
+      },
+      "no_prefix": {
+        "description": "群聊不带 / 也能触发",
         "type": "bool",
         "default": true,
-        "hint": "开启：R18 仅限私聊，群聊擦边需要开启「群聊擦边」，抽到的作品按分类和标签复核分级。关闭：不再区分分级，群聊和私聊可用的内容相同（R18 仍需开启「R18」）。未成年内容过滤始终生效。"
+        "hint": "例如直接发「抽图 3」「全集」。"
+      }
+    }
+  },
+  "rating": {
+    "description": "分级与过滤",
+    "type": "object",
+    "hint": "未成年内容始终过滤。",
+    "items": {
+      "content_rating": {
+        "description": "区分群聊和私聊",
+        "type": "bool",
+        "default": true,
+        "hint": "开启：R18 只能私聊，群聊擦边需单独允许。关闭：群聊和私聊内容相同。"
       },
       "r18_enabled": {
-        "description": "R18",
+        "description": "允许 R18",
         "type": "bool",
-        "default": false,
-        "hint": "R18 总开关。开启「内容分级」时 R18 只能在私聊使用。"
+        "default": false
       },
       "group_sensitive": {
-        "description": "群聊擦边",
+        "description": "群聊允许擦边",
         "type": "bool",
         "default": false,
         "condition": {"content_rating": true},
-        "hint": "私聊始终可用擦边；群聊需要开启此项，否则群聊里本插件不可用。"
+        "hint": "关闭时群聊里不能抽图。"
+      },
+      "block_heavy": {
+        "description": "屏蔽重口作品",
+        "type": "bool",
+        "default": true
+      },
+      "block_ai": {
+        "description": "屏蔽 AI 作品",
+        "type": "bool",
+        "default": true
+      },
+      "extra_blacklist": {
+        "description": "额外屏蔽的标签",
+        "type": "list",
+        "default": [],
+        "hint": "匹配作品的标签和标题，忽略大小写。"
+      }
+    }
+  },
+  "access": {
+    "description": "使用限制",
+    "type": "object",
+    "items": {
+      "group_enabled": {
+        "description": "允许在群聊使用",
+        "type": "bool",
+        "default": true,
+        "obvious_hint": true,
+        "hint": "关闭后不处理任何群聊消息，推送任务也不再推送到群。优先于其他所有设置。"
       },
       "group_whitelist": {
         "description": "群白名单",
         "type": "list",
         "default": [],
+        "condition": {"group_enabled": true},
         "hint": "留空表示所有群可用。"
       },
       "user_blacklist": {
@@ -35,64 +116,15 @@
         "default": []
       },
       "cooldown_seconds": {
-        "description": "每人冷却时间（秒）",
+        "description": "每人冷却（秒）",
         "type": "int",
         "default": 10
       },
       "daily_limit": {
-        "description": "每人每日图片上限",
+        "description": "每人每日张数上限",
         "type": "int",
         "default": 0,
-        "hint": "按成功发出的张数计，0 表示不限。冷却和每日计数保存在内存中，重启后清零。"
-      }
-    }
-  },
-  "command": {
-    "description": "指令",
-    "type": "object",
-    "hint": "一次抽卡抽若干个图集，每个图集是同一个画廊 / 帖子 / 本子里的几张图（二次元一张图就是一个图集）。指令里写一个数字是图集数，写成「图集数x每集张数」（如 3x4）同时指定每集张数。",
-    "items": {
-      "default_style": {
-        "description": "默认风格",
-        "type": "string",
-        "default": "三次元",
-        "options": ["二次元", "三次元"],
-        "hint": "/抽图、/擦边、/色图 没写风格时使用。"
-      },
-      "default_rating": {
-        "description": "默认分级",
-        "type": "string",
-        "default": "擦边",
-        "options": ["擦边", "R18"],
-        "hint": "/抽图、/二次元、/三次元 没写分级时使用。设为 R18 且开启内容分级时，群聊里不带分级的指令都会被拒绝。"
-      },
-      "album_count": {
-        "description": "默认图集数",
-        "type": "int",
-        "default": 1
-      },
-      "images_per_album": {
-        "description": "默认每集张数",
-        "type": "int",
-        "default": 1,
-        "hint": "作品页数不够时这个图集少发几张。"
-      },
-      "max_images": {
-        "description": "单次最多图片数",
-        "type": "int",
-        "default": 5,
-        "hint": "图集数 × 每集张数的上限，超出时先减少每集张数，再减少图集数。"
-      },
-      "aliases": {
-        "description": "启用别名 /二次元 /三次元 /擦边 /色图",
-        "type": "bool",
-        "default": true
-      },
-      "no_prefix": {
-        "description": "群聊无需 / 也能触发",
-        "type": "bool",
-        "default": true,
-        "hint": "群聊里直接发「抽图」「全集」「二次元 3」等也能触发。指令词须在消息开头，后面只能跟空格和参数，「二次元真好」这类普通聊天不会触发。"
+        "hint": "0 表示不限，重启后清零。"
       }
     }
   },
@@ -105,405 +137,238 @@
         "type": "string",
         "default": "合并转发",
         "options": ["合并转发", "图文混合", "逐条发送"],
-        "hint": "合并转发：一条合并转发消息，每个图集一个节点（仅 QQ；其他平台、或只有一个图集时改为图文混合）。图文混合：各图集依次排在一条消息里，每条最多 10 张图。逐条发送：每张图一条消息。"
+        "hint": "合并转发仅 QQ 可用，其他平台改为图文混合。"
       },
       "header": {
-        "description": "显示标题行",
+        "description": "显示标题和序号",
         "type": "bool",
-        "default": true,
-        "hint": "每个图集第一张图上方显示「【序号】标题」和「第 x/y 张 · 来源」，后面的图上方显示「第 x/y 张」。序号用于 /pdf 选图集。"
+        "default": true
       },
       "caption": {
-        "description": "附带说明文字",
+        "description": "附带作者、标签和链接",
         "type": "bool",
-        "default": true,
-        "hint": "每个图集最后附作者、作品、角色、标签和作品链接。"
+        "default": true
       }
     }
   },
-  "draw": {
-    "description": "取图与过滤",
+  "whole": {
+    "description": "完整作品",
     "type": "object",
-    "hint": "对所有图源生效。内置的未成年内容黑名单（loli、shota、child、萝莉、正太、幼女 等）始终生效且不可删除。",
+    "hint": "回复抽到的图片发 /全集 或 /pdf，获取整个作品；/抽图 全集 直接随机抽一个完整作品。",
     "items": {
-      "page_pick": {
-        "description": "取图位置",
-        "type": "string",
-        "default": "随机页",
-        "options": ["随机页", "从第一页起"],
-        "hint": "随机页：在作品中随机抽几页，按页码顺序发送。从第一页起：取开头几页（每集 1 张时就是封面）。"
-      },
-      "explicit_skip": {
-        "description": "R18 跳过开头比例",
-        "type": "float",
-        "default": 0.3,
-        "condition": {"page_pick": "随机页"},
-        "hint": "R18 作品通常从穿着完整开始，随机页只从后面这部分中抽。0 表示不跳过，最大 0.9。"
-      },
-      "extra_blacklist": {
-        "description": "追加的标签黑名单",
-        "type": "list",
-        "default": [],
-        "hint": "在内置黑名单上追加，匹配各图源的标签、标题，忽略大小写，例如 guro。关键词命中黑名单时直接拒绝。"
-      },
-      "block_heavy": {
-        "description": "屏蔽重口作品",
+      "enabled": {
+        "description": "启用",
         "type": "bool",
-        "default": true,
-        "hint": "带重口标签的作品不会被抽到，也不能用 /pdf 打包；关键词本身是重口标签（如「猎奇」）时直接拒绝。"
+        "default": true
       },
-      "heavy_tags": {
-        "description": "重口标签",
-        "type": "list",
-        "default": [
-          "guro",
-          "low guro",
-          "snuff",
-          "amputee",
-          "body modification",
-          "vore",
-          "unbirth",
-          "absorption",
-          "scat",
-          "scat insertion",
-          "vomit",
-          "torture",
-          "blood",
-          "necrophilia",
-          "cannibalism",
-          "eye penetration",
-          "brain fuck",
-          "skinsuit",
-          "ryona",
-          "abortion",
-          "bestiality",
-          "prolapse",
-          "dismantling",
-          "piss drinking",
-          "farting",
-          "hanging",
-          "electric shocks",
-          "cbt",
-          "nose hook",
-          "insect",
-          "worm",
-          "parasite",
-          "cervix penetration",
-          "infantilism",
-          "diaper"
-        ],
-        "condition": {"block_heavy": true},
-        "hint": "E-Hentai 标签名（不带命名空间，匹配 female / male / mixed），Danbooru 和禁漫按标签名匹配（下划线视为空格）。"
+      "default_format": {
+        "description": "/全集 的发送方式",
+        "type": "string",
+        "default": "合并转发",
+        "options": ["合并转发", "PDF"],
+        "hint": "/pdf 始终发 PDF。非 QQ 平台改为 PDF。"
+      },
+      "pdf_dir": {
+        "description": "PDF 存放目录",
+        "type": "string",
+        "default": "",
+        "hint": "留空为插件数据目录。QQ 机器人和 AstrBot 在不同容器时，填两边路径相同的共享目录。"
       }
     }
   },
   "sources": {
     "description": "三次元图源比例",
     "type": "object",
-    "hint": "每个三次元图集按比例从这次能用的图源里选一个，0 表示不用。不支持这次请求的图源不参与（例如 XiuRen 只有擦边，PixiBB、禁漫天堂只用于 R18，/随机角色 和 E-Hentai 标签语法只有 E-Hentai 支持）；其他图源没抽够的图集由 E-Hentai 补上。二次元只用 Danbooru。",
+    "hint": "按比例混合，0 为不用。二次元只用 Danbooru。",
     "items": {
       "ehentai": {
         "description": "E-Hentai",
         "type": "int",
-        "default": 1,
-        "hint": "Cosplay 与写真画廊，设置见「E-Hentai」。"
+        "default": 5,
+        "slider": {"min": 0, "max": 10, "step": 1}
       },
       "pica": {
         "description": "哔咔",
         "type": "int",
-        "default": 1,
-        "hint": "Cosplay 分类，需要在「哔咔账号」里填写账号。"
+        "default": 5,
+        "slider": {"min": 0, "max": 10, "step": 1},
+        "hint": "需要填写哔咔账号。"
       },
       "cosplaytele": {
         "description": "CosplayTele",
         "type": "int",
-        "default": 1,
-        "hint": "cosplaytele.com，约 5600 套 Cosplay 写真，擦边和 R18。"
+        "default": 5,
+        "slider": {"min": 0, "max": 10, "step": 1}
       },
       "xiuren": {
         "description": "XiuRen",
         "type": "int",
-        "default": 1,
-        "hint": "xiuren.biz，约 1 万套工作室棚拍写真，只有擦边。"
+        "default": 5,
+        "slider": {"min": 0, "max": 10, "step": 1},
+        "hint": "只有擦边。"
       },
       "nudecosplay": {
         "description": "NudeCosplay",
         "type": "int",
-        "default": 1,
-        "hint": "nudecosplay.biz，约 5000 套 Cosplay 写真，擦边和 R18（与 CosplayTele 约 1/4 重复）。"
+        "default": 5,
+        "slider": {"min": 0, "max": 10, "step": 1}
       },
       "pixibb": {
         "description": "PixiBB",
         "type": "int",
-        "default": 1,
-        "hint": "pixibb.com，约 2.3 万套 Cosplay 与写真，分级混杂，只用于 R18。"
+        "default": 5,
+        "slider": {"min": 0, "max": 10, "step": 1},
+        "hint": "只用于 R18。"
       },
       "jmcomic": {
         "description": "禁漫天堂",
         "type": "int",
-        "default": 1,
-        "hint": "18comic 的 Cosplay 分类，约 8000 本，只用于 R18，设置见「禁漫天堂」。"
+        "default": 5,
+        "slider": {"min": 0, "max": 10, "step": 1},
+        "hint": "只用于 R18。"
       }
     }
   },
-  "danbooru": {
-    "description": "Danbooru（二次元）",
-    "type": "object",
-    "hint": "擦边为 sensitive 分级，R18 为 questionable 和 explicit；一个帖子（一张图）就是一个图集。关键词（中文、日文名会自动补全成标签）最多 2 个，/随机角色 时最多 1 个。设定多为儿童的角色一律不抽。",
-    "items": {
-      "min_score": {
-        "description": "最低评分",
-        "type": "int",
-        "default": 150,
-        "hint": "帖子的用户投票分，质量的主要开关。150 分时擦边池约 7.8 万张、R18 池约 27 万张；50~100 分的明显变差。带关键词或 /随机角色 时搜不到会降到三分之一再搜一次。0 表示不限。"
-      },
-      "exclude_tags": {
-        "description": "排除的标签",
-        "type": "list",
-        "default": [
-          "comic",
-          "4koma",
-          "multiple_views",
-          "monochrome",
-          "greyscale",
-          "sketch",
-          "lineart",
-          "3d",
-          "photorealistic",
-          "ai-generated",
-          "ai-assisted",
-          "yaoi",
-          "male_focus",
-          "furry"
-        ],
-        "hint": "带任一标签的帖子不抽，用 Danbooru 标签名（空格写成下划线）。视频和动图始终不抽。"
-      }
-    }
-  },
-  "ehentai": {
-    "description": "E-Hentai（三次元）",
-    "type": "object",
-    "hint": "只抽 Cosplay、Asian Porn 分类：带裸露 / 性内容标签的为 R18，带 non-nude 的为擦边，都没有的丢弃。",
-    "items": {
-      "site": {
-        "description": "站点",
-        "type": "string",
-        "default": "e-hentai",
-        "options": ["e-hentai", "exhentai"],
-        "hint": "exhentai（里站）需要下面三个 cookie，缺任意一个都会改用 e-hentai。"
-      },
-      "ipb_member_id": {
-        "description": "Cookie：ipb_member_id",
-        "type": "string",
-        "default": "",
-        "secret": true,
-        "hint": "登录 e-hentai.org 后从浏览器 cookie 中复制。表站也可以填，登录后图片额度更高。"
-      },
-      "ipb_pass_hash": {
-        "description": "Cookie：ipb_pass_hash",
-        "type": "string",
-        "default": "",
-        "secret": true
-      },
-      "igneous": {
-        "description": "Cookie：igneous",
-        "type": "string",
-        "default": "",
-        "secret": true,
-        "hint": "访问 exhentai.org 后获得，仅里站需要。"
-      },
-      "min_rating": {
-        "description": "画廊最低评分",
-        "type": "int",
-        "default": 4,
-        "hint": "2~5 星，低于 2 表示不限。评分越高画廊池越小。"
-      },
-      "exclude_ai": {
-        "description": "排除 AI 生成画廊",
-        "type": "bool",
-        "default": true
-      },
-      "min_pages": {
-        "description": "画廊最少页数",
-        "type": "int",
-        "default": 0,
-        "hint": "0 表示不限。"
-      },
-      "request_interval": {
-        "description": "请求间隔（秒）",
-        "type": "float",
-        "default": 0.5,
-        "hint": "两次 E-Hentai 请求之间的最小间隔，过快可能被临时封禁 IP。抽卡耗时主要受它限制。"
-      }
-    }
-  },
-  "pica": {
-    "description": "哔咔账号",
-    "type": "object",
-    "hint": "填好账号和密码后哔咔才能用。token 有效期约 7 天，保存在插件数据目录，过期自动重新登录；登录失败后暂停登录一段时间（被限流时 6 小时起）。",
-    "items": {
-      "email": {
-        "description": "账号",
-        "type": "string",
-        "default": "",
-        "hint": "哔咔登录用的用户名或邮箱。"
-      },
-      "password": {
-        "description": "密码",
-        "type": "string",
-        "default": "",
-        "secret": true
-      }
-    }
-  },
-  "jmcomic": {
-    "description": "禁漫天堂",
-    "type": "object",
-    "hint": "网页有 Cloudflare 校验，用 curl_cffi 模拟浏览器请求；国内通常要在「网络与缓存」里填代理。",
-    "items": {
-      "domain": {
-        "description": "域名",
-        "type": "string",
-        "default": "18comic.vip",
-        "hint": "禁漫的网页域名经常更换，填当前能打开的域名，例如 18comic.vip、18comic.org。"
-      },
-      "min_likes": {
-        "description": "最少点赞数",
-        "type": "int",
-        "default": 500,
-        "hint": "分类末尾约两成是早年的日本素人摄影，点赞多在 100 以下、画质差；500 能滤掉其中绝大多数。"
-      },
-      "exclude_tags": {
-        "description": "排除的标签",
-        "type": "list",
-        "default": ["3D", "動圖", "重口", "AI", "AI繪圖", "AI生成"],
-        "hint": "带这些标签的本子不抽（整个标签匹配，忽略大小写）。"
-      }
-    }
-  },
-  "pdf": {
-    "description": "整本 PDF（/pdf）",
-    "type": "object",
-    "hint": "回复抽图消息发送 /pdf（或 /全集），把图集所在的整个作品（画廊、帖子、本子）打包成 PDF 发送。分级闸门与抽图相同。",
-    "items": {
-      "enabled": {
-        "description": "启用 /pdf",
-        "type": "bool",
-        "default": true
-      },
-      "pages_per_file": {
-        "description": "单个 PDF 最多页数",
-        "type": "int",
-        "default": 200,
-        "hint": "超过时分成多个 PDF 依次发送，文件名标出页码范围。"
-      },
-      "jpeg_quality": {
-        "description": "JPEG 质量",
-        "type": "int",
-        "default": 85,
-        "hint": "1~100：每页转成这个质量的 JPEG，越小文件越小、画质越差；原图是 JPEG 且转换后不会更小时保留原图。0：不压缩，JPEG 原样放入，其他格式按质量 95 转换。修改后已打包的 PDF 不会重新生成。"
-      },
-      "keep_galleries": {
-        "description": "保留的作品数",
-        "type": "int",
-        "default": 10,
-        "hint": "打包过的作品再次请求时直接复用；超出时按作品删除最旧的 PDF。只清理本插件生成的文件。"
-      },
-      "output_dir": {
-        "description": "PDF 存放目录",
-        "type": "string",
-        "default": "",
-        "hint": "留空为插件数据目录下的 pdf 文件夹。QQ 机器人（NapCat 等）与 AstrBot 分属不同容器时，必须填两边路径相同的共享目录，例如 /app/sharedFolder/random_pic_pdf，否则文件发不出去。"
-      }
-    }
-  },
-  "push": {
-    "description": "定时推送",
-    "type": "object",
-    "hint": "按固定间隔通过 QQ（aiocqhttp）主动推送，每个群、每个用户单独抽一次。推送不受群白名单、冷却和每日上限限制，但仍受分级闸门约束；被拒绝或抽图失败时只记日志。",
-    "items": {
-      "enabled": {
-        "description": "启用定时推送",
-        "type": "bool",
-        "default": false
-      },
-      "interval_minutes": {
-        "description": "推送间隔（分钟）",
-        "type": "int",
-        "default": 60,
-        "condition": {"enabled": true},
-        "hint": "从每天 0 点起每隔这么多分钟推送一次：60 为每个整点，30 为每个整点和半点，1440 为每天 0 点。间隔不能整除一天时次日 0 点重新计算。1~1440。"
-      },
-      "groups": {
-        "description": "推送群",
-        "type": "list",
-        "default": [],
-        "condition": {"enabled": true},
-        "hint": "QQ 群号，每项一个。机器人需要在群里。"
-      },
-      "users": {
-        "description": "推送用户",
-        "type": "list",
-        "default": [],
-        "condition": {"enabled": true},
-        "hint": "QQ 号，每项一个，按私聊推送。通常要求对方是机器人的好友。"
-      },
-      "content": {
-        "description": "推送内容",
-        "type": "string",
-        "options": ["跟随默认配置", "随机完整图集"],
-        "default": "跟随默认配置",
-        "condition": {"enabled": true},
-        "hint": "跟随默认配置：等同于不带参数的 /抽图。随机完整图集：按默认风格和分级随机抽一个图集，推送它所在作品的全部图片。"
-      },
-      "album_format": {
-        "description": "完整图集发送方式",
-        "type": "string",
-        "options": ["合并转发", "PDF"],
-        "default": "合并转发",
-        "condition": {"content": "随机完整图集"},
-        "hint": "合并转发：每张图一个节点，超过 100 张时拆成多条。PDF：按「整本 PDF」的设置打包，以文件发送。"
-      }
-    }
-  },
-  "network": {
-    "description": "网络与缓存",
+  "sites": {
+    "description": "网络与账号",
     "type": "object",
     "items": {
       "proxy": {
         "description": "HTTP 代理",
         "type": "string",
         "default": "",
-        "hint": "例如 http://127.0.0.1:7890，留空则直连。所有图源和标签库下载都走这个代理。"
+        "hint": "例如 http://127.0.0.1:7890。国内通常需要。"
       },
-      "timeout": {
-        "description": "请求超时（秒）",
-        "type": "int",
-        "default": 20
-      },
-      "concurrency": {
-        "description": "并发数",
-        "type": "int",
-        "default": 4,
-        "hint": "抽图时每个图源最多同时处理这么多个图集，整本 PDF 最多同时下载这么多页。E-Hentai 的页面请求仍按「请求间隔」限速。"
-      },
-      "max_image_mb": {
-        "description": "单张图片上限（MB）",
-        "type": "int",
-        "default": 10,
-        "hint": "超过时丢弃并换一张。"
-      },
-      "cache_mb": {
-        "description": "图片缓存上限（MB）",
-        "type": "int",
-        "default": 200,
-        "hint": "超出时删除最旧的图片；10 分钟内下载的图片不删。"
-      },
-      "tag_db_url": {
-        "description": "标签中文库下载地址",
+      "ehentai_site": {
+        "description": "E-Hentai 站点",
         "type": "string",
-        "default": "https://github.com/EhTagTranslation/Database/releases/latest/download/db.text.json.gz",
-        "hint": "EhTagTranslation 数据库（CC BY-NC-SA 3.0），用于中文关键词翻译、说明文字里的中文名和三次元的 /随机角色，每 7 天更新一次。GitHub 无法访问时可以填镜像地址。"
+        "default": "e-hentai",
+        "options": ["e-hentai", "exhentai"],
+        "hint": "exhentai 需要填齐下面三个 cookie。"
+      },
+      "ipb_member_id": {
+        "description": "E-Hentai cookie：ipb_member_id",
+        "type": "string",
+        "default": "",
+        "secret": true
+      },
+      "ipb_pass_hash": {
+        "description": "E-Hentai cookie：ipb_pass_hash",
+        "type": "string",
+        "default": "",
+        "secret": true
+      },
+      "igneous": {
+        "description": "E-Hentai cookie：igneous",
+        "type": "string",
+        "default": "",
+        "secret": true,
+        "condition": {"ehentai_site": "exhentai"}
+      },
+      "pica_email": {
+        "description": "哔咔账号",
+        "type": "string",
+        "default": ""
+      },
+      "pica_password": {
+        "description": "哔咔密码",
+        "type": "string",
+        "default": "",
+        "secret": true
+      },
+      "jmcomic_domain": {
+        "description": "禁漫天堂域名",
+        "type": "string",
+        "default": "18comic.vip",
+        "hint": "域名经常更换，失效时换成能打开的。"
+      }
+    }
+  },
+  "push": {
+    "description": "定时推送",
+    "type": "object",
+    "hint": "仅 QQ。每个群、每个用户单独抽一次；不受白名单、冷却和每日上限限制，但仍受分级限制。",
+    "items": {
+      "tasks": {
+        "description": "推送任务",
+        "type": "template_list",
+        "default": [],
+        "templates": {
+          "interval": {
+            "name": "按间隔推送",
+            "hint": "每天从起始时间起，每隔一段时间推送一次。",
+            "items": {
+              "enabled": {
+                "description": "启用",
+                "type": "bool",
+                "default": true
+              },
+              "interval_minutes": {
+                "description": "间隔（分钟）",
+                "type": "int",
+                "default": 60,
+                "hint": "60 为每小时一次，1440 为每天一次。"
+              },
+              "start": {
+                "description": "起始时间",
+                "type": "string",
+                "default": "00:00",
+                "hint": "24 小时制。例如两个间隔 360 分钟的任务，起始时间填 00:00 和 03:00 就能错开 3 小时。"
+              },
+              "groups": {
+                "description": "推送群",
+                "type": "list",
+                "default": []
+              },
+              "users": {
+                "description": "推送 QQ",
+                "type": "list",
+                "default": [],
+                "hint": "私聊推送，通常需要是好友。"
+              },
+              "content": {
+                "description": "推送内容",
+                "type": "string",
+                "default": "",
+                "hint": "写 /抽图 的参数，留空即默认。例：二次元 3、全集 原神、pdf r18。"
+              }
+            }
+          },
+          "daily": {
+            "name": "按时间点推送",
+            "hint": "每天在固定时间推送。",
+            "items": {
+              "enabled": {
+                "description": "启用",
+                "type": "bool",
+                "default": true
+              },
+              "times": {
+                "description": "推送时间",
+                "type": "list",
+                "default": ["08:00", "20:00"],
+                "hint": "24 小时制，每项一个，例如 08:00。"
+              },
+              "groups": {
+                "description": "推送群",
+                "type": "list",
+                "default": []
+              },
+              "users": {
+                "description": "推送 QQ",
+                "type": "list",
+                "default": [],
+                "hint": "私聊推送，通常需要是好友。"
+              },
+              "content": {
+                "description": "推送内容",
+                "type": "string",
+                "default": "",
+                "hint": "写 /抽图 的参数，留空即默认。例：二次元 3、全集 原神、pdf r18。"
+              }
+            }
+          }
+        }
       }
     }
   }

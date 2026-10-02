@@ -78,6 +78,9 @@ class Site:
     categories: tuple[int, ...] = ()  # 没有分级分类的站点：只抽这些分类，空为不限
     exclude_categories: tuple[int, ...] = ()
     exclude_tags: tuple[int, ...] = ()
+    # 站点标出的 AI 作品，「屏蔽 AI 作品」开启时排除
+    ai_categories: tuple[int, ...] = ()
+    ai_tags: tuple[int, ...] = ()
     # 关键词先经标签库翻译成英文（站点的标题和标签是英文时）
     translate: bool = False
     # 原词和翻译后的英文都搜，用帖子多的那个（标题中英文混杂时）
@@ -108,7 +111,7 @@ COSPLAYTELE = Site(
     host="cosplaytele.com",
     intro="Cosplay 写真，可搜角色、作品名",
     ratings={194: SENSITIVE, 193: EXPLICIT},  # Cosplay Ero / Cosplay Nude
-    exclude_categories=(589,),  # AI Art
+    ai_categories=(589,),  # AI Art
     translate=True,
 )
 XIUREN = Site(
@@ -117,8 +120,8 @@ XIUREN = Site(
     host="xiuren.biz",
     intro="工作室棚拍写真，只有擦边",
     default_rating=SENSITIVE,
-    exclude_categories=(1558,),  # AI Generated
-    exclude_tags=(1559, 1560),  # AI、AI Generated
+    ai_categories=(1558,),  # AI Generated
+    ai_tags=(1559, 1560),  # AI、AI Generated
 )
 NUDECOSPLAY = Site(
     key="nudecosplay",
@@ -126,7 +129,7 @@ NUDECOSPLAY = Site(
     host="nudecosplay.biz",
     intro="Cosplay 写真，可搜角色、作品名",
     ratings={1790: SENSITIVE, 1794: EXPLICIT},  # Ero Cosplay / Nude
-    exclude_categories=(3373,),  # Waifu AI
+    ai_categories=(3373,),  # Waifu AI
     translate=True,
     title_noise=re.compile(r"\s*/nudecosplay\.biz/\s*$", re.I),
 )
@@ -137,10 +140,10 @@ PIXIBB = Site(
     intro="Cosplay 与写真，只用于 R18，可搜角色、作品、模特名",
     default_rating=EXPLICIT,
     categories=(10, 112),  # Cosplay、Sexy Girls
-    # AI Lookbook、Anime、Almost Real、Toon Girls
-    exclude_categories=(24, 74, 119, 209),
-    # AIGirl、AI Enhanced、精选街拍作品、OtherXXX
-    exclude_tags=(3535, 3881, 3472, 3821),
+    exclude_categories=(74, 209),  # Anime、Toon Girls
+    exclude_tags=(3472, 3821),  # 精选街拍作品（偷拍）、OtherXXX（福利姬）
+    ai_categories=(24, 119),  # AI Lookbook、Almost Real
+    ai_tags=(3535, 3881),  # AIGirl、AI Enhanced
     bilingual=True,
     image_marker=".pixibb.com/",
     domain="pixibb.com",  # sexy.、cosplay.、hub. 等子域名是同一个站
@@ -264,7 +267,7 @@ class WordPressSource(Source):
         """筛选帖子的参数，站点没有这个分级的帖子时返回 None。关闭内容分级时不按分级筛选。"""
         site, enabled = self.site, self.opts.rating_enabled
         params: dict[str, str] = {}
-        exclude_categories = list(site.exclude_categories)
+        exclude_categories, exclude_tags = self._excludes()
         if site.ratings:
             wanted = [c for c, r in site.ratings.items() if not enabled or r == rating]
             if not wanted:
@@ -281,9 +284,18 @@ class WordPressSource(Source):
             params["categories"] = ",".join(map(str, site.categories))
         if exclude_categories:
             params["categories_exclude"] = ",".join(map(str, exclude_categories))
-        if site.exclude_tags:
-            params["tags_exclude"] = ",".join(map(str, site.exclude_tags))
+        if exclude_tags:
+            params["tags_exclude"] = ",".join(map(str, exclude_tags))
         return params
+
+    def _excludes(self) -> tuple[list[int], list[int]]:
+        """要排除的 (分类, 标签)：站点的排除项，开启「屏蔽 AI 作品」时加上 AI 分类和标签。"""
+        site = self.site
+        categories, tags = list(site.exclude_categories), list(site.exclude_tags)
+        if self.content.block_ai:
+            categories += site.ai_categories
+            tags += site.ai_tags
+        return categories, tags
 
     def accepts(self, ctx: DrawContext) -> bool:
         """三次元，不是随机角色，站点有这个分级的帖子，关键词能搜索。"""
@@ -363,10 +375,11 @@ class WordPressSource(Source):
         return None
 
     def excluded(self, post: dict) -> bool:
-        """帖子在站点的 AI 生成分类或标签里。"""
+        """帖子在排除的分类或标签里（街拍、AI 作品等）。"""
+        categories, tags = self._excludes()
         return bool(
-            set(post.get("categories") or []) & set(self.site.exclude_categories)
-            or set(post.get("tags") or []) & set(self.site.exclude_tags)
+            set(post.get("categories") or []) & set(categories)
+            or set(post.get("tags") or []) & set(tags)
         )
 
     def _reject(
@@ -480,7 +493,7 @@ class WordPressSource(Source):
         images = self._images(post)
         categories, tags = term_names(post)
         blocked = (
-            ("是 AI 生成的作品" if self.excluded(post) else None)
+            ("属于站点排除的分类或标签" if self.excluded(post) else None)
             or self.content.text_reason([self._raw_title(post), *categories, *tags])
             or (None if images else "没有图片")
         )

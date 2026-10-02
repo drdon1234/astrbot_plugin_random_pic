@@ -28,6 +28,10 @@ INDEX_NAMESPACES = (
     "artist",
     "group",
 )
+DB_URL = (
+    "https://github.com/EhTagTranslation/Database/releases/latest/download/"
+    "db.text.json.gz"
+)
 # 本地缓存超过这么久重新下载
 REFRESH_SECONDS = 7 * 86400
 # 下载失败后至少隔这么久再试
@@ -106,7 +110,7 @@ class TagIndex:
 class TagDB:
     """按需加载标签库：本地缓存过期时重新下载，下载失败时沿用旧缓存。"""
 
-    def __init__(self, http: HttpClient, path: Path, url: str):
+    def __init__(self, http: HttpClient, path: Path, url: str = DB_URL):
         self.http = http
         self.path = path
         self.url = url

@@ -1,8 +1,15 @@
-"""插件配置：分段与 _conf_schema.json 一一对应，键名、类型、默认值和可选值都只在 schema 里定义。"""
+"""插件配置：分段与 _conf_schema.json 一一对应，键名、类型、默认值和可选值都只在 schema 里定义。
+
+只有用户需要选择的项才放进配置；各图源的门槛、超时、缓存大小等调优参数是各模块里的常量。
+"""
 
 import json
+import re
 from dataclasses import dataclass, fields
+from datetime import time
 from pathlib import Path
+
+from astrbot.api import logger
 
 from .models import RATING_WORDS, STYLE_WORDS
 
@@ -11,8 +18,10 @@ SCHEMA = json.loads(
 )
 # 与 schema 里选项一致的取值
 FROM_START = "从第一页起"
-FULL_ALBUM = "随机完整图集"
 PDF_FORMAT = "PDF"
+FORWARD_FORMAT = "合并转发"
+TIME_RE = re.compile(r"^(\d{1,2})[:：](\d{2})$")
+PUSH_TEMPLATES = SCHEMA["push"]["items"]["tasks"]["templates"]
 
 
 def _coerce(spec: dict, value):
@@ -25,10 +34,11 @@ def _coerce(spec: dict, value):
             value = int(value)
         elif kind == "float":
             value = float(value)
-        elif kind == "list":
+        elif kind in ("list", "template_list"):
             if not isinstance(value, list):
                 return list(default)
-            value = [s for s in (str(v).strip() for v in value) if s]
+            if kind == "list":
+                value = [s for s in (str(v).strip() for v in value) if s]
         else:
             value = "" if value is None else str(value).strip()
     except (TypeError, ValueError):
@@ -38,16 +48,69 @@ def _coerce(spec: dict, value):
     return value
 
 
+def _values(items: dict, conf: dict) -> dict:
+    return {
+        key: _coerce(spec, conf.get(key, spec["default"]))
+        for key, spec in items.items()
+    }
+
+
 def _clamp(value, low, high=None):
     value = max(low, value)
     return value if high is None else min(value, high)
 
 
+def parse_time(text: str) -> time | None:
+    """「8:00」「20:30」→ 时刻，写错时返回 None。"""
+    match = TIME_RE.match(text.strip())
+    if not match:
+        return None
+    hour, minute = int(match.group(1)), int(match.group(2))
+    return time(hour, minute) if hour < 24 and minute < 60 else None
+
+
 @dataclass
-class Access:
+class Draw:
+    default_style: str
+    default_rating: str
+    album_count: int
+    images_per_album: int
+    max_images: int
+    page_pick: str
+    aliases: bool
+    no_prefix: bool
+
+    def __post_init__(self):
+        self.album_count = _clamp(self.album_count, 1)
+        self.images_per_album = _clamp(self.images_per_album, 1)
+        self.max_images = _clamp(self.max_images, 1)
+
+    @property
+    def style(self) -> str:
+        return STYLE_WORDS[self.default_style]
+
+    @property
+    def rating(self) -> str:
+        return RATING_WORDS[self.default_rating.lower()]
+
+    @property
+    def from_start(self) -> bool:
+        return self.page_pick == FROM_START
+
+
+@dataclass
+class Rating:
     content_rating: bool
     r18_enabled: bool
     group_sensitive: bool
+    block_heavy: bool
+    block_ai: bool
+    extra_blacklist: list[str]
+
+
+@dataclass
+class Access:
+    group_enabled: bool
     group_whitelist: list[str]
     user_blacklist: list[str]
     cooldown_seconds: int
@@ -59,30 +122,6 @@ class Access:
 
 
 @dataclass
-class Command:
-    default_style: str
-    default_rating: str
-    album_count: int
-    images_per_album: int
-    max_images: int
-    aliases: bool
-    no_prefix: bool
-
-    def __post_init__(self):
-        self.max_images = _clamp(self.max_images, 1)
-        self.album_count = _clamp(self.album_count, 1)
-        self.images_per_album = _clamp(self.images_per_album, 1)
-
-    @property
-    def style(self) -> str:
-        return STYLE_WORDS[self.default_style]
-
-    @property
-    def rating(self) -> str:
-        return RATING_WORDS[self.default_rating.lower()]
-
-
-@dataclass
 class Send:
     mode: str
     header: bool
@@ -90,25 +129,10 @@ class Send:
 
 
 @dataclass
-class Draw:
-    page_pick: str
-    explicit_skip: float
-    extra_blacklist: list[str]
-    block_heavy: bool
-    heavy_tags: list[str]
-
-    def __post_init__(self):
-        self.explicit_skip = _clamp(self.explicit_skip, 0.0, 0.9)
-
-    @property
-    def from_start(self) -> bool:
-        return self.page_pick == FROM_START
-
-    @property
-    def heavy(self) -> frozenset[str]:
-        if not self.block_heavy:
-            return frozenset()
-        return frozenset(t.lower() for t in self.heavy_tags)
+class Whole:
+    enabled: bool
+    default_format: str
+    pdf_dir: str
 
 
 @dataclass
@@ -129,28 +153,23 @@ class Sources:
 
 
 @dataclass
-class DanbooruConf:
-    min_score: int
-    exclude_tags: list[str]
-
-    def __post_init__(self):
-        self.min_score = _clamp(self.min_score, 0)
-
-
-@dataclass
-class EHentaiConf:
-    site: str
+class Sites:
+    proxy: str
+    ehentai_site: str
     ipb_member_id: str
     ipb_pass_hash: str
     igneous: str
-    min_rating: int
-    exclude_ai: bool
-    min_pages: int
-    request_interval: float
+    pica_email: str
+    pica_password: str
+    jmcomic_domain: str
 
     def __post_init__(self):
-        self.min_pages = _clamp(self.min_pages, 0)
-        self.request_interval = _clamp(self.request_interval, 0.0)
+        # 允许粘贴带 https:// 或路径的地址
+        domain = self.jmcomic_domain.removeprefix("https://").removeprefix("http://")
+        self.jmcomic_domain = (
+            domain.split("/", 1)[0]
+            or SCHEMA["sites"]["items"]["jmcomic_domain"]["default"]
+        )
 
     @property
     def cookies(self) -> dict[str, str]:
@@ -163,103 +182,69 @@ class EHentaiConf:
 
 
 @dataclass
-class PicaConf:
-    email: str
-    password: str
+class PushTask:
+    """一条推送任务：每天从 start 起按间隔（interval_minutes）推送，或按每天的时间点（times）推送。"""
 
+    groups: list[str]
+    users: list[str]
+    content: str  # /抽图 的参数
+    interval_minutes: int | None = None
+    start: time | None = None
+    times: list[time] | None = None
 
-@dataclass
-class JMComicConf:
-    domain: str
-    min_likes: int
-    exclude_tags: list[str]
-
-    def __post_init__(self):
-        # 允许粘贴带 https:// 或路径的地址
-        domain = self.domain.removeprefix("https://").removeprefix("http://")
-        self.domain = (
-            domain.split("/", 1)[0] or SCHEMA["jmcomic"]["items"]["domain"]["default"]
-        )
-        self.min_likes = _clamp(self.min_likes, 0)
-
-
-@dataclass
-class Pdf:
-    enabled: bool
-    pages_per_file: int
-    jpeg_quality: int  # 0 表示不压缩
-    keep_galleries: int
-    output_dir: str
-
-    def __post_init__(self):
-        self.pages_per_file = _clamp(self.pages_per_file, 1)
-        self.jpeg_quality = _clamp(self.jpeg_quality, 0, 100)
-        self.keep_galleries = _clamp(self.keep_galleries, 1)
+    @classmethod
+    def parse(cls, entry) -> "PushTask | None":
+        """配置里的一条任务；停用、模板不认识或没有推送时间时返回 None。"""
+        if not isinstance(entry, dict):
+            return None
+        template = PUSH_TEMPLATES.get(entry.get("__template_key"))
+        if template is None:
+            return None
+        values = _values(template["items"], entry)
+        if not values.pop("enabled"):
+            return None
+        if "interval_minutes" in values:
+            values["interval_minutes"] = _clamp(values["interval_minutes"], 1, 24 * 60)
+            start = parse_time(values["start"])
+            if start is None:
+                logger.warning(
+                    f"[random_pic] 推送起始时间格式不对，按 00:00 计算：{values['start']}"
+                )
+            values["start"] = start or time(0, 0)
+        else:
+            parsed = {t: parse_time(t) for t in values["times"]}
+            for text in (t for t, value in parsed.items() if value is None):
+                logger.warning(f"[random_pic] 推送时间格式不对，已忽略：{text}")
+            times = set(parsed.values()) - {None}
+            if not times:
+                return None
+            values["times"] = sorted(times)
+        return cls(**values)
 
 
 @dataclass
 class Push:
-    enabled: bool
-    interval_minutes: int
-    groups: list[str]
-    users: list[str]
-    content: str
-    album_format: str
+    tasks: list[PushTask]
 
     def __post_init__(self):
-        self.interval_minutes = _clamp(self.interval_minutes, 1, 24 * 60)
-
-    @property
-    def full_album(self) -> bool:
-        return self.content == FULL_ALBUM
-
-    @property
-    def as_pdf(self) -> bool:
-        return self.album_format == PDF_FORMAT
-
-
-@dataclass
-class Network:
-    proxy: str
-    timeout: int
-    concurrency: int
-    max_image_mb: int
-    cache_mb: int
-    tag_db_url: str
-
-    def __post_init__(self):
-        self.timeout = _clamp(self.timeout, 1)
-        self.concurrency = _clamp(self.concurrency, 1)
-        self.max_image_mb = _clamp(self.max_image_mb, 1)
-        self.cache_mb = _clamp(self.cache_mb, 0)
-        self.tag_db_url = (
-            self.tag_db_url or SCHEMA["network"]["items"]["tag_db_url"]["default"]
-        )
+        self.tasks = [t for t in map(PushTask.parse, self.tasks) if t]
 
 
 @dataclass
 class Settings:
-    access: Access
-    command: Command
-    send: Send
     draw: Draw
+    rating: Rating
+    access: Access
+    send: Send
+    whole: Whole
     sources: Sources
-    danbooru: DanbooruConf
-    ehentai: EHentaiConf
-    pica: PicaConf
-    jmcomic: JMComicConf
-    pdf: Pdf
+    sites: Sites
     push: Push
-    network: Network
 
     @classmethod
     def load(cls, config) -> "Settings":
-        sections = {}
-        for f in fields(cls):
-            conf = config.get(f.name) or {}
-            values = {
-                key: _coerce(spec, conf.get(key, spec["default"]))
-                for key, spec in SCHEMA[f.name]["items"].items()
-            }
-            sections[f.name] = f.type(**values)
+        sections = {
+            f.name: f.type(**_values(SCHEMA[f.name]["items"], config.get(f.name) or {}))
+            for f in fields(cls)
+        }
         return cls(**sections)

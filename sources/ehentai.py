@@ -72,6 +72,8 @@ POOLS = {
     ),
 }
 
+# 画廊最低评分（星）：质量的主要开关
+MIN_STARS = 4
 # 抽取轮数：画廊被复核丢弃、取图失败时重新随机跳转
 MAX_ROUNDS = 3
 # 每次随机跳转后最多尝试的画廊数，未通过复核或下载失败时换同一页的下一个
@@ -124,26 +126,18 @@ class EHentaiSource(Source):
         cache: ImageCache,
         content: ContentFilter,
         opts: DrawOptions,
-        *,
-        exclude_ai: bool,
-        min_stars: int,
-        min_pages: int,
     ):
         super().__init__(cache, content, opts)
         self.api = api
         self.name = api.name
-        self.exclude_ai = exclude_ai
-        self.min_stars = min_stars
-        self.min_pages = min_pages
 
     def _params(self, pool: Pool, terms: list[str]) -> dict:
         return build_search(
             pool.categories,
             pool.search,
             terms,
-            exclude_ai=self.exclude_ai,
-            min_stars=self.min_stars,
-            min_pages=self.min_pages,
+            exclude_ai=self.content.block_ai,
+            min_stars=MIN_STARS,
         )
 
     async def draw(self, ctx: DrawContext, n: int) -> tuple[list[Album], list[str]]:

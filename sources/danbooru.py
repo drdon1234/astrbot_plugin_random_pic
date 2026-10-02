@@ -78,8 +78,29 @@ FIELDS = ",".join(
     )
 )
 IMAGE_EXTS = frozenset({"jpg", "jpeg", "png", "webp"})
-# 不管配置怎么写都排除：低龄化的版本（Danbooru 不会给它打 loli）、动图
-ALWAYS_EXCLUDE = frozenset({"aged_down", "animated"})
+# 最低用户投票分：150 分时擦边池约 7.8 万张、R18 池约 27 万张；50~100 分的明显变差
+MIN_SCORE = 150
+# 排除的标签：低龄化的版本（Danbooru 不会给它打 loli）、动图，以及漫画、多格、黑白、草图、
+# 3D 和男性向等不适合抽图的帖子
+EXCLUDE_TAGS = frozenset(
+    {
+        "aged_down",
+        "animated",
+        "comic",
+        "4koma",
+        "multiple_views",
+        "monochrome",
+        "greyscale",
+        "sketch",
+        "lineart",
+        "3d",
+        "photorealistic",
+        "yaoi",
+        "male_focus",
+        "furry",
+    }
+)
+AI_TAGS = frozenset({"ai-generated", "ai-assisted"})
 CHILD_TAGS = frozenset({"loli", "shota"})
 CHILD_RATIO = 0.2
 # 统计角色时取出现比例最高的这么多个标签；比例达到 CHILD_RATIO 的标签一定在里面
@@ -144,15 +165,15 @@ class DanbooruSource(Source):
         content: ContentFilter,
         opts: DrawOptions,
         *,
-        min_score: int,
-        exclude_tags: list[str],
+        min_score: int = MIN_SCORE,
+        exclude_tags: frozenset[str] = EXCLUDE_TAGS,
     ):
         super().__init__(cache, content, opts)
         self.http = http
         self.min_score = min_score
-        self.exclude = ALWAYS_EXCLUDE | {
-            "_".join(t.lower().split()) for t in exclude_tags if t.strip()
-        }
+        self.exclude = frozenset(exclude_tags) | (
+            AI_TAGS if content.block_ai else frozenset()
+        )
         self.limiter = RateLimiter(REQUEST_INTERVAL)
         # 搜索条件 → 最旧、最新帖子的 id，没有帖子时为 None
         self._bounds = TTLCache(BOUNDS_TTL, CACHE_SIZE)

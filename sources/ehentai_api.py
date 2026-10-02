@@ -66,6 +66,8 @@ BANNED_MARK = "Your IP address has been temporarily banned"
 # 匿名访问时画廊页每页 20 张缩略图；登录后可在站点设置里修改，运行时会自动校正
 THUMBS_PER_PAGE = 20
 GDATA_BATCH = 25
+# 两次请求之间的最小间隔（秒），过快可能被临时封禁 IP；抽卡耗时主要受它限制
+REQUEST_INTERVAL = 0.5
 # 游标范围缓存一小时；条目上限（随机角色模式会产生大量不同的搜索条件）
 RANGE_TTL = 3600
 RANGE_CACHE_SIZE = 4096
@@ -132,7 +134,6 @@ def build_search(
     *,
     exclude_ai: bool,
     min_stars: int,
-    min_pages: int,
 ) -> dict[str, str]:
     """组合搜索参数。返回的 dict 同时作为游标范围缓存的键。"""
     words = [search.strip(), *user_tags, *SEARCH_EXCLUDES]
@@ -142,14 +143,10 @@ def build_search(
     query = " ".join(w for w in words if w)
     if query:
         params["f_search"] = query
-    if min_stars >= 2 or min_pages > 0:
-        params["advsearch"] = "1"
     if min_stars >= 2:
+        params["advsearch"] = "1"
         params["f_sr"] = "on"
         params["f_srdd"] = str(min(min_stars, 5))
-    if min_pages > 0:
-        params["f_sp"] = "on"
-        params["f_spf"] = str(min_pages)
     return params
 
 
@@ -202,7 +199,7 @@ def parse_gallery(meta: dict) -> Gallery:
 
 
 class EHentai:
-    def __init__(self, http: HttpClient, site: str, interval: float):
+    def __init__(self, http: HttpClient, site: str, interval: float = REQUEST_INTERVAL):
         self.http = http
         self.name = SITE_NAMES[site]
         self.base, self.api_url, _ = SITES[site]

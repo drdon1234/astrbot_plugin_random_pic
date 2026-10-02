@@ -4,11 +4,12 @@ import time
 from datetime import date
 
 from .models import EXPLICIT, SENSITIVE, DrawRequest, Work
-from .settings import Access
+from .settings import Access, Rating
 
 
 class AccessControl:
-    def __init__(self, conf: Access):
+    def __init__(self, rating: Rating, conf: Access):
+        self.rating = rating
         self.conf = conf
         self._whitelist = set(conf.group_whitelist)
         self._blacklist = set(conf.user_blacklist)
@@ -17,27 +18,29 @@ class AccessControl:
         self._daily_date = date.today()
 
     def allowed(self, user_id: str, group_id: str) -> bool:
-        """黑名单用户和白名单以外的群不回复。"""
+        """不允许群聊时所有群聊消息都不处理；黑名单用户和白名单以外的群不回复。"""
+        if group_id and not self.conf.group_enabled:
+            return False
         if user_id in self._blacklist:
             return False
         return not (group_id and self._whitelist and group_id not in self._whitelist)
 
     def gate(self, rating: str, is_private: bool) -> str | None:
         """请求阶段的分级闸门，返回拒绝原因。关闭内容分级后只保留 R18 总开关。"""
-        if rating == EXPLICIT and not self.conf.r18_enabled:
+        if rating == EXPLICIT and not self.rating.r18_enabled:
             return "R18 功能未开启。"
-        if not self.conf.content_rating or is_private:
+        if not self.rating.content_rating or is_private:
             return None
         if rating == EXPLICIT:
             return "R18 内容仅限私聊。"
-        if rating == SENSITIVE and not self.conf.group_sensitive:
+        if rating == SENSITIVE and not self.rating.group_sensitive:
             return "本群未开启擦边内容。"
         return None
 
     def work_gate(self, work: Work, is_private: bool) -> str | None:
-        """整本作品（/pdf、定时推送完整图集）的闸门：过滤与抽图相同，无法判定分级的按 R18 处理。"""
+        """完整作品（/全集、/pdf、推送）的闸门：过滤与抽图相同，无法判定分级的按 R18 处理。"""
         if work.blocked:
-            return f"作品{work.blocked}，不予打包。"
+            return f"作品{work.blocked}，不予发送。"
         return self.gate(work.rating or EXPLICIT, is_private)
 
     def take(self, user_id: str, req: DrawRequest) -> str | None:

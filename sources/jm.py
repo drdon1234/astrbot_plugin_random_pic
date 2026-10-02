@@ -49,7 +49,7 @@ from ..models import (
     Work,
     WorkRef,
 )
-from ..net import ImageCache
+from ..net import TIMEOUT, ImageCache
 from ..util import TTLCache, shared
 from .base import Source, SourceError, has_tag_syntax, keyword_and_excludes
 
@@ -74,6 +74,12 @@ LISTINGS_PER_ALBUM = 4
 DETAIL_TRIES = 3
 # 还原后的图片存成 JPEG 的质量
 JPEG_QUALITY = 95
+# 点赞数下限：分类末尾约两成是早年的日本素人摄影，点赞多在 100 以下、画质差，
+# 500 能滤掉其中绝大多数，其他本子只损失约一成
+MIN_LIKES = 500
+# 排除的标签（小写，整个标签匹配）：3D 渲染、动图、重口
+EXCLUDE_TAGS = frozenset({"3d", "動圖", "重口"})
+AI_TAGS = frozenset({"ai", "ai繪圖", "ai生成"})
 
 NOT_FOUND = "找不到和"
 ITEM_SPLIT_RE = re.compile(r'<div class="col-[^"]*\blist-col\b[^"]*">')
@@ -206,16 +212,18 @@ class JMComicSource(Source):
         *,
         domain: str,
         proxy: str | None,
-        timeout: float,
-        min_likes: int,
-        exclude_tags: list[str],
+        timeout: float = TIMEOUT,
+        min_likes: int = MIN_LIKES,
+        exclude_tags: frozenset[str] = EXCLUDE_TAGS,
     ):
         super().__init__(cache, content, opts)
         self.domain = domain
         self.proxy = proxy or None
         self.timeout = timeout
         self.min_likes = min_likes
-        self.exclude_tags = frozenset(t.lower() for t in exclude_tags)
+        self.exclude_tags = frozenset(t.lower() for t in exclude_tags) | (
+            AI_TAGS if content.block_ai else frozenset()
+        )
         self._sessions: dict[str, AsyncSession] = {}
         self._fingerprint = 0
         # 关键词（不带时为 ""，即整个分类）→ (总页数, 没有一本达到点赞数下限的页码)；

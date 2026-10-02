@@ -117,6 +117,10 @@ def write_pdf(images: list[Path], out: Path, quality: int) -> Path:
 # 不同用户最多同时打包这么多个作品（同一用户的请求依次进行）。打包 E-Hentai 画廊时每页都要
 # 请求一次，所有打包和抽图共用同一个请求限速，同时打包太多只会互相拖慢、更快耗尽图片额度
 PACK_CONCURRENCY = 2
+# 单个 PDF 最多页数（超过时分卷）、页面的 JPEG 质量、最多保留多少个作品的 PDF
+PAGES_PER_FILE = 200
+JPEG_QUALITY = 85
+KEEP_WORKS = 10
 # 这么多秒内生成的 PDF 不清理：可能是另一个打包刚完成、还没发出去的文件
 FRESH_SECONDS = 600
 UNSAFE_FILENAME = re.compile(r'[\\/:*?"<>|\r\n\t]+')
@@ -164,12 +168,12 @@ class PdfStore:
         self,
         out_dir: Path,
         tmp_dir: Path,
-        pages_per_file: int,
-        keep: int,
-        quality: int,
         sources: Iterable[str],
+        pages_per_file: int = PAGES_PER_FILE,
+        keep: int = KEEP_WORKS,
+        quality: int = JPEG_QUALITY,
     ):
-        """quality 为 0 表示不压缩；sources 是所有图源键，用来认出本插件生成的文件。"""
+        """sources 是所有图源键，用来认出本插件生成的文件；quality 为 0 表示不压缩。"""
         self.dir = out_dir
         self.tmp = tmp_dir
         self.pages_per_file = pages_per_file

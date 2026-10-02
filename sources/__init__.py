@@ -34,31 +34,16 @@ class SourceSet:
         eh_site: str,
     ):
         """eh_site 是实际使用的 E-Hentai 站点（见 ehentai_api.resolve_site）。"""
-        s = settings
-        self.danbooru = DanbooruSource(
-            http,
-            cache,
-            content,
-            opts,
-            min_score=s.danbooru.min_score,
-            exclude_tags=s.danbooru.exclude_tags,
-        )
-        self.ehentai = EHentaiSource(
-            EHentai(http, eh_site, s.ehentai.request_interval),
-            cache,
-            content,
-            opts,
-            exclude_ai=s.ehentai.exclude_ai,
-            min_stars=s.ehentai.min_rating,
-            min_pages=s.ehentai.min_pages,
-        )
+        sites = settings.sites
+        self.danbooru = DanbooruSource(http, cache, content, opts)
+        self.ehentai = EHentaiSource(EHentai(http, eh_site), cache, content, opts)
         pica = Picacomic(
             http,
             cache,
             content,
             opts,
-            s.pica.email,
-            s.pica.password,
+            sites.pica_email,
+            sites.pica_password,
             token_path=data_dir / "pica_token.json",
         )
         wordpress = [
@@ -78,11 +63,8 @@ class SourceSet:
                     cache,
                     content,
                     opts,
-                    domain=s.jmcomic.domain,
-                    proxy=s.network.proxy,
-                    timeout=s.network.timeout,
-                    min_likes=s.jmcomic.min_likes,
-                    exclude_tags=s.jmcomic.exclude_tags,
+                    domain=sites.jmcomic_domain,
+                    proxy=sites.proxy,
                 )
             )
         self._by_key = {source.key: source for source in self.all}
@@ -93,7 +75,7 @@ class SourceSet:
                 )
         # 三次元按权重混合：E-Hentai 总在其中（权重为 0 时只用来补其他图源没抽够的图集），
         # 其他图源权重大于 0 且能用时参与
-        weights = s.sources.weights
+        weights = settings.sources.weights
         self.real: list[tuple[Source, int]] = [
             (self.ehentai, weights[self.ehentai.key])
         ]
