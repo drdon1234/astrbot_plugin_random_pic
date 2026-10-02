@@ -1,4 +1,4 @@
-"""抽卡调度：翻译并检查关键词，二次元交给 Danbooru，三次元按权重给每个图集分配图源，各图源并发抽取。"""
+"""抽卡调度：翻译并检查关键词，按比例给每个图集分配这次能用的图源，各图源并发抽取。"""
 
 import asyncio
 import random
@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from astrbot.api import logger
 
 from .filters import ContentFilter
-from .models import ANIME, Album, DrawContext, DrawRequest
+from .models import ANIME, RATING_NAMES, STYLE_NAMES, Album, DrawContext, DrawRequest
 from .sources import SourceSet
 from .tags import TagDB
 
@@ -33,21 +33,13 @@ class Drawer:
         self.tagdb = tagdb
 
     def assign(self, ctx: DrawContext) -> dict:
-        """二次元全部由 Danbooru 抽；三次元每个图集按权重选一个这次能用的图源。返回 {图源: 图集数}。
-
-        能用的三次元图源权重全为 0 时全部由 E-Hentai 抽。
-        """
-        sources, n = self.sources, ctx.req.albums
-        if ctx.req.style == ANIME:
-            return {sources.danbooru: n}
-        usable = [
-            (s, w) for s, w in sources.real if s is sources.ehentai or s.accepts(ctx)
-        ]
-        if len(usable) == 1 or sum(w for _, w in usable) <= 0:
-            return {sources.ehentai: n}
+        """每个图集按比例选一个这次能用的图源，返回 {图源: 图集数}；没有能用的图源时为空。"""
+        usable = [(s, w) for s, w in self.sources.drawing if s.accepts(ctx)]
+        if not usable:
+            return {}
         picked, weights = zip(*usable)
         counts = dict.fromkeys(picked, 0)
-        for source in random.choices(picked, weights, k=n):
+        for source in random.choices(picked, weights, k=ctx.req.albums):
             counts[source] += 1
         return {s: k for s, k in counts.items() if k}
 
@@ -67,7 +59,13 @@ class Drawer:
             return DrawResult(errors=["标签库不可用，无法随机角色"])
 
         ctx = DrawContext(req, allow_explicit, list(terms), index)
-        fallback = self.sources.ehentai
+        plan = self.assign(ctx)
+        if not plan:
+            kind = f"{STYLE_NAMES[req.style]}·{RATING_NAMES[req.rating]}"
+            return DrawResult(
+                errors=[f"没有能抽{kind}的图源，请在图源管理里启用或调整适用分级"]
+            )
+        fallback = self.sources.fallback
 
         async def run(source, n: int) -> tuple[list[Album], list[str]]:
             """抽一个图源；其他三次元图源没抽够时马上由 E-Hentai 补，不等别的图源。"""
@@ -79,13 +77,18 @@ class Drawer:
                 logger.error(f"[random_pic] {source.name} 抽取出错: {e!r}", exc_info=e)
                 albums, errors = [], [f"{source.name} 出错：{e!r}"]
             short = n - len(albums)
-            if short > 0 and source is not fallback and fallback.accepts(ctx):
+            if (
+                short > 0
+                and fallback is not None
+                and source is not fallback
+                and fallback.accepts(ctx)
+            ):
                 more, more_errors = await fallback.draw(ctx, short)
                 albums, errors = albums + more, errors + more_errors
             return albums, errors
 
         result = DrawResult()
-        jobs = [run(source, n) for source, n in self.assign(ctx).items()]
+        jobs = [run(source, n) for source, n in plan.items()]
         for albums, errors in await asyncio.gather(*jobs):
             result.albums.extend(albums)
             result.errors.extend(errors)

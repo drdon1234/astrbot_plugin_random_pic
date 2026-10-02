@@ -127,6 +127,12 @@
         "type": "bool",
         "default": true
       },
+      "block_trans": {
+        "description": "屏蔽扶她、伪娘等跨性别作品",
+        "type": "bool",
+        "default": true,
+        "hint": "扶她、扶他、人妖、伪娘、男娘等，按标签和标题匹配。性转（gender change）不在其中，需要时加到额外屏蔽的标签。"
+      },
       "block_ai": {
         "description": "屏蔽 AI 作品",
         "type": "bool",
@@ -196,89 +202,9 @@
     }
   },
   "sources": {
-    "description": "三次元图源比例",
+    "description": "图源管理",
     "type": "object",
-    "hint": "按比例混合，0 为不用。二次元只用 Danbooru。",
-    "items": {
-      "ehentai": {
-        "description": "E-Hentai",
-        "type": "int",
-        "default": 5,
-        "slider": {
-          "min": 0,
-          "max": 10,
-          "step": 1
-        }
-      },
-      "pica": {
-        "description": "哔咔",
-        "type": "int",
-        "default": 5,
-        "slider": {
-          "min": 0,
-          "max": 10,
-          "step": 1
-        },
-        "hint": "需要填写哔咔账号。"
-      },
-      "cosplaytele": {
-        "description": "CosplayTele",
-        "type": "int",
-        "default": 5,
-        "slider": {
-          "min": 0,
-          "max": 10,
-          "step": 1
-        }
-      },
-      "xiuren": {
-        "description": "XiuRen",
-        "type": "int",
-        "default": 5,
-        "slider": {
-          "min": 0,
-          "max": 10,
-          "step": 1
-        },
-        "hint": "只有擦边。"
-      },
-      "nudecosplay": {
-        "description": "NudeCosplay",
-        "type": "int",
-        "default": 5,
-        "slider": {
-          "min": 0,
-          "max": 10,
-          "step": 1
-        }
-      },
-      "pixibb": {
-        "description": "PixiBB",
-        "type": "int",
-        "default": 5,
-        "slider": {
-          "min": 0,
-          "max": 10,
-          "step": 1
-        },
-        "hint": "只用于 R18。"
-      },
-      "jmcomic": {
-        "description": "禁漫天堂",
-        "type": "int",
-        "default": 5,
-        "slider": {
-          "min": 0,
-          "max": 10,
-          "step": 1
-        },
-        "hint": "只用于 R18。"
-      }
-    }
-  },
-  "sites": {
-    "description": "网络与账号",
-    "type": "object",
+    "hint": "每个站点可以单独开关、限定用于擦边还是 R18。二次元只有 Danbooru。",
     "items": {
       "proxy": {
         "description": "HTTP 代理",
@@ -286,53 +212,359 @@
         "default": "",
         "hint": "例如 http://127.0.0.1:7890。国内通常需要。"
       },
-      "ehentai_site": {
-        "description": "E-Hentai 站点",
-        "type": "string",
-        "default": "e-hentai",
-        "options": [
-          "e-hentai",
-          "exhentai"
-        ],
-        "hint": "exhentai 需要填齐下面三个 cookie。"
-      },
-      "ipb_member_id": {
-        "description": "E-Hentai cookie：ipb_member_id",
-        "type": "string",
-        "default": "",
-        "secret": true
-      },
-      "ipb_pass_hash": {
-        "description": "E-Hentai cookie：ipb_pass_hash",
-        "type": "string",
-        "default": "",
-        "secret": true
-      },
-      "igneous": {
-        "description": "E-Hentai cookie：igneous",
-        "type": "string",
-        "default": "",
-        "secret": true,
-        "condition": {
-          "ehentai_site": "exhentai"
+      "danbooru": {
+        "description": "Danbooru（二次元）",
+        "type": "object",
+        "items": {
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true
+          },
+          "scope": {
+            "description": "适用分级",
+            "type": "string",
+            "default": "通用",
+            "options": [
+              "通用",
+              "仅擦边",
+              "仅R18"
+            ],
+            "condition": {
+              "enabled": true
+            }
+          },
+          "min_score": {
+            "description": "最低评分",
+            "type": "int",
+            "default": 150,
+            "condition": {
+              "enabled": true
+            },
+            "hint": "Danbooru 的用户投票分，低于此分的图不抽。低于 100 时质量明显下降。"
+          }
         }
       },
-      "pica_email": {
-        "description": "哔咔账号",
-        "type": "string",
-        "default": ""
+      "ehentai": {
+        "description": "E-Hentai",
+        "type": "object",
+        "items": {
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true
+          },
+          "scope": {
+            "description": "适用分级",
+            "type": "string",
+            "default": "通用",
+            "options": [
+              "通用",
+              "仅擦边",
+              "仅R18"
+            ],
+            "condition": {
+              "enabled": true
+            }
+          },
+          "weight": {
+            "description": "比例",
+            "type": "int",
+            "default": 5,
+            "slider": {
+              "min": 1,
+              "max": 10,
+              "step": 1
+            },
+            "condition": {
+              "enabled": true
+            },
+            "hint": "同一分级的三次元图源按比例混合。"
+          },
+          "min_stars": {
+            "description": "最低画廊评分（星）",
+            "type": "int",
+            "default": 4,
+            "slider": {
+              "min": 1,
+              "max": 5,
+              "step": 1
+            },
+            "condition": {
+              "enabled": true
+            },
+            "hint": "低于此星级的画廊不抽，1 为不限。"
+          },
+          "site": {
+            "description": "站点",
+            "type": "string",
+            "default": "e-hentai",
+            "options": [
+              "e-hentai",
+              "exhentai"
+            ],
+            "condition": {
+              "enabled": true
+            },
+            "hint": "exhentai 需要填齐下面三个 cookie。"
+          },
+          "ipb_member_id": {
+            "description": "cookie：ipb_member_id",
+            "type": "string",
+            "default": "",
+            "secret": true,
+            "condition": {
+              "enabled": true
+            }
+          },
+          "ipb_pass_hash": {
+            "description": "cookie：ipb_pass_hash",
+            "type": "string",
+            "default": "",
+            "secret": true,
+            "condition": {
+              "enabled": true
+            }
+          },
+          "igneous": {
+            "description": "cookie：igneous",
+            "type": "string",
+            "default": "",
+            "secret": true,
+            "condition": {
+              "enabled": true,
+              "site": "exhentai"
+            }
+          }
+        }
       },
-      "pica_password": {
-        "description": "哔咔密码",
-        "type": "string",
-        "default": "",
-        "secret": true
+      "pica": {
+        "description": "哔咔",
+        "type": "object",
+        "items": {
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true
+          },
+          "scope": {
+            "description": "适用分级",
+            "type": "string",
+            "default": "通用",
+            "options": [
+              "通用",
+              "仅擦边",
+              "仅R18"
+            ],
+            "condition": {
+              "enabled": true
+            }
+          },
+          "weight": {
+            "description": "比例",
+            "type": "int",
+            "default": 5,
+            "slider": {
+              "min": 1,
+              "max": 10,
+              "step": 1
+            },
+            "condition": {
+              "enabled": true
+            },
+            "hint": "同一分级的三次元图源按比例混合。"
+          },
+          "email": {
+            "description": "账号",
+            "type": "string",
+            "default": "",
+            "condition": {
+              "enabled": true
+            },
+            "hint": "不填账号时不使用哔咔。"
+          },
+          "password": {
+            "description": "密码",
+            "type": "string",
+            "default": "",
+            "secret": true,
+            "condition": {
+              "enabled": true
+            }
+          }
+        }
       },
-      "jmcomic_domain": {
-        "description": "禁漫天堂域名",
-        "type": "string",
-        "default": "18comic.vip",
-        "hint": "域名经常更换，失效时换成能打开的。"
+      "cosplaytele": {
+        "description": "CosplayTele",
+        "type": "object",
+        "items": {
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true
+          },
+          "scope": {
+            "description": "适用分级",
+            "type": "string",
+            "default": "通用",
+            "options": [
+              "通用",
+              "仅擦边",
+              "仅R18"
+            ],
+            "condition": {
+              "enabled": true
+            }
+          },
+          "weight": {
+            "description": "比例",
+            "type": "int",
+            "default": 5,
+            "slider": {
+              "min": 1,
+              "max": 10,
+              "step": 1
+            },
+            "condition": {
+              "enabled": true
+            },
+            "hint": "同一分级的三次元图源按比例混合。"
+          }
+        }
+      },
+      "xiuren": {
+        "description": "XiuRen",
+        "type": "object",
+        "hint": "工作室棚拍写真，只有擦边内容。",
+        "items": {
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true
+          },
+          "weight": {
+            "description": "比例",
+            "type": "int",
+            "default": 5,
+            "slider": {
+              "min": 1,
+              "max": 10,
+              "step": 1
+            },
+            "condition": {
+              "enabled": true
+            },
+            "hint": "同一分级的三次元图源按比例混合。"
+          }
+        }
+      },
+      "nudecosplay": {
+        "description": "NudeCosplay",
+        "type": "object",
+        "items": {
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true
+          },
+          "scope": {
+            "description": "适用分级",
+            "type": "string",
+            "default": "通用",
+            "options": [
+              "通用",
+              "仅擦边",
+              "仅R18"
+            ],
+            "condition": {
+              "enabled": true
+            }
+          },
+          "weight": {
+            "description": "比例",
+            "type": "int",
+            "default": 5,
+            "slider": {
+              "min": 1,
+              "max": 10,
+              "step": 1
+            },
+            "condition": {
+              "enabled": true
+            },
+            "hint": "同一分级的三次元图源按比例混合。"
+          }
+        }
+      },
+      "pixibb": {
+        "description": "PixiBB",
+        "type": "object",
+        "hint": "站点不区分裸露程度，只用于 R18。",
+        "items": {
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true
+          },
+          "weight": {
+            "description": "比例",
+            "type": "int",
+            "default": 5,
+            "slider": {
+              "min": 1,
+              "max": 10,
+              "step": 1
+            },
+            "condition": {
+              "enabled": true
+            },
+            "hint": "同一分级的三次元图源按比例混合。"
+          }
+        }
+      },
+      "jmcomic": {
+        "description": "禁漫天堂",
+        "type": "object",
+        "hint": "站点不区分裸露程度，只用于 R18。",
+        "items": {
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true
+          },
+          "weight": {
+            "description": "比例",
+            "type": "int",
+            "default": 5,
+            "slider": {
+              "min": 1,
+              "max": 10,
+              "step": 1
+            },
+            "condition": {
+              "enabled": true
+            },
+            "hint": "同一分级的三次元图源按比例混合。"
+          },
+          "min_likes": {
+            "description": "最低点赞数",
+            "type": "int",
+            "default": 500,
+            "condition": {
+              "enabled": true
+            },
+            "hint": "点赞数低于此值的本子不抽，分类末尾多是老旧的业余写真。"
+          },
+          "domain": {
+            "description": "域名",
+            "type": "string",
+            "default": "18comic.vip",
+            "condition": {
+              "enabled": true
+            },
+            "hint": "域名经常更换，失效时换成能打开的。"
+          }
+        }
       }
     }
   },

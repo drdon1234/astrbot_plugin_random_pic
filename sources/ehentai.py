@@ -72,7 +72,7 @@ POOLS = {
     ),
 }
 
-# 画廊最低评分（星）：质量的主要开关
+# 画廊最低评分（星）的默认值，是质量的主要开关；配置在图源管理里
 MIN_STARS = 4
 # 抽取轮数：画廊被复核丢弃、取图失败时重新随机跳转
 MAX_ROUNDS = 3
@@ -126,10 +126,13 @@ class EHentaiSource(Source):
         cache: ImageCache,
         content: ContentFilter,
         opts: DrawOptions,
+        *,
+        min_stars: int = MIN_STARS,
     ):
         super().__init__(cache, content, opts)
         self.api = api
         self.name = api.name
+        self.min_stars = min_stars
 
     def _params(self, pool: Pool, terms: list[str]) -> dict:
         return build_search(
@@ -137,7 +140,7 @@ class EHentaiSource(Source):
             pool.search,
             terms,
             exclude_ai=self.content.block_ai,
-            min_stars=MIN_STARS,
+            min_stars=self.min_stars,
         )
 
     async def draw(self, ctx: DrawContext, n: int) -> tuple[list[Album], list[str]]:

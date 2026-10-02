@@ -3,9 +3,10 @@
 每个图源提供：
 - key / name：配置和 PDF 存储名里的图源键、标题行和提示里的显示名；
 - style、intro：风格，帮助里的一行介绍；
+- ratings：站点能判定出的分级；scope 是配置的适用分级，两者都包含请求的分级时才参与抽取；
 - link_re：作品链接（第 1 组是作品 id，有第 2 组时是 E-Hentai 画廊的 token），没有公开链接时为 None；
 - unavailable：缺少账号等不能使用的原因；
-- accepts(ctx)：这次请求能否使用该图源；
+- accepts(ctx)：这次请求能否使用该图源（子类在分级之外再加自己的限制）；
 - draw(ctx, n)：抽 n 个图集，返回 (图集, 错误说明)；
 - work(ref) / download_work(work, dest)：/pdf 查询和下载整个作品。
 """
@@ -16,10 +17,19 @@ from pathlib import Path
 from astrbot.api import logger
 
 from ..filters import ContentFilter, rating_reason
-from ..models import EXPLICIT, Album, DrawContext, DrawOptions, Work, WorkRef
+from ..models import (
+    EXPLICIT,
+    SENSITIVE,
+    Album,
+    DrawContext,
+    DrawOptions,
+    Work,
+    WorkRef,
+)
 from ..net import NETWORK_ERRORS, ImageCache, download_all
 from ..util import fetch_pages, fill
 
+ALL_RATINGS = frozenset({SENSITIVE, EXPLICIT})
 # E-Hentai 搜索语法里的字符：带这些字符的关键词是标签写法
 TAG_SYNTAX = frozenset(':$"')
 # E-Hentai 搜索词形式的标签，例如 character:"hu tao$"、female:swimsuit$
@@ -73,18 +83,24 @@ class Source:
     style: str
     intro: str
     link_re: re.Pattern | None = None
+    ratings: frozenset[str] = ALL_RATINGS
 
     def __init__(self, cache: ImageCache, content: ContentFilter, opts: DrawOptions):
         self.cache = cache
         self.content = content
         self.opts = opts
+        self.scope: frozenset[str] = ALL_RATINGS
+
+    @property
+    def usable_ratings(self) -> frozenset[str]:
+        return self.ratings & self.scope
 
     @property
     def unavailable(self) -> str | None:
         return None
 
     def accepts(self, ctx: DrawContext) -> bool:
-        return ctx.req.style == self.style
+        return ctx.req.style == self.style and ctx.req.rating in self.usable_ratings
 
     async def draw(self, ctx: DrawContext, n: int) -> tuple[list[Album], list[str]]:
         raise NotImplementedError

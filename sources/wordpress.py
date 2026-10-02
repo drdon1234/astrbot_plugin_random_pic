@@ -118,7 +118,7 @@ XIUREN = Site(
     key="xiuren",
     name="XiuRen",
     host="xiuren.biz",
-    intro="工作室棚拍写真，只有擦边",
+    intro="工作室棚拍写真",
     default_rating=SENSITIVE,
     ai_categories=(1558,),  # AI Generated
     ai_tags=(1559, 1560),  # AI、AI Generated
@@ -137,7 +137,7 @@ PIXIBB = Site(
     key="pixibb",
     name="PixiBB",
     host="sexy.pixibb.com",
-    intro="Cosplay 与写真，只用于 R18，可搜角色、作品、模特名",
+    intro="Cosplay 与写真，可搜角色、作品、模特名",
     default_rating=EXPLICIT,
     categories=(10, 112),  # Cosplay、Sexy Girls
     exclude_categories=(74, 209),  # Anime、Toon Girls
@@ -232,6 +232,9 @@ class WordPressSource(Source):
         self.name = site.name
         self.intro = site.intro
         self.link_re = site.link_re
+        self.ratings = frozenset(site.ratings.values()) or frozenset(
+            {site.default_rating}
+        )
         self.http = http
         # 查询参数 → 帖子总数
         self._totals = TTLCache(TOTAL_TTL, TOTAL_CACHE_SIZE)
@@ -298,10 +301,10 @@ class WordPressSource(Source):
         return categories, tags
 
     def accepts(self, ctx: DrawContext) -> bool:
-        """三次元，不是随机角色，站点有这个分级的帖子，关键词能搜索。"""
+        """不是随机角色，站点有这个分级的帖子，关键词能搜索。"""
         req = ctx.req
         return (
-            req.style == REAL
+            super().accepts(ctx)
             and not req.random_character
             and self.query(req.rating) is not None
             and bool(self._searches(ctx))

@@ -137,7 +137,7 @@ class Picacomic(Source):
         """只有 Cosplay 分类，不支持随机角色和 E-Hentai 标签语法；登录冷却期间不参与抽取。"""
         req = ctx.req
         return (
-            req.style == REAL
+            super().accepts(ctx)
             and not req.random_character
             and not has_tag_syntax(req.keywords)
             and not self._login_blocked()

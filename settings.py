@@ -1,6 +1,7 @@
 """插件配置：分段与 _conf_schema.json 一一对应，键名、类型、默认值和可选值都只在 schema 里定义。
 
-只有用户需要选择的项才放进配置；各图源的门槛、超时、缓存大小等调优参数是各模块里的常量。
+只有用户需要选择的项才放进配置：各站点的开关、适用分级、比例和质量门槛（评分、点赞数）在图源管理里，
+超时、缓存大小等调优参数是各模块里的常量。
 """
 
 import json
@@ -11,7 +12,7 @@ from pathlib import Path
 
 from astrbot.api import logger
 
-from .models import RATING_WORDS, STYLE_WORDS
+from .models import EXPLICIT, RATING_WORDS, SENSITIVE, STYLE_WORDS
 
 SCHEMA = json.loads(
     Path(__file__).with_name("_conf_schema.json").read_text(encoding="utf-8")
@@ -22,11 +23,21 @@ PDF_FORMAT = "PDF"
 FORWARD_FORMAT = "合并转发"
 TIME_RE = re.compile(r"^(\d{1,2})[:：](\d{2})$")
 PUSH_TEMPLATES = SCHEMA["push"]["items"]["tasks"]["templates"]
+SITE_SCHEMA = SCHEMA["sources"]["items"]
+# 图源的「适用分级」→ 参与抽取的分级
+SCOPES = {
+    "通用": frozenset({SENSITIVE, EXPLICIT}),
+    "仅擦边": frozenset({SENSITIVE}),
+    "仅R18": frozenset({EXPLICIT}),
+}
 
 
 def _coerce(spec: dict, value):
-    """按 schema 转换配置值：类型不对、转换失败或不在可选值里时用默认值。"""
-    kind, default = spec["type"], spec["default"]
+    """按 schema 转换配置值：类型不对、转换失败或不在可选值里时用默认值；object 逐项转换。"""
+    kind = spec["type"]
+    if kind == "object":
+        return _values(spec["items"], value if isinstance(value, dict) else {})
+    default = spec["default"]
     try:
         if kind == "bool":
             value = bool(value)
@@ -50,7 +61,7 @@ def _coerce(spec: dict, value):
 
 def _values(items: dict, conf: dict) -> dict:
     return {
-        key: _coerce(spec, conf.get(key, spec["default"]))
+        key: _coerce(spec, conf.get(key, spec.get("default")))
         for key, spec in items.items()
     }
 
@@ -117,6 +128,7 @@ class Access:
 @dataclass
 class Filter:
     block_heavy: bool
+    block_trans: bool
     block_ai: bool
     extra_blacklist: list[str]
 
@@ -135,41 +147,43 @@ class Whole:
     pdf_dir: str
 
 
-@dataclass
-class Sources:
-    """三次元各图源的比例，键是图源键。"""
+@dataclass(kw_only=True)
+class Site:
+    """一个图源站点的设置。只有一种分级的站点没有「适用分级」，唯一的二次元图源没有「比例」，用这里的默认值。"""
 
-    ehentai: int
-    pica: int
-    cosplaytele: int
-    xiuren: int
-    nudecosplay: int
-    pixibb: int
-    jmcomic: int
+    enabled: bool
+    scope: str = "通用"
+    weight: int = 1
+
+    def __post_init__(self):
+        self.weight = _clamp(self.weight, 1)
 
     @property
-    def weights(self) -> dict[str, int]:
-        return {f.name: _clamp(getattr(self, f.name), 0) for f in fields(self)}
+    def ratings(self) -> frozenset[str]:
+        """配置允许参与抽取的分级（还要和站点自身能判定的分级取交集）。"""
+        return SCOPES[self.scope]
 
 
-@dataclass
-class Sites:
-    proxy: str
-    ehentai_site: str
+@dataclass(kw_only=True)
+class DanbooruSite(Site):
+    min_score: int
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.min_score = _clamp(self.min_score, 0)
+
+
+@dataclass(kw_only=True)
+class EHentaiSite(Site):
+    min_stars: int
+    site: str
     ipb_member_id: str
     ipb_pass_hash: str
     igneous: str
-    pica_email: str
-    pica_password: str
-    jmcomic_domain: str
 
     def __post_init__(self):
-        # 允许粘贴带 https:// 或路径的地址
-        domain = self.jmcomic_domain.removeprefix("https://").removeprefix("http://")
-        self.jmcomic_domain = (
-            domain.split("/", 1)[0]
-            or SCHEMA["sites"]["items"]["jmcomic_domain"]["default"]
-        )
+        super().__post_init__()
+        self.min_stars = _clamp(self.min_stars, 1, 5)
 
     @property
     def cookies(self) -> dict[str, str]:
@@ -179,6 +193,52 @@ class Sites:
             "igneous": self.igneous,
         }
         return {k: v for k, v in values.items() if v}
+
+
+@dataclass(kw_only=True)
+class PicaSite(Site):
+    email: str
+    password: str
+
+
+@dataclass(kw_only=True)
+class JMSite(Site):
+    min_likes: int
+    domain: str
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.min_likes = _clamp(self.min_likes, 0)
+        # 允许粘贴带 https:// 或路径的地址
+        domain = self.domain.removeprefix("https://").removeprefix("http://")
+        self.domain = (
+            domain.split("/", 1)[0]
+            or SITE_SCHEMA["jmcomic"]["items"]["domain"]["default"]
+        )
+
+
+@dataclass
+class Sources:
+    """网络代理和各图源站点的设置，站点的键是图源键。"""
+
+    proxy: str
+    danbooru: DanbooruSite
+    ehentai: EHentaiSite
+    pica: PicaSite
+    cosplaytele: Site
+    xiuren: Site
+    nudecosplay: Site
+    pixibb: Site
+    jmcomic: JMSite
+
+    def __post_init__(self):
+        for f in fields(self):
+            value = getattr(self, f.name)
+            if isinstance(value, dict):
+                setattr(self, f.name, f.type(**value))
+
+    def site(self, key: str) -> Site:
+        return getattr(self, key)
 
 
 @dataclass
@@ -238,7 +298,6 @@ class Settings:
     send: Send
     whole: Whole
     sources: Sources
-    sites: Sites
     push: Push
 
     @classmethod

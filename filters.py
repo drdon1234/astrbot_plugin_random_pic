@@ -1,4 +1,4 @@
-"""内容过滤：未成年内容黑名单、重口标签与结果阶段的分级复核，对所有图源生效。
+"""内容过滤：未成年内容黑名单、重口和跨性别标签与结果阶段的分级复核，对所有图源生效。
 
 未成年内容过滤始终生效；各图源怎么判定作品的分级见各自的模块。
 """
@@ -72,6 +72,49 @@ HEAVY_TAGS = frozenset(
     }
 )
 HEAVY_NAMESPACES = ("female", "male", "mixed")
+
+# 「屏蔽跨性别作品」开启时加进黑名单的词，和黑名单一样匹配标签和标题。
+# 英文是 E-Hentai（EhTagTranslation 里扶她、扶他、人妖、伪娘一类的标签）和 Danbooru 的标签名；
+# crossdressing 只认 male 命名空间（男性女装），female:crossdressing 是女性男装。
+# 性转（gender change、gender morph）不算在内：Cosplay 里的性转多是女性扮演男角色的女体版。
+TRANS_TAGS = (
+    "futanari",
+    "futanarization",
+    "otokofutanari",
+    "futa",
+    "shemale",
+    "dickgirl",
+    "dickgirls",
+    "cuntboy",
+    "pussyboy",
+    "pussyboys",
+    "tomgirl",
+    "josou seme",
+    "feminization",
+    "male:crossdressing",
+    "otoko no ko",
+    "newhalf",
+    "ladyboy",
+    "transgender",
+    "transsexual",
+    "扶她",
+    "扶他",
+    "人妖",
+    "伪娘",
+    "偽娘",
+    "男娘",
+    "药娘",
+    "藥娘",
+    "跨性别",
+    "跨性別",
+    "女装大佬",
+    "女裝大佬",
+    "ふたなり",
+    "フタナリ",
+    "男の娘",
+    "ニューハーフ",
+    "シーメール",
+)
 # E-Hentai 搜索词形式的标签，例如 female:"body modification$"
 SEARCH_TAG_RE = re.compile(r'^(female|male|mixed):"?([^"$]+)\$?"?$')
 
@@ -111,7 +154,8 @@ class TagBlacklist:
 class ContentFilter:
     """黑名单、重口标签与 AI 作品，对所有图源生效。
 
-    heavy 为空表示不屏蔽重口；block_ai 时各图源排除站点标出的 AI 作品（分类、标签）。
+    heavy 为空表示不屏蔽重口；block_trans 时跨性别标签（TRANS_TAGS）也进黑名单；
+    block_ai 时各图源排除站点标出的 AI 作品（分类、标签）。
     """
 
     def __init__(
@@ -119,8 +163,11 @@ class ContentFilter:
         extra_blacklist: list[str] = (),
         heavy: frozenset[str] = frozenset(),
         block_ai: bool = True,
+        block_trans: bool = False,
     ):
-        self.blacklist = TagBlacklist(extra_blacklist)
+        self.blacklist = TagBlacklist(
+            [*extra_blacklist, *(TRANS_TAGS if block_trans else ())]
+        )
         self.heavy = heavy
         self.block_ai = block_ai
 

@@ -120,11 +120,12 @@ class RandomPicPlugin(Star):
             s.filter.extra_blacklist,
             HEAVY_TAGS if s.filter.block_heavy else frozenset(),
             s.filter.block_ai,
+            s.filter.block_trans,
         )
 
-        cookies = s.sites.cookies
-        site = resolve_site(s.sites.ehentai_site, cookies)
-        self.http = HttpClient(s.sites.proxy, site_cookies(site, cookies))
+        eh = s.sources.ehentai
+        site = resolve_site(eh.site, eh.cookies)
+        self.http = HttpClient(s.sources.proxy, site_cookies(site, eh.cookies))
         cache = ImageCache(self.http, data_dir / "cache")
         opts = DrawOptions(
             from_start=s.draw.from_start,

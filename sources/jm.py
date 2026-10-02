@@ -198,7 +198,8 @@ class JMComicSource(Source):
     key = "jmcomic"
     name = "禁漫天堂"
     style = REAL
-    intro = "Cosplay 分类，只用于 R18，可搜普通关键词"
+    ratings = frozenset({EXPLICIT})
+    intro = "Cosplay 分类，可搜普通关键词"
     # 禁漫的域名经常更换，认域名里带 18comic、jm 的
     link_re = re.compile(
         r"https?://[\w.-]*(?:18comic|jm)[\w.-]*/album/(\d+)(?![\w%-])", re.ASCII
@@ -239,12 +240,11 @@ class JMComicSource(Source):
         return f"{self.base}/album/{album_id}"
 
     def accepts(self, ctx: DrawContext) -> bool:
-        """三次元 R18（关闭内容分级时不限），不支持随机角色和 E-Hentai 标签语法。"""
+        """不支持随机角色和 E-Hentai 标签语法。"""
         req = ctx.req
         return (
-            req.style == REAL
+            super().accepts(ctx)
             and not req.random_character
-            and req.rating == EXPLICIT
             and not has_tag_syntax(req.keywords)
         )
 
