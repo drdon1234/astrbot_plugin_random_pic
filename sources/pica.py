@@ -48,6 +48,9 @@ from .base import Source, SourceError, has_tag_syntax, keyword_and_excludes
 API_BASE = "https://picaapi.picacomic.com/"
 API_KEY = "C69BAF41DA5ABD1FFEDC6D2FEA56B"
 SECRET = r"~d}$Q7$eIni=V)9\RK/P.RM4;9[7|@/CA}b~OW!3?EV`:<>M7pddUBL5n|0/*Cn"
+# 请求头要和 App 一致：POST 的 Content-Type 带 charset、app-channel 与连接方式对应。
+# 实测不一致时（aiohttp 默认的 application/json、app-channel 2），账号密码正确的登录、
+# 注册请求都会返回 1023 too many requests，看起来像限流。
 APP_HEADERS = {
     "api-key": API_KEY,
     "accept": "application/vnd.picacomic.com.v1+json",
@@ -79,10 +82,9 @@ AUTO_STATE = "pica_account.json"
 MANUAL_STATE = "pica_token.json"
 # 登录失败（网络错误、手动账号密码错误等）后这么久内不再尝试，避免每次抽卡都去登录
 LOGIN_BACKOFF = 600
-# 注册失败、登录被限流（错误码 1023 too many requests）、专用账号失效后的冷却：
-# 注册 / 账号失效首次 1 小时，限流首次 6 小时，之后每次翻倍，最多 24 小时。
-# 实测登录限流按账号计，只在密码正确时出现，限流期间反复登录会让它一直解除不了；
-# 反复注册也会被限流。所以冷却时间和账号一起存到磁盘，重载插件也不清零。
+# 注册失败、登录返回 1023 too many requests、专用账号失效后的冷却：
+# 注册 / 账号失效首次 1 小时，1023 首次 6 小时，之后每次翻倍，最多 24 小时。
+# 避免出问题时每次抽图都去注册、登录，冷却时间和账号一起存到磁盘，重载插件也不清零。
 RATE_LIMIT_ERROR = "1023"
 BAD_ACCOUNT_ERROR = "1004"  # invalid email or password
 REGISTER_BACKOFF = 3600
@@ -138,7 +140,7 @@ class Picacomic(Source):
         self._login_lock = asyncio.Lock()
         # 关键词（不带时为 ""，即整个分类）→ 列表总页数
         self._pages = TTLCache(LISTING_TTL, PAGES_CACHE_SIZE)
-        # 账号、token 和冷却存到磁盘，插件重载后不必重新注册、登录（两个接口限流都很严）。
+        # 账号、token 和冷却存到磁盘，插件重载后不必重新注册、登录。
         # 专用账号和手动账号分开存，来回切换时专用账号不会丢
         self._state_path = (
             data_dir / (MANUAL_STATE if self._manual else AUTO_STATE)
