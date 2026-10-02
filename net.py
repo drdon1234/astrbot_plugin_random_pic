@@ -19,6 +19,8 @@ USER_AGENT = (
 
 # 这么多秒内下载的图片不清理：并发抽图时同一次抽卡的图片可能还没发出去
 FRESH_SECONDS = 600
+# 图片下载连接失败（例如代理重置连接）后等这么多秒重试一次
+RETRY_DELAY = 1.0
 
 IMAGE_EXTS = {
     "image/jpeg": ".jpg",
@@ -164,7 +166,13 @@ class ImageCache:
         """
         try:
             try:
-                fetched = await self._fetch(url, headers)
+                try:
+                    fetched = await self._fetch(url, headers)
+                except aiohttp.ClientConnectionError as e:
+                    # 代理偶尔会重置新建的连接，稍等再试一次
+                    logger.info(f"[random_pic] 连接失败，稍后重试 {url}: {e!r}")
+                    await asyncio.sleep(RETRY_DELAY)
+                    fetched = await self._fetch(url, headers)
             except aiohttp.ClientPayloadError as e:
                 # 部分 H@H 节点经代理时会不发 TLS close_notify 就断开，asyncio 的 SSL
                 # 层会丢掉最后几 KB，同一地址重试也一样；阻塞式 ssl 能读全，所以退回 urllib

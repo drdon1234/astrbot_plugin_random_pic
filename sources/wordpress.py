@@ -33,7 +33,7 @@ from astrbot.api import logger
 from ..filters import ContentFilter, rating_reason
 from ..models import EXPLICIT, REAL, SENSITIVE, Album, DrawOptions, Work, WorkRef
 from ..net import HttpClient, HttpError, ImageCache, download_all
-from ..util import fill, pick_pages, shared
+from ..util import fetch_pages, fill, shared
 from . import DrawContext
 
 # 帖子总数缓存：不带关键词时一小时，带关键词时 10 分钟
@@ -370,14 +370,20 @@ class WordPressSource:
         self, post: dict, images: list[str], n: int, semaphore: asyncio.Semaphore
     ) -> Album | None:
         skip = self.opts.explicit_skip if self.post_rating(post) == EXPLICIT else 0.0
-        indices = pick_pages(len(images), n, from_start=self.opts.from_start, skip=skip)
 
         async def download(index: int) -> tuple[int, Path] | None:
             async with semaphore:
                 path = await self.cache.download(images[index])
             return (index + 1, path) if path else None
 
-        pictures = [p for p in await asyncio.gather(*map(download, indices)) if p]
+        pictures = await fetch_pages(
+            len(images),
+            n,
+            self.opts.concurrency,
+            download,
+            from_start=self.opts.from_start,
+            skip=skip,
+        )
         if not pictures:
             return None
         _, tags = term_names(post)

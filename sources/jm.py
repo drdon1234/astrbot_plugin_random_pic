@@ -41,7 +41,7 @@ from astrbot.api import logger
 from ..filters import ContentFilter, rating_reason
 from ..models import EXPLICIT, REAL, SENSITIVE, Album, DrawOptions, Work, WorkRef
 from ..net import ImageCache
-from ..util import fill, pick_pages, shared
+from ..util import fetch_pages, fill, shared
 from . import DrawContext
 from .pica import split_terms, supports_terms
 
@@ -463,15 +463,19 @@ class JMComicSource:
             return None
         rating = content_rating(album.tags)
         skip = self.opts.explicit_skip if rating == EXPLICIT else 0.0
-        indices = pick_pages(len(pages), n, from_start=self.opts.from_start, skip=skip)
-        semaphore = asyncio.Semaphore(self.opts.concurrency)
 
         async def download(index: int) -> tuple[int, Path] | None:
-            async with semaphore:
-                path = await self._download(pages[index])
+            path = await self._download(pages[index])
             return (index + 1, path) if path else None
 
-        pictures = [p for p in await asyncio.gather(*map(download, indices)) if p]
+        pictures = await fetch_pages(
+            len(pages),
+            n,
+            self.opts.concurrency,
+            download,
+            from_start=self.opts.from_start,
+            skip=skip,
+        )
         if not pictures:
             return None
         details = []

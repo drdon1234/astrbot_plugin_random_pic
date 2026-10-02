@@ -13,7 +13,7 @@ from ..filters import ContentFilter, classify, rating_reason
 from ..models import EXPLICIT, RATINGS, REAL, Album, DrawOptions, Work, WorkRef
 from ..net import HttpError, ImageCache
 from ..tags import TagIndex, search_term
-from ..util import fill, pick_pages
+from ..util import fetch_pages
 from . import DrawContext
 from .ehentai_api import (
     BlockedError,
@@ -294,24 +294,20 @@ class EHentaiSource:
         )
 
     async def _pictures(self, gallery: Gallery, ctx: DrawContext) -> list[Picture]:
-        """从画廊取 ctx.req.per_album 张（多张时并发），按页码排序。"""
-        n = ctx.req.per_album
+        """从画廊取 ctx.req.per_album 张（多张时并发），失败的页换别的页补上，按页码排序。"""
         explicit = classify(gallery.category, gallery.tags)[1] == EXPLICIT
-        candidates = iter(
-            pick_pages(
-                gallery.filecount,
-                n,
-                from_start=self.opts.from_start,
-                skip=self.opts.explicit_skip if explicit else 0.0,
-            )
+
+        async def picture(index: int) -> Picture | None:
+            return await self._picture(gallery, index)
+
+        pictures = await fetch_pages(
+            gallery.filecount,
+            ctx.req.per_album,
+            self.opts.concurrency,
+            picture,
+            from_start=self.opts.from_start,
+            skip=self.opts.explicit_skip if explicit else 0.0,
         )
-
-        async def attempt() -> Picture | None:
-            index = next(candidates, None)
-            return None if index is None else await self._picture(gallery, index)
-
-        pictures: list[Picture] = []
-        await fill(pictures, n, n, self.opts.concurrency, attempt)
         return sorted(pictures)
 
     async def _picture(self, gallery: Gallery, index: int) -> Picture | None:

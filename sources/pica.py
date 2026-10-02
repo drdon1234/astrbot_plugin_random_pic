@@ -32,7 +32,7 @@ from astrbot.api import logger
 from ..filters import ContentFilter, rating_reason
 from ..models import EXPLICIT, REAL, SENSITIVE, Album, DrawOptions, Work, WorkRef
 from ..net import HttpClient, ImageCache, download_all
-from ..util import fill, pick_pages
+from ..util import fetch_pages, fill
 from . import DrawContext
 
 API_BASE = "https://picaapi.picacomic.com/"
@@ -413,29 +413,34 @@ class Picacomic:
         if total <= 0 or limit <= 0:
             return None
         skip = self.opts.explicit_skip if comic_rating(tags) == EXPLICIT else 0.0
-        indices = pick_pages(total, n, from_start=self.opts.from_start, skip=skip)
-        # 用到的图片列表页一次性并发取回
-        wanted = sorted({index // limit + 1 for index in indices} - {1})
-        fetched = await asyncio.gather(
-            *(self._episode_page(cid, order, page) for page in wanted)
-        )
-        pages = {1: first.get("docs") or []}
-        pages.update(
-            (page, data.get("docs") or []) for page, data in zip(wanted, fetched)
-        )
-        semaphore = asyncio.Semaphore(self.opts.concurrency)
+        # 图片列表页用到时才取，同一页只取一次
+        pages: dict[int, asyncio.Future] = {
+            1: asyncio.get_running_loop().create_future()
+        }
+        pages[1].set_result(first)
+
+        async def docs_of(page: int) -> list:
+            if page not in pages:
+                pages[page] = asyncio.ensure_future(
+                    self._episode_page(cid, order, page)
+                )
+            return (await pages[page]).get("docs") or []
 
         async def download(index: int) -> tuple[int, Path] | None:
-            docs = pages[index // limit + 1]
+            docs = await docs_of(index // limit + 1)
             if index % limit >= len(docs):
                 return None
-            async with semaphore:
-                path = await self.cache.download(
-                    media_url(docs[index % limit]["media"])
-                )
+            path = await self.cache.download(media_url(docs[index % limit]["media"]))
             return (index + 1, path) if path else None
 
-        pictures = [p for p in await asyncio.gather(*map(download, indices)) if p]
+        pictures = await fetch_pages(
+            total,
+            n,
+            self.opts.concurrency,
+            download,
+            from_start=self.opts.from_start,
+            skip=skip,
+        )
         if not pictures:
             return None
         author = str(comic.get("author") or "").strip()

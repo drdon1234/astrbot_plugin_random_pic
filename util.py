@@ -6,15 +6,20 @@ from collections.abc import Awaitable, Callable, Hashable
 from typing import Any
 
 
-def pick_pages(total: int, n: int, *, from_start: bool, skip: float = 0.0) -> list[int]:
-    """按尝试顺序返回至多 n 个不重复的页（从 0 开始）。
+# 一个图集里有页下载失败时换别的页补上，多试的页数和要的张数一样多，但至少这么多页
+MIN_SPARE_PAGES = 2
 
-    from_start 时从第一页起依次取；否则跳过开头 skip 比例的页后随机取。
+
+def page_order(total: int, *, from_start: bool, skip: float = 0.0) -> list[int]:
+    """所有候选页（从 0 开始）的尝试顺序。
+
+    from_start 时从第一页起依次取；否则跳过开头 skip 比例的页后随机打乱。
     """
     if from_start:
-        return list(range(min(n, total)))
-    population = range(int(total * skip), total)
-    return random.sample(population, min(n, len(population)))
+        return list(range(total))
+    population = list(range(int(total * skip), total))
+    random.shuffle(population)
+    return population
 
 
 async def fill(
@@ -52,6 +57,33 @@ async def fill(
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
+
+
+async def fetch_pages(
+    total: int,
+    n: int,
+    concurrency: int,
+    fetch: Callable[[int], Awaitable[Any]],
+    *,
+    from_start: bool,
+    skip: float = 0.0,
+) -> list:
+    """按 page_order 的顺序并发调用 fetch(页)，凑够 n 个非 None 的结果。
+
+    某页失败（返回 None）时换下一页补上，最多多试 max(n, MIN_SPARE_PAGES) 页，
+    避免站点不可用时把整个图集都试一遍。结果按完成先后排列。
+    """
+    order = iter(page_order(total, from_start=from_start, skip=skip))
+
+    async def attempt():
+        index = next(order, None)
+        return None if index is None else await fetch(index)
+
+    results: list = []
+    attempts = min(total, n + max(n, MIN_SPARE_PAGES))
+    if n > 0 and attempts > 0:
+        await fill(results, n, attempts, concurrency, attempt)
+    return results
 
 
 async def shared(
