@@ -41,17 +41,19 @@ class WorkService:
         access: AccessControl,
         drawer: Drawer,
         tmp_dir: Path,
+        max_pages: int,
     ):
         self.sources = sources
         self.access = access
         self.drawer = drawer
         self.tmp = tmp_dir
+        self.max_pages = max_pages
         self._downloads = asyncio.Semaphore(DOWNLOAD_CONCURRENCY)
 
     async def lookup(
         self, ref: WorkRef, is_private: bool, user_id: str | None = None
     ) -> tuple[Source | None, Work | None, str]:
-        """查询作品并检查能否在这个会话发送，返回 (图源, 作品, 不能发送的原因)。"""
+        """查询作品并检查能否在这个会话发送（分级、过滤、页数上限），返回 (图源, 作品, 不能发送的原因)。"""
         source, why = self.sources.find(ref.source)
         if source is None:
             return None, None, f"{why}，无法获取完整作品。"
@@ -68,6 +70,12 @@ class WorkService:
         denied = self.access.work_gate(work, is_private, user_id)
         if denied:
             return None, None, denied
+        if work.pages > self.max_pages:
+            return (
+                None,
+                None,
+                f"作品有 {work.pages} 页，超过上限 {self.max_pages} 页，不予获取。",
+            )
         return source, work, ""
 
     async def random(

@@ -47,13 +47,7 @@ class SourceSet:
             min_stars=conf.ehentai.min_stars,
         )
         pica = Picacomic(
-            http,
-            cache,
-            content,
-            opts,
-            conf.pica.email,
-            conf.pica.password,
-            token_path=data_dir / "pica_token.json",
+            http, cache, content, opts, data_dir=data_dir, account=conf.pica.account
         )
         wordpress = [
             WordPressSource(site, http, cache, content, opts) for site in SITES

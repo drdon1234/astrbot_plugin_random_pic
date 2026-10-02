@@ -142,7 +142,11 @@ class RandomPicPlugin(Star):
             self.history, Composer(s.send.header, s.send.caption), s.send.mode
         )
         self.works = WorkService(
-            self.sources, self.access, self.drawer, data_dir / "work_tmp"
+            self.sources,
+            self.access,
+            self.drawer,
+            data_dir / "work_tmp",
+            s.whole.max_pages,
         )
         self.pdf = PdfStore(
             Path(s.whole.pdf_dir) if s.whole.pdf_dir else data_dir / "pdf",

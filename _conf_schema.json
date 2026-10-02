@@ -193,6 +193,12 @@
         ],
         "hint": "/pdf 始终发 PDF。非 QQ 平台改为 PDF。"
       },
+      "max_pages": {
+        "description": "最大页数",
+        "type": "int",
+        "default": 500,
+        "hint": "超过这个页数的作品不获取（有的 AI 作品上万页），随机抽到时换一个。"
+      },
       "pdf_dir": {
         "description": "PDF 存放目录",
         "type": "string",
@@ -374,14 +380,23 @@
             },
             "hint": "同一分级的三次元图源按比例混合。"
           },
+          "manual_account": {
+            "description": "手动配置账号",
+            "type": "bool",
+            "default": false,
+            "condition": {
+              "enabled": true
+            },
+            "hint": "关闭时插件自动注册并维护一个专用账号。"
+          },
           "email": {
             "description": "账号",
             "type": "string",
             "default": "",
             "condition": {
-              "enabled": true
-            },
-            "hint": "不填账号时不使用哔咔。"
+              "enabled": true,
+              "manual_account": true
+            }
           },
           "password": {
             "description": "密码",
@@ -389,7 +404,8 @@
             "default": "",
             "secret": true,
             "condition": {
-              "enabled": true
+              "enabled": true,
+              "manual_account": true
             }
           }
         }

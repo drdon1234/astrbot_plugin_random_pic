@@ -1,8 +1,9 @@
-"""哔咔漫画（PicACG）三次元图源：只用 Cosplay 分类，需要账号登录。
+"""哔咔漫画（PicACG）三次元图源：只用 Cosplay 分类，默认插件自动注册专用账号登录，也可以手动配置账号。
 
 接口是 App 用的 picaapi.picacomic.com，每个请求带 HMAC-SHA256 签名
 （路径 + 时间 + nonce + 方法 + api-key，转小写，密钥写死在 App 里），登录后带 token。
-- auth/sign-in：邮箱（用户名）+ 密码换 token，实测有效期 7 天，过期后接口返回 401；
+- auth/register：注册账号（用户名只能是字母数字，密码至少 8 位，还要昵称、生日、性别、三组密保）；
+- auth/sign-in：用户名 + 密码换 token，实测有效期 7 天，过期后接口返回 401；
 - comics?page=N&c=Cosplay&s=dd：分类列表，每页 20 本，带标签；
 - comics/advanced-search?page=N（POST 关键词和分类）：关键词搜索，结果格式同分类列表；
 - comics/{id}：本子详情（搜索结果缺标签时补标签）；
@@ -20,6 +21,7 @@ import hashlib
 import hmac
 import json
 import random
+import secrets
 import time
 import uuid
 from pathlib import Path
@@ -70,15 +72,22 @@ PAGES_CACHE_SIZE = 256
 LISTINGS_PER_ALBUM = 4
 # 搜索结果不带标签时，每页最多查这么多本的详情
 DETAIL_TRIES = 3
-# 登录失败（密码错误、被封）后这么久内不再尝试，避免每次抽卡都去登录
+# 默认插件自己注册一个专用账号（不占用用户的账号，也不用把密码写进配置），
+# 用户名、密码和 token 存到磁盘反复使用；也可以在配置里手动填账号。
+ACCOUNT_PREFIX = "rp"
+AUTO_STATE = "pica_account.json"
+MANUAL_STATE = "pica_token.json"
+# 登录失败（网络错误、手动账号密码错误等）后这么久内不再尝试，避免每次抽卡都去登录
 LOGIN_BACKOFF = 600
-# 登录被限流（错误码 1023 too many requests）后的冷却：首次 6 小时，之后每次翻倍，最多 24 小时。
-# 实测这个限制按账号计，只在密码正确时出现（密码错误照常返回 1004）；手机 App 保存了 token
-# 不必再登录，所以不受影响。冷却期间反复登录会让限制一直解除不了，所以冷却时间和 token
-# 一起存到磁盘，重载插件也不清零。
+# 注册失败、登录被限流（错误码 1023 too many requests）、专用账号失效后的冷却：
+# 注册 / 账号失效首次 1 小时，限流首次 6 小时，之后每次翻倍，最多 24 小时。
+# 实测登录限流按账号计，只在密码正确时出现，限流期间反复登录会让它一直解除不了；
+# 反复注册也会被限流。所以冷却时间和账号一起存到磁盘，重载插件也不清零。
 RATE_LIMIT_ERROR = "1023"
+BAD_ACCOUNT_ERROR = "1004"  # invalid email or password
+REGISTER_BACKOFF = 3600
 RATE_LIMIT_BACKOFF = 6 * 3600
-RATE_LIMIT_BACKOFF_MAX = 24 * 3600
+BACKOFF_MAX = 24 * 3600
 
 
 class PicaError(SourceError):
@@ -110,28 +119,40 @@ class Picacomic(Source):
         cache: ImageCache,
         content: ContentFilter,
         opts: DrawOptions,
-        email: str,
-        password: str,
-        token_path: Path | None = None,
+        data_dir: Path | None = None,
+        account: tuple[str, str] | None = None,
     ):
+        """account 是手动配置的 (账号, 密码)，None 时用插件自己注册维护的专用账号。"""
         super().__init__(cache, content, opts)
         self.http = http
-        self.email = email
-        self.password = password
+        self._manual = account is not None
+        # 当前账号：{"email", "password", "registered"}，专用账号还没生成时为 None
+        self._account: dict | None = None
+        if account is not None:
+            email, password = account
+            self._account = {"email": email, "password": password, "registered": True}
         self._token: str | None = None
-        # 登录失败后到这个时间（time.time()）之前不再登录；连续被限流的次数决定冷却多久
+        # 注册、登录失败后到这个时间（time.time()）之前不再尝试；连续失败的次数决定冷却多久
         self._blocked_until = 0.0
-        self._rate_limited = 0
+        self._failures = 0
         self._login_lock = asyncio.Lock()
         # 关键词（不带时为 ""，即整个分类）→ 列表总页数
         self._pages = TTLCache(LISTING_TTL, PAGES_CACHE_SIZE)
-        # token 和登录冷却存到磁盘，插件重载后不必重新登录（登录接口限流很严）
-        self._token_path = token_path
+        # 账号、token 和冷却存到磁盘，插件重载后不必重新注册、登录（两个接口限流都很严）。
+        # 专用账号和手动账号分开存，来回切换时专用账号不会丢
+        self._state_path = (
+            data_dir / (MANUAL_STATE if self._manual else AUTO_STATE)
+            if data_dir is not None
+            else None
+        )
         self._load_state()
 
     @property
     def unavailable(self) -> str | None:
-        return None if self.email and self.password else "没有填写哔咔账号"
+        account = self._account
+        if self._manual and not (account["email"] and account["password"]):
+            return "没有填写哔咔账号"
+        return None
 
     def accepts(self, ctx: DrawContext) -> bool:
         """只有 Cosplay 分类，不支持随机角色和 E-Hentai 标签语法；登录冷却期间不参与抽取。"""
@@ -146,63 +167,151 @@ class Picacomic(Source):
     def _login_blocked(self) -> bool:
         return self._token is None and time.time() < self._blocked_until
 
-    def _account_key(self) -> str:
-        return hashlib.sha256(self.email.encode()).hexdigest()
-
     def _credentials_key(self) -> str:
-        """登录冷却跟账号和密码绑定：改了密码就立即重试。"""
-        raw = f"{self.email}\0{self.password}"
+        """手动账号的状态跟账号和密码绑定（不存密码）：改了账号或密码就不用旧 token 和冷却。"""
+        raw = f"{self._account['email']}\0{self._account['password']}"
         return hashlib.sha256(raw.encode()).hexdigest()
 
     def _load_state(self):
-        if self._token_path is None:
+        if self._state_path is None:
             return
         try:
-            data = json.loads(self._token_path.read_text(encoding="utf-8"))
+            data = json.loads(self._state_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return
         if not isinstance(data, dict):
             return
-        if data.get("account") == self._account_key():
+        if self._manual:
+            if data.get("credentials") != self._credentials_key():
+                return
             self._token = data.get("token") or None
-        if data.get("credentials") == self._credentials_key():
-            try:
-                self._blocked_until = float(data.get("blocked_until") or 0)
-                self._rate_limited = int(data.get("rate_limited") or 0)
-            except (TypeError, ValueError):
-                pass
+        elif (
+            isinstance(account := data.get("account"), dict)
+            and isinstance(account.get("email"), str)
+            and isinstance(account.get("password"), str)
+        ):
+            self._account = {
+                "email": account["email"],
+                "password": account["password"],
+                "registered": bool(account.get("registered")),
+            }
+            self._token = data.get("token") or None
+        try:
+            self._blocked_until = float(data.get("blocked_until") or 0)
+            self._failures = int(data.get("failures") or 0)
+        except (TypeError, ValueError):
+            pass
 
     def _save_state(self):
-        if self._token_path is None:
+        if self._state_path is None:
             return
+        who = (
+            {"credentials": self._credentials_key()}
+            if self._manual
+            else {"account": self._account}
+        )
         state = {
-            "account": self._account_key(),
+            **who,
             "token": self._token,
-            "credentials": self._credentials_key(),
             "blocked_until": self._blocked_until,
-            "rate_limited": self._rate_limited,
+            "failures": self._failures,
         }
         try:
-            self._token_path.parent.mkdir(parents=True, exist_ok=True)
-            self._token_path.write_text(json.dumps(state), encoding="utf-8")
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            self._state_path.write_text(json.dumps(state), encoding="utf-8")
         except OSError as e:
-            logger.warning(f"[random_pic] 保存哔咔登录状态失败: {e!r}")
+            logger.warning(f"[random_pic] 保存哔咔账号失败: {e!r}")
 
     def _blocked_text(self) -> str:
         return time.strftime("%m-%d %H:%M", time.localtime(self._blocked_until))
 
-    def _block_login(self, error: object):
-        """记下一次登录失败，算出下次可以登录的时间。"""
-        if str(error) == RATE_LIMIT_ERROR:
-            self._rate_limited += 1
-            delay = min(
-                RATE_LIMIT_BACKOFF_MAX,
-                RATE_LIMIT_BACKOFF * 2 ** (self._rate_limited - 1),
-            )
+    def _block(self, base: float, grow: bool = True):
+        """记下一次失败，算出下次可以尝试的时间。grow 为 False 时固定冷却 base 秒。"""
+        if grow:
+            self._failures += 1
+            delay = min(BACKOFF_MAX, base * 2 ** (self._failures - 1))
         else:
-            delay = LOGIN_BACKOFF
+            delay = base
         self._blocked_until = time.time() + delay
         self._save_state()
+
+    def _fail(self, what: str, reason: object) -> PicaError:
+        return PicaError(f"哔咔{what}失败：{reason}，{self._blocked_text()} 后再试")
+
+    async def _register(self):
+        """注册专用账号。账号在发请求前就存到磁盘：响应丢失时下次按「已存在」处理，不会再注册一个。"""
+        if self._account is None:
+            name = ACCOUNT_PREFIX + secrets.token_hex(5)
+            self._account = {
+                "email": name,
+                "password": secrets.token_hex(8),
+                "registered": False,
+            }
+            self._save_state()
+        account = self._account
+        body = {
+            "email": account["email"],
+            "password": account["password"],
+            "name": account["email"],
+            "birthday": "2000-01-01",
+            "gender": "m",
+            "question1": "1",
+            "question2": "2",
+            "question3": "3",
+            "answer1": "1",
+            "answer2": "2",
+            "answer3": "3",
+        }
+        try:
+            status, data = await self._send("POST", "auth/register", body)
+        except Exception as e:
+            self._block(LOGIN_BACKOFF, grow=False)
+            raise self._fail("注册", repr(e)) from e
+        message = str(data.get("message") or "")
+        # 「email is already exist」：上次注册其实成功了，只是没收到响应
+        if status != 200 and "already exist" not in message:
+            self._block(REGISTER_BACKOFF)
+            raise self._fail("注册", message or status)
+        account["registered"] = True
+        self._save_state()
+        logger.info(f"[random_pic] 已注册哔咔专用账号 {account['email']}")
+
+    async def _login(self, stale: str | None):
+        async with self._login_lock:
+            if self._token != stale:
+                return  # 等锁期间别的请求已经重新登录过
+            if time.time() < self._blocked_until:
+                raise PicaError(f"哔咔登录失败，{self._blocked_text()} 后再试")
+            self._token = None
+            if self._account is None or not self._account["registered"]:
+                await self._register()
+            account = self._account
+            try:
+                status, data = await self._send(
+                    "POST",
+                    "auth/sign-in",
+                    {"email": account["email"], "password": account["password"]},
+                )
+            except Exception as e:
+                self._block(LOGIN_BACKOFF, grow=False)
+                raise self._fail("登录", repr(e)) from e
+            token = (data.get("data") or {}).get("token")
+            if status != 200 or not token:
+                error = str(data.get("error"))
+                if error == RATE_LIMIT_ERROR:
+                    self._block(RATE_LIMIT_BACKOFF)
+                elif error == BAD_ACCOUNT_ERROR and not self._manual:
+                    # 专用账号不存在或密码不对（「已存在」的其实是别人的账号）：冷却后重新注册
+                    self._account = None
+                    self._block(REGISTER_BACKOFF)
+                else:
+                    self._block(LOGIN_BACKOFF, grow=False)
+                raise self._fail("登录", data.get("message") or status)
+            self._token = token
+            self._blocked_until = 0.0
+            self._failures = 0
+            self._save_state()
+            logger.info("[random_pic] 哔咔登录成功")
 
     async def _send(
         self, method: str, path: str, body: dict | None
@@ -225,29 +334,6 @@ class Picacomic(Source):
             except ValueError:
                 data = {"message": text[:200]}
             return resp.status, data if isinstance(data, dict) else {}
-
-    async def _login(self, stale: str | None):
-        async with self._login_lock:
-            if self._token != stale:
-                return  # 等锁期间别的请求已经重新登录过
-            if time.time() < self._blocked_until:
-                raise PicaError(f"哔咔登录失败，{self._blocked_text()} 后再试")
-            self._token = None
-            status, data = await self._send(
-                "POST", "auth/sign-in", {"email": self.email, "password": self.password}
-            )
-            token = (data.get("data") or {}).get("token")
-            if status != 200 or not token:
-                self._block_login(data.get("error"))
-                raise PicaError(
-                    f"哔咔登录失败：{data.get('message') or status}，"
-                    f"{self._blocked_text()} 后再试"
-                )
-            self._token = token
-            self._blocked_until = 0.0
-            self._rate_limited = 0
-            self._save_state()
-            logger.info("[random_pic] 哔咔登录成功")
 
     async def _request(self, path: str, body: dict | None = None) -> dict:
         """带 token 的请求（有 body 时为 POST），返回响应里的 data。token 过期时重新登录一次。"""

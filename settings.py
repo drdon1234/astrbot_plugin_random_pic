@@ -144,7 +144,11 @@ class Send:
 class Whole:
     enabled: bool
     default_format: str
+    max_pages: int
     pdf_dir: str
+
+    def __post_init__(self):
+        self.max_pages = _clamp(self.max_pages, 1)
 
 
 @dataclass(kw_only=True)
@@ -197,8 +201,14 @@ class EHentaiSite(Site):
 
 @dataclass(kw_only=True)
 class PicaSite(Site):
+    manual_account: bool
     email: str
     password: str
+
+    @property
+    def account(self) -> tuple[str, str] | None:
+        """手动配置的账号；None 表示用插件自己注册维护的账号。"""
+        return (self.email, self.password) if self.manual_account else None
 
 
 @dataclass(kw_only=True)
