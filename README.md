@@ -5,7 +5,7 @@ AstrBot 随机抽图插件。图片按两个维度划分：
 - **风格**：二次元 / 三次元（Cosplay 与真人写真）
 - **分级**：擦边 / R18（R18 仅私聊；可用「内容分级」开关整体关闭）
 
-二次元来自 [Danbooru](#danbooru)（按用户投票分筛选的高分插画）；三次元从 E-Hentai / ExHentai、[哔咔](#哔咔)、[CosplayTele](#cosplaytele)、[XiuRen](#xiuren) 和 [禁漫天堂](#禁漫天堂) 中选（默认均分，可手动配置比例）。不带关键词就是在整个池子里完全随机。
+二次元来自 [Danbooru](#danbooru)（按用户投票分筛选的高分插画）；三次元从 E-Hentai / ExHentai、[哔咔](#哔咔)、[CosplayTele](#cosplaytele)、[NudeCosplay](#nudecosplay)、[XiuRen](#xiuren)、[PixiBB](#pixibb) 和 [禁漫天堂](#禁漫天堂) 中选（默认均分，可手动配置比例）。不带关键词就是在整个池子里完全随机。
 
 一次抽卡抽若干个**图集**，每个图集是同一个画廊 / 帖子 / 本子里的几张图。每个图集第一张图上方有两行标题，后面的图上方只有页码：
 
@@ -19,7 +19,7 @@ AstrBot 随机抽图插件。图片按两个维度划分：
 画廊：https://e-hentai.org/g/…
 ```
 
-即这次抽卡的第 2 个图集，来自 E-Hentai（来源还有 ExHentai、哔咔、CosplayTele、XiuRen），两张图是该作品 42 张里的第 15、31 张，最后是说明文字。标题行和说明文字都可以关闭。
+即这次抽卡的第 2 个图集，来自 E-Hentai（来源还有 ExHentai、哔咔、CosplayTele、NudeCosplay、XiuRen、PixiBB、禁漫天堂），两张图是该作品 42 张里的第 15、31 张，最后是说明文字。标题行和说明文字都可以关闭。
 
 ## 指令
 
@@ -81,7 +81,7 @@ QQ 拒发（NapCat 发送接口报错，常见于群聊里裸露较多的图）�
 | 图源 | 整个作品是 | 链接 |
 |---|---|---|
 | E-Hentai / ExHentai | 整个画廊 | `https://e-hentai.org/g/123/abcdef0123/` |
-| CosplayTele、XiuRen | 整个帖子（一套写真，通常 30~150 张） | `https://cosplaytele.com/hiyuki-2/`、`https://xiuren.biz/xxx/` |
+| CosplayTele、NudeCosplay、XiuRen、PixiBB | 整个帖子（一套写真，通常 30~150 张） | `https://cosplaytele.com/hiyuki-2/`、`https://xiuren.biz/xxx/`、`https://sexy.pixibb.com/xxx/`（PixiBB 的各个子域名都认） |
 | 哔咔 | 整本，所有话按顺序连起来 | 没有公开链接，只能回复抽图发出的消息 |
 | 禁漫天堂 | 整本，所有章节按顺序连起来 | `https://18comic.vip/album/123456`（域名里带 `18comic` 或 `jm` 的都认） |
 | Danbooru | 这个帖子和它的差分（父帖子、子帖子），按发布顺序 | `https://danbooru.donmai.us/posts/123` |
@@ -92,7 +92,7 @@ QQ 拒发（NapCat 发送接口报错，常见于群聊里裸露较多的图）�
 2. 回复的消息。QQ（OneBot）上插件自己调用发送接口，记下每条发出消息的 ID 和其中的图集（包括图源和作品 id），回复时按消息 ID 直接查（NapCat 发出的合并转发读回来是一张卡片，读不到内容，所以不依赖消息内容）。查不到时（AstrBot 代发、其他平台）解析被回复消息的文字：按 `【序号】` 标题行分段，在说明文字里找作品链接（哔咔没有链接，这种情况下打包不了）。**回复的消息里有多个图集时必须带序号**，即 `【】` 里的数字，例如 `/pdf 2`；不带时插件列出每个图集的序号和标题。
 3. 不回复任何消息时，用本会话上一次抽卡（能打包的图集都来自同一个作品时可以不带序号）。
 
-- 分级闸门与抽图相同：E-Hentai 按画廊的分类和标签、哔咔按「無H內容」标签、CosplayTele 按站点分类判定分级，禁漫天堂按「无H」「无漏」一类标签，XiuRen 为擦边，无法判定的按 R18 处理；R18 作品只能在私聊打包。命中黑名单、带重口标签、没有标签（E-Hentai、哔咔）或属于站点 AI 分类（CosplayTele、XiuRen）、带禁漫排除标签的作品不予打包。
+- 分级闸门与抽图相同：E-Hentai 按画廊的分类和标签、哔咔按「無H內容」标签、CosplayTele、NudeCosplay 按站点分类判定分级，禁漫天堂按「无H」「无漏」一类标签，XiuRen 为擦边，PixiBB 和无法判定的按 R18 处理；R18 作品只能在私聊打包。命中黑名单、带重口标签、没有标签（E-Hentai、哔咔）或属于站点排除的分类 / 标签（各写真站的 AI 分类，PixiBB 的街拍、福利姬订阅）、带禁漫排除标签的作品不予打包。
 - Danbooru 的差分逐张过滤（黑名单、`danbooru.exclude_tags`、多为儿童设定的角色、动图），过滤掉的不打包；剩下的有任何一张是 q、e 时整组按 R18。没有差分时 PDF 只有这一张图。
 - 超过 `pdf.pages_per_file`（默认 200）页时分成多个 PDF 依次发送，文件名标出页码范围，例如 `标题 (1-200).pdf`。E-Hentai 每页都要单独请求、受请求间隔限制，页数越多越慢，也越消耗图片额度；其他图源一次拿到全部图片地址，只花下载时间（实测 110 张的 CosplayTele 帖子约 7 秒）。
 - **压缩图片**（`pdf.compress`，默认开启）：每页转成 `pdf.jpeg_quality`（默认 85）质量的 JPEG，PDF 更小；原图是 JPEG 且转换后不会更小时保留原图，透明背景铺白，动图取第一帧。关闭后 JPEG 页面原样放入，其他格式（E-Hentai 现在多是 webp）按质量 95 转成 JPEG，因为 PDF 只能放 JPEG。改了设置后，已经打包的 PDF 不会重新生成。抽图发送的图片始终是原图（实测 E-Hentai 的 webp 转成 JPEG 85 反而大一倍）。
@@ -125,11 +125,12 @@ QQ 拒发（NapCat 发送接口报错，常见于群聊里裸露较多的图）�
 | Danbooru | 二次元 | 支持（Danbooru 补全中文、日文名，最多 2 个） | 支持 | 按帖子分级 |
 | E-Hentai | 三次元 | 支持（中文经标签库翻译，也可写 E-Hentai 语法） | 支持 | 按分类和标签判定 |
 | 哔咔 | 三次元 | 普通关键词（不支持 `:` `$` `"` 标签语法） | 不支持 | 按「無H內容」标签 |
-| CosplayTele | 三次元 | 支持（中文先经标签库翻译成英文名） | 不支持 | 按站点分类 |
+| CosplayTele、NudeCosplay | 三次元 | 支持（中文先经标签库翻译成英文名） | 不支持 | 按站点分类 |
 | XiuRen | 三次元（仅擦边） | 支持（原样搜索，E-Hentai 标签取出标签名） | 不支持 | 全部为擦边 |
+| PixiBB | 三次元（仅 R18） | 支持（原词和英文翻译都搜，用结果多的） | 不支持 | 分级混杂，全部按 R18 |
 | 禁漫天堂 | 三次元（仅 R18） | 普通关键词（不支持 `:` `$` `"` 标签语法） | 不支持 | 按「无H」「无漏」一类标签，实际几乎都是 R18 |
 
-二次元全部来自 Danbooru，没抽够时不由其他图源补。三次元的每个图集从这次能用的图源里选一个：默认均分；开启 `sources.custom_weights`（手动配置比例）后，WebUI 才显示各图源的权重项，按权重分配。某个图源这次不能用时不参与分配，它的份额由其余可用图源分掉。例如只开 E-Hentai、哔咔、CosplayTele 并配置 34 / 33 / 33 时，带 `cosplayer:"xxx$"` 哔咔不能用，E-Hentai 和 CosplayTele（取出标签名 `xxx` 搜索）按 34 : 33 分；`/随机角色` 只有 E-Hentai 能用；R18 时 XiuRen 不参与，擦边时禁漫天堂不参与。能用的图源权重都为 0 时全部从 E-Hentai 抽。关键词命中黑名单或屏蔽的重口标签时，所有图源都直接拒绝（原词和翻译后的标签都检查）。
+二次元全部来自 Danbooru，没抽够时不由其他图源补。三次元的每个图集从这次能用的图源里选一个：默认均分；开启 `sources.custom_weights`（手动配置比例）后，WebUI 才显示各图源的权重项，按权重分配。某个图源这次不能用时不参与分配，它的份额由其余可用图源分掉。例如只开 E-Hentai、哔咔、CosplayTele 并配置 34 / 33 / 33 时，带 `cosplayer:"xxx$"` 哔咔不能用，E-Hentai 和 CosplayTele（取出标签名 `xxx` 搜索）按 34 : 33 分；`/随机角色` 只有 E-Hentai 能用；R18 时 XiuRen 不参与，擦边时 PixiBB 和禁漫天堂不参与。能用的图源权重都为 0 时全部从 E-Hentai 抽。关键词命中黑名单或屏蔽的重口标签时，所有图源都直接拒绝（原词和翻译后的标签都检查）。
 
 ### Danbooru
 
@@ -181,6 +182,13 @@ E-Hentai 只用于三次元（2026-10 起二次元改用 Danbooru：E-Hentai 的
 - 关键词先经标签库翻译，E-Hentai 标签取出标签名再搜索（`芙莉莲` → `frieren`），因为站点的标题和标签是英文角色 / 作品名；`-` 开头的词在本地按标题、分类和标签排除。没有标签库时原样搜索。
 - 一个帖子是一个图集，说明文字为标签和帖子链接。未成年内容过滤检查标题、分类和标签。
 
+### NudeCosplay
+
+[nudecosplay.biz](https://nudecosplay.biz) 的 Cosplay 写真（约 5000 套，以欧美、东南亚和中国 Coser 为主，和 CosplayTele 约 1/4 重复）。
+
+- **分级看站点分类**：与 CosplayTele 相同，「Ero Cosplay」为擦边，「Nude」为 R18，同时在两边的按 R18；排除站点的「Waifu AI」分类。2026-10 抽样目检：擦边分类 21 张随机页 20 张达到擦边（1 张露点，和 CosplayTele 的水平相当）；R18 分类约一半单页露点。
+- 关键词处理和 CosplayTele 一样先翻译成英文角色 / 作品名（站点标题只有英文）。
+
 ### XiuRen
 
 [xiuren.biz](https://xiuren.biz) 收录的秀人、尤蜜、语画界等工作室棚拍写真（约 1 万套），**只用于擦边**（2026-10 抽样目检 24 张随机页 21 张达到擦边，没有分级分类，少数套图有手遮胸一类的半裸页）。排除站点的「AI Generated」分类和标签。
@@ -188,7 +196,16 @@ E-Hentai 只用于三次元（2026-10 起二次元改用 Danbooru：E-Hentai 的
 - 关键词原样搜索（标题多是中文模特名，例如 `鱼子酱`），不经标签库翻译；E-Hentai 标签写法取出标签名搜索。
 - 一个帖子是一个图集，说明文字为标签和帖子链接。
 
-两个站都是 WordPress，插件调用公开的 REST 接口 `/wp-json/wp/v2/posts`：`per_page=1&page=N` 取第 N 个帖子，响应头 `X-WP-Total` 是符合条件的帖子数（缓存 1 小时，带关键词时 10 分钟），所以随机抽一个帖子只要一次请求，图集之间完全并发；正文里的 `<img>` 就是整套图，没有防盗链。站点改版失效时开启手动配置比例、把权重设为 0 即可。
+### PixiBB
+
+[pixibb.com](https://sexy.pixibb.com)（sexy.、cosplay.、hub. 等子域名是同一个站）的「Cosplay」和「Sexy Girls」分类（约 2.3 万套，2023 年起持续更新，每月新增上千套；Cosplay 多为中国和欧美 Coser，Sexy Girls 是秀人等工作室、日本写真集和韩国写真），**只用于 R18**（关闭内容分级时不限）。
+
+- 2026-10 抽样目检：两个分类都达到擦边，但**都混着露点的套图**——Cosplay 24 张随机页有 6 张露点甚至露阴（多是 OnlyFans、Fansly 的套图），Sexy Girls 多为内衣写真、也有露点。站点没有可靠的分级依据，所以全部按 R18 处理，擦边请求不用 PixiBB。
+- 排除街拍（`精选街拍作品`，路人偷拍）、`OtherXXX`（福利姬订阅内容，年龄无法确认）、AI 生成 / AI 增强的帖子，以及 AI Lookbook、Anime、Almost Real、Toon Girls 分类。
+- 标题中英文混杂（`黏黏团子兔: 鸣潮-琳奈`、`ZinieQ: Kantai Collection Kashima`），所以关键词的原词和标签库翻译后的英文都搜，用帖子多的那个（例如 `原神` 搜英文 423 套、原词 77 套；`女仆` 原词 327 套、英文 140 套）；排除词两种都用。
+- 图片长边约 1400px，带 PixiBB 水印。
+
+这几个站都是 WordPress，插件调用公开的 REST 接口 `/wp-json/wp/v2/posts`：`per_page=1&page=N` 取第 N 个帖子，响应头 `X-WP-Total` 是符合条件的帖子数（缓存 1 小时，带关键词时 10 分钟），所以随机抽一个帖子只要一次请求，图集之间完全并发；正文里的 `<img>` 就是整套图，没有防盗链。站点改版失效时开启手动配置比例、把权重设为 0 即可。
 
 ### 禁漫天堂
 
@@ -212,8 +229,8 @@ E-Hentai 只用于三次元（2026-10 起二次元改用 Danbooru：E-Hentai 的
    - 带任一裸露 / 性内容标签为 R18：`other:nudity only`、`uncensored`、`mosaic censorship`、`full censorship`、`hardcore`、`no penetration`、`object insertion only`（打码类标签只用于露出性器官的画廊，和 `non-nude` 同时出现时以 R18 为准）；否则带 `other:non-nude` 为擦边；都不满足时无法判定、直接丢弃。
    - 抽样（500 个 Cosplay 画廊）：约 78% 带 `non-nude`，约 20% 带裸露 / 性内容标签，约 2% 两者都没有。
    - 标签是画廊级的：R18 画廊里的随机一页可能还穿着衣服。
-   - 其他图源：Danbooru 按帖子分级，哔咔按「無H內容」标签，禁漫天堂按「无H」一类标签，CosplayTele 按站点分类，XiuRen 全部为擦边，结果阶段同样复核。
-3. **未成年内容过滤**：命中黑名单就丢弃重抽，没有标签的作品也丢弃（CosplayTele、XiuRen 是真人写真站，没有可靠的标签，检查标题、简介和站点的分类 / 标签名称）；每次 E-Hentai 搜索还会排除 `lolicon`、`shotacon` 等标签（里站能搜到这类画廊）；Danbooru 另外排除多为儿童设定的角色（见 [Danbooru](#danbooru)）。内置基线黑名单不可删除，只能用 `draw.extra_blacklist` 追加：
+   - 其他图源：Danbooru 按帖子分级，哔咔按「無H內容」标签，禁漫天堂按「无H」一类标签，CosplayTele、NudeCosplay 按站点分类，XiuRen 全部为擦边，PixiBB 全部为 R18，结果阶段同样复核。
+3. **未成年内容过滤**：命中黑名单就丢弃重抽，没有标签的作品也丢弃（各写真站是真人写真，没有可靠的标签，检查标题、简介和站点的分类 / 标签名称）；每次 E-Hentai 搜索还会排除 `lolicon`、`shotacon` 等标签（里站能搜到这类画廊）；Danbooru 另外排除多为儿童设定的角色（见 [Danbooru](#danbooru)）。内置基线黑名单不可删除，只能用 `draw.extra_blacklist` 追加：
    `loli, lolicon, shota, shotacon, toddlercon, child, female_child, male_child, toddler, randoseru, kindergarten uniform, age regression, 萝莉, 蘿莉, 正太, 幼女, 幼児, ロリ, ショタ`
    英文词按整词匹配（`female:lolicon` 命中，`lolita fashion` 不会），中日文词按子串匹配，都忽略大小写。
 4. **屏蔽重口**（`draw.block_heavy`，默认开启）：带 `draw.heavy_tags` 中任一标签（E-Hentai 按标签名匹配 `female` / `male` / `mixed` 命名空间，Danbooru 直接按标签名匹配）的作品不会被抽到，也不能打包；关键词本身是这类标签时（如 `抽图 猎奇`，中文先翻译成标签）直接拒绝，不带命名空间的英文词是标题搜索（`blood` 可能在找《Blood+》），不拒绝。默认列表包括猎奇、杀害、截肢、身体改造、吞食、粪便、呕吐、拷打、血液、凌虐、兽交、虫类、尿布等；实测 E-Hentai 二次元 R18 画廊约 9% 带这类标签。
@@ -229,7 +246,7 @@ E-Hentai 只用于三次元（2026-10 起二次元改用 Danbooru：E-Hentai 的
 | `send` 发送 | 发送方式、标题行、说明文字 |
 | `push` 定时推送 | 启用、推送间隔、推送群、推送用户、推送内容、完整图集发送方式 |
 | `draw` 取图与过滤 | 取图位置、R18 跳过开头比例、追加黑名单、屏蔽重口及重口标签 |
-| `sources` 三次元图源比例 | 手动配置比例开关；开启后才出现 E-Hentai、哔咔、CosplayTele、XiuRen、禁漫天堂的权重 |
+| `sources` 三次元图源比例 | 手动配置比例开关；开启后才出现 E-Hentai、哔咔、CosplayTele、XiuRen、NudeCosplay、PixiBB、禁漫天堂的权重 |
 | `network` 网络与缓存 | HTTP 代理（所有图源和标签库共用）、请求超时、并发数、单张图片上限、图片缓存上限 |
 | `danbooru` 二次元 | 最低评分、排除的标签 |
 | `ehentai` 三次元 | 站点、cookie、最低评分、排除 AI、最少页数、请求间隔 |

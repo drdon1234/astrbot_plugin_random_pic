@@ -95,6 +95,8 @@ SOURCE_NAMES = {
     "pica": "哔咔",
     "cosplaytele": "CosplayTele",
     "xiuren": "XiuRen",
+    "nudecosplay": "NudeCosplay",
+    "pixibb": "PixiBB",
     "jmcomic": "禁漫天堂",
     "danbooru": "Danbooru",
 }
@@ -810,12 +812,7 @@ class RandomPicPlugin(Star):
         if self.pica_enabled:
             lines.append("三次元部分图集来自哔咔的 Cosplay 分类（可搜普通关键词）")
         weights = s.sources.weights
-        if weights["cosplaytele"]:
-            lines.append(
-                "三次元部分图集来自 CosplayTele 的 Cosplay 写真（可搜角色、作品名）"
-            )
-        if weights["xiuren"]:
-            lines.append("三次元擦边部分图集来自 XiuRen 的工作室写真")
+        lines += [site.help for site in WP_SITES if weights[site.key]]
         if self.jm and weights["jmcomic"]:
             lines.append(
                 "三次元 R18 部分图集来自禁漫天堂的 Cosplay 分类（可搜普通关键词）"

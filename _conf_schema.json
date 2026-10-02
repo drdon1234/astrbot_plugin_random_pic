@@ -278,6 +278,20 @@
         "condition": {"custom_weights": true},
         "hint": "xiuren.biz：约 1 万套秀人、尤蜜等工作室的棚拍写真，只用于擦边。关键词原样搜索（标题多为中文模特名）。设为 0 即不用。"
       },
+      "nudecosplay": {
+        "description": "NudeCosplay 权重",
+        "type": "int",
+        "default": 33,
+        "condition": {"custom_weights": true},
+        "hint": "nudecosplay.biz：约 5000 套 Cosplay 写真（与 CosplayTele 约 1/4 重复），按站点分类定分级（Ero Cosplay 为擦边，Nude 为 R18）。关键词先经标签库翻译成英文的角色 / 作品名再搜索。设为 0 即不用。"
+      },
+      "pixibb": {
+        "description": "PixiBB 权重",
+        "type": "int",
+        "default": 33,
+        "condition": {"custom_weights": true},
+        "hint": "pixibb.com：约 2.3 万套 Cosplay 和写真，两个分类都混有露点套图，只用于 R18（关闭内容分级时不限）。排除街拍、福利姬订阅内容和 AI 图。关键词原词和英文翻译都搜，用结果多的。设为 0 即不用。"
+      },
       "jmcomic": {
         "description": "禁漫天堂权重",
         "type": "int",
@@ -295,7 +309,7 @@
         "description": "HTTP 代理",
         "type": "string",
         "default": "",
-        "hint": "例如 http://127.0.0.1:7890，留空则直连。Danbooru、E-Hentai、哔咔、CosplayTele、XiuRen 和标签库下载都走这个代理。"
+        "hint": "例如 http://127.0.0.1:7890，留空则直连。Danbooru、E-Hentai、哔咔、各写真站、禁漫天堂和标签库下载都走这个代理。"
       },
       "timeout": {
         "description": "请求超时（秒）",

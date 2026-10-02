@@ -39,6 +39,19 @@ WORK_URLS = (
         "xiuren",
         re.compile(r"https?://(?:www\.)?xiuren\.biz/([\w%-]+)/?(?![\w%/-])", re.ASCII),
     ),
+    (
+        "nudecosplay",
+        re.compile(
+            r"https?://(?:www\.)?nudecosplay\.biz/([\w%-]+)/?(?![\w%/-])", re.ASCII
+        ),
+    ),
+    # PixiBB 的 sexy.、cosplay.、hub. 等子域名是同一个站
+    (
+        "pixibb",
+        re.compile(
+            r"https?://(?:[\w-]+\.)?pixibb\.com/([\w%-]+)/?(?![\w%/-])", re.ASCII
+        ),
+    ),
     # 禁漫的域名经常更换，认域名里带 18comic、jm 的
     (
         "jmcomic",

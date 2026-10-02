@@ -29,7 +29,7 @@ class DrawRequest:
 class WorkRef:
     """一个作品（E-Hentai 画廊、帖子、本子），/pdf 用。"""
 
-    source: str  # 图源键：ehentai、pica、cosplaytele、xiuren、danbooru
+    source: str  # 图源键：ehentai、pica、danbooru、jmcomic、WordPress 站点的 Site.key
     id: str  # 作品 id；WordPress 站点从链接认出时可能是帖子的 slug
     token: str = ""  # E-Hentai 画廊的 token
 
