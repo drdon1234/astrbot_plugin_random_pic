@@ -3,6 +3,7 @@
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 
@@ -147,10 +148,12 @@ class Pusher:
         works: WorkService,
         pdf: PdfStore,
         make_request: Callable[[list[str]], DrawRequest],
+        reserve=None,
     ):
-        """make_request(参数) 按 /抽图 的规则把推送内容解析成请求。"""
+        """make_request(参数) 按 /抽图 的规则把推送内容解析成请求；reserve 是预备池（可选）。"""
         self.context = context
         self.drawer = drawer
+        self.reserve = reserve
         self.access = access
         self.dispatcher = dispatcher
         self.works = works
@@ -236,26 +239,33 @@ class Pusher:
         if req.whole:
             failed, total = await self._push_work(target, umo, req, bot, send, when)
         else:
-            result = await self.drawer.draw(
-                req, self.access.explicit_allowed(is_private)
-            )
-            if not result.albums:
-                logger.warning(
-                    f"[random_pic] 定时推送到{target}抽图失败 {req}: {result.reason()}"
+            allow = self.access.explicit_allowed(is_private)
+            async with self._draw(req, allow) as result:
+                if not result.albums:
+                    logger.warning(
+                        f"[random_pic] 定时推送到{target}抽图失败 {req}: {result.reason()}"
+                    )
+                    return
+                await self._announce(
+                    send,
+                    f"{push_title(when)}：{STYLE_NAMES[req.style]}·{RATING_NAMES[req.rating]}，"
+                    f"{len(result.albums)} 个图集共 {result.images} 张。",
                 )
-                return
-            await self._announce(
-                send,
-                f"{push_title(when)}：{STYLE_NAMES[req.style]}·{RATING_NAMES[req.rating]}，"
-                f"{len(result.albums)} 个图集共 {result.images} 张。",
-            )
-            failed, total = await self.dispatcher.deliver(
-                result.albums, umo, ONEBOT, await self._self_id(bot), send
-            )
+                failed, total = await self.dispatcher.deliver(
+                    result.albums, umo, ONEBOT, await self._self_id(bot), send
+                )
         if failed:
             logger.warning(
                 f"[random_pic] 定时推送到{target}：{failed}/{total} 条消息发送失败"
             )
+
+    @asynccontextmanager
+    async def _draw(self, req: DrawRequest, allow_explicit: bool):
+        if self.reserve is None:
+            yield await self.drawer.draw(req, allow_explicit)
+            return
+        async with self.reserve.draw(req, allow_explicit, self.drawer.draw) as result:
+            yield result
 
     async def _push_work(
         self, target: Target, umo: str, req: DrawRequest, bot, send: Send, when: str

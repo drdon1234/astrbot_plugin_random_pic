@@ -87,6 +87,7 @@ class Draw:
     album_count: int
     images_per_album: int
     max_images: int
+    reserve_batches: int
     page_pick: str
     aliases: bool
     no_prefix: bool
@@ -95,6 +96,7 @@ class Draw:
         self.album_count = _clamp(self.album_count, 1)
         self.images_per_album = _clamp(self.images_per_album, 1)
         self.max_images = _clamp(self.max_images, 1)
+        self.reserve_batches = _clamp(self.reserve_batches, 0)
 
     @property
     def style(self) -> str:

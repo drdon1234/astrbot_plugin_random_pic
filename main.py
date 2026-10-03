@@ -31,6 +31,7 @@ from .models import (
 )
 from .net import HttpClient, ImageCache
 from .pdf import PdfError, PdfStore
+from .pool import Reserve
 from .push import Pusher
 from .sender import (
     FORWARD_MAX_NODES,
@@ -137,6 +138,7 @@ class RandomPicPlugin(Star):
         )
         self.tagdb = TagDB(self.http, data_dir / "ehtag.json.gz")
         self.drawer = Drawer(self.sources, self.content, self.tagdb)
+        self.reserve = self._reserve(data_dir / "reserve")
         self.history = History(data_dir / "sent_albums.json")
         self.dispatcher = Dispatcher(
             self.history, Composer(s.send.header, s.send.caption), s.send.mode
@@ -162,20 +164,49 @@ class RandomPicPlugin(Star):
             self.works,
             self.pdf,
             lambda tokens: self._request("抽图", tokens),
+            self.reserve,
         )
         self._preload: asyncio.Task | None = None
 
     async def initialize(self):
         # 后台预加载标签库，避免第一次抽卡时等待下载
         self._preload = asyncio.create_task(self.tagdb.get())
+        self.reserve.start()
         self.pusher.start()
 
     async def terminate(self):
         if self._preload and not self._preload.done():
             self._preload.cancel()
         self.pusher.stop()
+        self.reserve.stop()
         await self.http.close()
         await self.sources.close()
+
+    def _reserve(self, root: Path) -> Reserve:
+        """按默认抽图参数维护擦边、R18 预备池（R18 群聊私聊都不允许时不维护）。"""
+        s = self.settings
+        default = self._request("抽图", [])
+        ratings = [SENSITIVE]
+        if s.access.group_r18 or s.access.private_r18:
+            ratings.append(EXPLICIT)
+        allowed = {
+            rating: {
+                source.key
+                for source, _ in self.sources.drawing
+                if source.style == default.style and rating in source.usable_ratings
+            }
+            for rating in ratings
+        }
+        return Reserve(
+            lambda req, allow: self.drawer.draw(req, allow),
+            root,
+            s.draw.reserve_batches,
+            default.style,
+            default.albums,
+            default.per_album,
+            ratings,
+            allowed,
+        )
 
     @filter.command("抽图")
     async def draw_pic(self, event: AstrMessageEvent):
@@ -293,34 +324,34 @@ class RandomPicPlugin(Star):
                 yield result
             return
 
-        result = await self.drawer.draw(
-            req, self.access.explicit_allowed(is_private, user_id)
-        )
-        if not result.albums:
-            logger.warning(f"[random_pic] 获取失败 {req}: {result.reason()}")
-            yield event.plain_result(
-                f"获取{STYLE_NAMES[req.style]}·{RATING_NAMES[req.rating]}图片失败："
-                f"{result.reason()}"
-            )
-            return
+        async with self.reserve.draw(
+            req, self.access.explicit_allowed(is_private, user_id), self.drawer.draw
+        ) as result:
+            if not result.albums:
+                logger.warning(f"[random_pic] 获取失败 {req}: {result.reason()}")
+                yield event.plain_result(
+                    f"获取{STYLE_NAMES[req.style]}·{RATING_NAMES[req.rating]}图片失败："
+                    f"{result.reason()}"
+                )
+                return
 
-        self.access.used(user_id, result.images)
-        sender, fallback = self._sender(event)
-        failed, total = await self.dispatcher.deliver(
-            result.albums,
-            event.unified_msg_origin,
-            event.get_platform_name(),
-            str(event.get_self_id()),
-            sender,
-        )
-        for chain in fallback:
-            yield event.chain_result(chain)
-        if failed:
-            yield event.plain_result(self._send_failed_text(failed, total, is_private))
-        if len(result.albums) < req.albums:
-            yield event.plain_result(
-                f"仅获取到 {len(result.albums)}/{req.albums} 个图集。"
+            self.access.used(user_id, result.images)
+            sender, fallback = self._sender(event)
+            failed, total = await self.dispatcher.deliver(
+                result.albums,
+                event.unified_msg_origin,
+                event.get_platform_name(),
+                str(event.get_self_id()),
+                sender,
             )
+            for chain in fallback:
+                yield event.chain_result(chain)
+            if failed:
+                yield event.plain_result(self._send_failed_text(failed, total, is_private))
+            if len(result.albums) < req.albums:
+                yield event.plain_result(
+                    f"仅获取到 {len(result.albums)}/{req.albums} 个图集。"
+                )
 
     async def _draw_whole(
         self, event: AstrMessageEvent, req: DrawRequest, user_id: str
