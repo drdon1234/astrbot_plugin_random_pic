@@ -1,4 +1,4 @@
-"""预备池：按默认风格、图集数和每集张数预先抽好几批图，擦边和 R18 各一个池。
+"""预备池：按默认图集数和每集张数预先抽好几批图，二次元、三次元的擦边和 R18 各一个池。
 
 不带关键词的默认抽图和定时推送直接拿一批发送，发完删掉这批并在后台补一批新的。
 每批（桶）存在插件数据目录里，插件重载后按当前配置同步：多的图集、图片删掉，少的补抽。
@@ -17,7 +17,17 @@ from pathlib import Path
 from astrbot.api import logger
 
 from .drawer import DrawResult
-from .models import ANIME, EXPLICIT, RATING_NAMES, SENSITIVE, Album, DrawRequest, WorkRef
+from .models import (
+    ANIME,
+    EXPLICIT,
+    RATING_NAMES,
+    REAL,
+    SENSITIVE,
+    STYLE_NAMES,
+    Album,
+    DrawRequest,
+    WorkRef,
+)
 
 # 抽图函数：(请求, 能否出 R18) → 结果
 DrawFn = Callable[[DrawRequest, bool], Awaitable[DrawResult]]
@@ -98,7 +108,7 @@ class Pool:
         self.spec = spec
         self.batches = batches
         self.allowed = allowed
-        self.name = RATING_NAMES[spec.rating]
+        self.name = f"{STYLE_NAMES[spec.style]}·{RATING_NAMES[spec.rating]}"
         self.ready: list[Bucket] = []
         self._pending: list[Bucket] = []  # 重载后要补图集的旧桶
         self._cond = asyncio.Condition()
@@ -271,39 +281,40 @@ class Pool:
 
 
 class Reserve:
-    """擦边、R18 两个预备池。"""
+    """二次元、三次元各有擦边、R18 两个预备池，目录为 root/风格/分级。"""
 
     def __init__(
         self,
         draw: DrawFn,
         root: Path,
-        batches: dict[str, int],
-        style: str,
-        albums: int,
-        per_album: int,
-        ratings: list[str],
-        allowed: dict[str, set[str]],
+        specs: dict[Spec, int],
+        allowed: dict[Spec, set[str]],
     ):
-        """batches：分级 → 批数；ratings：要维护的分级（不允许 R18 的不维护 R18 池）；allowed：分级 → 可用图源键。"""
+        """specs：要维护的池的规格 → 批数（批数为 0 或不在其中的不维护）；allowed：规格 → 可用图源键。"""
         self.draw_fn = draw
         self.root = root
-        if style == ANIME:
-            per_album = 1
-        self.pools: dict[str, Pool] = {}
-        for rating in ratings:
-            if batches.get(rating, 0) > 0:
-                spec = Spec(style, rating, albums, per_album)
-                self.pools[rating] = Pool(
-                    draw,
-                    root / rating,
-                    spec,
-                    batches[rating],
-                    allowed.get(rating, set()),
-                )
-        # 不维护的分级删掉旧桶
+        # 5.5.x 的池只有三次元，目录是 root/分级
         for rating in (SENSITIVE, EXPLICIT):
-            if rating not in self.pools:
-                shutil.rmtree(root / rating, ignore_errors=True)
+            legacy, dest = root / rating, root / REAL / rating
+            if legacy.is_dir() and not dest.exists():
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                legacy.rename(dest)
+            shutil.rmtree(legacy, ignore_errors=True)
+        self.pools: dict[tuple[str, str], Pool] = {}
+        for spec, batches in specs.items():
+            if batches > 0:
+                self.pools[spec.style, spec.rating] = Pool(
+                    draw,
+                    root / spec.style / spec.rating,
+                    spec,
+                    batches,
+                    allowed.get(spec, set()),
+                )
+        # 不维护的池删掉旧桶
+        for style in (REAL, ANIME):
+            for rating in (SENSITIVE, EXPLICIT):
+                if (style, rating) not in self.pools:
+                    shutil.rmtree(root / style / rating, ignore_errors=True)
 
     def start(self):
         for pool in self.pools.values():
@@ -316,7 +327,7 @@ class Reserve:
     @asynccontextmanager
     async def draw(self, req: DrawRequest, allow_explicit: bool, draw: DrawFn):
         """抽图：能用预备池时拿一批（离开时删掉这批），否则用 draw 现抽。"""
-        pool = self.pools.get(req.rating)
+        pool = self.pools.get((req.style, req.rating))
         bucket = None
         if pool is not None and (req.rating != EXPLICIT or allow_explicit):
             bucket = await pool.take(req)

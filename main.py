@@ -31,7 +31,7 @@ from .models import (
 )
 from .net import HttpClient, ImageCache
 from .pdf import PdfError, PdfStore
-from .pool import Reserve
+from .pool import Reserve, Spec
 from .push import Pusher
 from .sender import (
     FORWARD_MAX_NODES,
@@ -183,29 +183,27 @@ class RandomPicPlugin(Star):
         await self.sources.close()
 
     def _reserve(self, root: Path) -> Reserve:
-        """按默认抽图参数维护擦边、R18 预备池（R18 群聊私聊都不允许时不维护）。"""
+        """按默认图集数和每集张数维护二次元、三次元的擦边、R18 预备池（R18 群聊私聊都不允许时不维护）。"""
         s = self.settings
-        default = self._request("抽图", [])
-        ratings = [SENSITIVE]
-        if s.access.group_r18 or s.access.private_r18:
-            ratings.append(EXPLICIT)
-        allowed = {
-            rating: {
+        explicit = s.access.group_r18 or s.access.private_r18
+        batches = {
+            (REAL, SENSITIVE): s.draw.reserve_real_sensitive,
+            (REAL, EXPLICIT): s.draw.reserve_real_explicit if explicit else 0,
+            (ANIME, SENSITIVE): s.draw.reserve_anime_sensitive,
+            (ANIME, EXPLICIT): s.draw.reserve_anime_explicit if explicit else 0,
+        }
+        specs, allowed = {}, {}
+        for (style, rating), n in batches.items():
+            default = self._request(STYLE_NAMES[style], [])
+            spec = Spec(style, rating, default.albums, default.per_album)
+            specs[spec] = n
+            allowed[spec] = {
                 source.key
                 for source, _ in self.sources.drawing
-                if source.style == default.style and rating in source.usable_ratings
+                if source.style == style and rating in source.usable_ratings
             }
-            for rating in ratings
-        }
         return Reserve(
-            lambda req, allow: self.drawer.draw(req, allow),
-            root,
-            {SENSITIVE: s.draw.reserve_sensitive, EXPLICIT: s.draw.reserve_explicit},
-            default.style,
-            default.albums,
-            default.per_album,
-            ratings,
-            allowed,
+            lambda req, allow: self.drawer.draw(req, allow), root, specs, allowed
         )
 
     @filter.command("抽图")

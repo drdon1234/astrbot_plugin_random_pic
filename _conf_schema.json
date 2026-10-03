@@ -38,17 +38,27 @@
         "type": "int",
         "default": 5
       },
-      "reserve_sensitive": {
-        "description": "擦边预备批数",
+      "reserve_real_sensitive": {
+        "description": "三次元擦边预备批数",
         "type": "int",
         "default": 5,
-        "hint": "按默认风格、图集数和每集张数预先抽好几批擦边图，不带关键词的抽图和定时推送直接发，发完自动补。0 为不预备。"
+        "hint": "按默认图集数和每集张数预先抽好几批，不带关键词的抽图和定时推送直接发，发完自动补；每个池单独维护，重载后保留。0 为不预备。"
       },
-      "reserve_explicit": {
-        "description": "R18 预备批数",
+      "reserve_real_explicit": {
+        "description": "三次元 R18 预备批数",
         "type": "int",
         "default": 5,
-        "hint": "同上，R18 单独维护；群聊和私聊都不允许 R18 时不预备。"
+        "hint": "群聊和私聊都不允许 R18 时不预备。"
+      },
+      "reserve_anime_sensitive": {
+        "description": "二次元擦边预备批数",
+        "type": "int",
+        "default": 5
+      },
+      "reserve_anime_explicit": {
+        "description": "二次元 R18 预备批数",
+        "type": "int",
+        "default": 5
       },
       "page_pick": {
         "description": "取图位置",

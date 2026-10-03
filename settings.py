@@ -87,8 +87,10 @@ class Draw:
     album_count: int
     images_per_album: int
     max_images: int
-    reserve_sensitive: int
-    reserve_explicit: int
+    reserve_real_sensitive: int
+    reserve_real_explicit: int
+    reserve_anime_sensitive: int
+    reserve_anime_explicit: int
     page_pick: str
     aliases: bool
     no_prefix: bool
@@ -97,8 +99,10 @@ class Draw:
         self.album_count = _clamp(self.album_count, 1)
         self.images_per_album = _clamp(self.images_per_album, 1)
         self.max_images = _clamp(self.max_images, 1)
-        self.reserve_sensitive = _clamp(self.reserve_sensitive, 0)
-        self.reserve_explicit = _clamp(self.reserve_explicit, 0)
+        self.reserve_real_sensitive = _clamp(self.reserve_real_sensitive, 0)
+        self.reserve_real_explicit = _clamp(self.reserve_real_explicit, 0)
+        self.reserve_anime_sensitive = _clamp(self.reserve_anime_sensitive, 0)
+        self.reserve_anime_explicit = _clamp(self.reserve_anime_explicit, 0)
 
     @property
     def style(self) -> str:
