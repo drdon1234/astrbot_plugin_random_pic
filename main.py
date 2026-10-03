@@ -200,7 +200,7 @@ class RandomPicPlugin(Star):
         return Reserve(
             lambda req, allow: self.drawer.draw(req, allow),
             root,
-            s.draw.reserve_batches,
+            {SENSITIVE: s.draw.reserve_sensitive, EXPLICIT: s.draw.reserve_explicit},
             default.style,
             default.albums,
             default.per_album,

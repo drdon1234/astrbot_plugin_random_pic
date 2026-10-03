@@ -38,11 +38,17 @@
         "type": "int",
         "default": 5
       },
-      "reserve_batches": {
-        "description": "预备批数",
+      "reserve_sensitive": {
+        "description": "擦边预备批数",
         "type": "int",
-        "default": 1,
-        "hint": "按默认风格、图集数和每集张数预先抽好几批，不带关键词的抽图和定时推送直接发，发完自动补；擦边和 R18 各自维护。0 为不预备。"
+        "default": 5,
+        "hint": "按默认风格、图集数和每集张数预先抽好几批擦边图，不带关键词的抽图和定时推送直接发，发完自动补。0 为不预备。"
+      },
+      "reserve_explicit": {
+        "description": "R18 预备批数",
+        "type": "int",
+        "default": 5,
+        "hint": "同上，R18 单独维护；群聊和私聊都不允许 R18 时不预备。"
       },
       "page_pick": {
         "description": "取图位置",

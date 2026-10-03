@@ -277,24 +277,28 @@ class Reserve:
         self,
         draw: DrawFn,
         root: Path,
-        batches: int,
+        batches: dict[str, int],
         style: str,
         albums: int,
         per_album: int,
         ratings: list[str],
         allowed: dict[str, set[str]],
     ):
-        """ratings：要维护的分级（不允许 R18 的不维护 R18 池）；allowed：分级 → 可用图源键。"""
+        """batches：分级 → 批数；ratings：要维护的分级（不允许 R18 的不维护 R18 池）；allowed：分级 → 可用图源键。"""
         self.draw_fn = draw
         self.root = root
         if style == ANIME:
             per_album = 1
         self.pools: dict[str, Pool] = {}
-        if batches > 0:
-            for rating in ratings:
+        for rating in ratings:
+            if batches.get(rating, 0) > 0:
                 spec = Spec(style, rating, albums, per_album)
                 self.pools[rating] = Pool(
-                    draw, root / rating, spec, batches, allowed.get(rating, set())
+                    draw,
+                    root / rating,
+                    spec,
+                    batches[rating],
+                    allowed.get(rating, set()),
                 )
         # 不维护的分级删掉旧桶
         for rating in (SENSITIVE, EXPLICIT):
