@@ -141,6 +141,7 @@ class EHentaiSource(Source):
             terms,
             exclude_ai=self.content.block_ai,
             min_stars=self.min_stars,
+            min_pages=self.opts.min_pages,
         )
 
     async def draw(self, ctx: DrawContext, n: int) -> tuple[list[Album], list[str]]:

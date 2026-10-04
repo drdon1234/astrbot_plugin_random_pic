@@ -17,7 +17,6 @@ from .models import (
     ANIME,
     CONCURRENCY,
     EXPLICIT,
-    EXPLICIT_SKIP,
     RATING_NAMES,
     RATING_WORDS,
     REAL,
@@ -130,7 +129,8 @@ class RandomPicPlugin(Star):
         cache = ImageCache(self.http, data_dir / "cache")
         opts = DrawOptions(
             from_start=s.draw.from_start,
-            explicit_skip=EXPLICIT_SKIP,
+            explicit_skip=s.draw.explicit_skip,
+            min_pages=s.draw.min_pages,
             concurrency=CONCURRENCY,
         )
         self.sources = SourceSet(
@@ -195,7 +195,8 @@ class RandomPicPlugin(Star):
         specs, allowed = {}, {}
         for (style, rating), n in batches.items():
             default = self._request(STYLE_NAMES[style], [])
-            spec = Spec(style, rating, default.albums, default.per_album)
+            min_pages = s.draw.min_pages if style == REAL else 0
+            spec = Spec(style, rating, default.albums, default.per_album, min_pages)
             specs[spec] = n
             allowed[spec] = {
                 source.key

@@ -132,6 +132,8 @@ class Source:
 
         fetch(页, 从 0 开始) 返回 (页码, 本地文件) 或 None。R18 作品随机取页时跳过开头一部分。
         """
+        if total < self.opts.min_pages:
+            return []
         skip = self.opts.explicit_skip if rating == EXPLICIT else 0.0
         pictures = await fetch_pages(
             total,

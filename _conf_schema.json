@@ -38,6 +38,18 @@
         "type": "int",
         "default": 5
       },
+      "min_pages": {
+        "description": "图集最少页数",
+        "type": "int",
+        "default": 30,
+        "hint": "三次元只从至少这么多页的作品里抽，0 为不限。二次元单图不受影响。"
+      },
+      "explicit_skip": {
+        "description": "R18 图集开始抽取位置",
+        "type": "float",
+        "default": 0.3,
+        "hint": "R18 作品随机取页时跳过开头这个比例（0~0.9），开头多为穿着完整的图。"
+      },
       "reserve_real_sensitive": {
         "description": "三次元擦边预备批数",
         "type": "int",

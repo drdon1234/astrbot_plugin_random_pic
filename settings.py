@@ -87,6 +87,8 @@ class Draw:
     album_count: int
     images_per_album: int
     max_images: int
+    min_pages: int
+    explicit_skip: float
     reserve_real_sensitive: int
     reserve_real_explicit: int
     reserve_anime_sensitive: int
@@ -99,6 +101,8 @@ class Draw:
         self.album_count = _clamp(self.album_count, 1)
         self.images_per_album = _clamp(self.images_per_album, 1)
         self.max_images = _clamp(self.max_images, 1)
+        self.min_pages = _clamp(self.min_pages, 0)
+        self.explicit_skip = min(max(float(self.explicit_skip), 0.0), 0.9)
         self.reserve_real_sensitive = _clamp(self.reserve_real_sensitive, 0)
         self.reserve_real_explicit = _clamp(self.reserve_real_explicit, 0)
         self.reserve_anime_sensitive = _clamp(self.reserve_anime_sensitive, 0)

@@ -44,6 +44,7 @@ class Spec:
     rating: str
     albums: int
     per_album: int
+    min_pages: int = 0
 
     def serves(self, req: DrawRequest) -> bool:
         return (
@@ -265,6 +266,7 @@ class Pool:
             source_ok = album.work is None or album.work.source in self.allowed
             if (
                 not source_ok
+                or album.total < self.spec.min_pages
                 or len(album.pictures) < self.spec.per_album
                 or len(keep) >= self.spec.albums
             ):

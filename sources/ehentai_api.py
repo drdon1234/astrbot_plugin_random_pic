@@ -134,6 +134,7 @@ def build_search(
     *,
     exclude_ai: bool,
     min_stars: int,
+    min_pages: int = 0,
 ) -> dict[str, str]:
     """组合搜索参数。返回的 dict 同时作为游标范围缓存的键。"""
     words = [search.strip(), *user_tags, *SEARCH_EXCLUDES]
@@ -147,6 +148,9 @@ def build_search(
         params["advsearch"] = "1"
         params["f_sr"] = "on"
         params["f_srdd"] = str(min(min_stars, 5))
+    if min_pages > 1:
+        params["advsearch"] = "1"
+        params["f_spf"] = str(min_pages)
     return params
 
 

@@ -81,8 +81,6 @@ class Album:
     work: WorkRef | None = None
 
 
-# R18 作品通常从穿着完整开始，随机取页时跳过开头这个比例
-EXPLICIT_SKIP = 0.3
 # 每个图源最多同时处理的图集数、整本下载最多同时下载的页数
 CONCURRENCY = 4
 
@@ -93,4 +91,5 @@ class DrawOptions:
 
     from_start: bool = False
     explicit_skip: float = 0.0
+    min_pages: int = 0  # 三次元作品至少这么多页才抽（二次元单图不受限）
     concurrency: int = 1
