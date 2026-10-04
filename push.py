@@ -30,6 +30,9 @@ from .works import WorkService, describe
 GROUP = "GroupMessage"
 FRIEND = "FriendMessage"
 
+# 定时推送一张都没发出去时换一批重发的次数
+PUSH_RETRIES = 2
+
 
 def next_fire(after: datetime, interval: int, start: time = time(0, 0)) -> datetime:
     """按间隔推送：after 之后（不含 after）的下一个触发时刻。
@@ -240,20 +243,32 @@ class Pusher:
             failed, total = await self._push_work(target, umo, req, bot, send, when)
         else:
             allow = self.access.explicit_allowed(is_private)
-            async with self._draw(req, allow) as result:
-                if not result.albums:
-                    logger.warning(
-                        f"[random_pic] 定时推送到{target}抽图失败 {req}: {result.reason()}"
+            # 一张都没发出去（多半是 QQ 拒发）时换一批重发，确定发出去后才发提醒文字
+            for attempt in range(1 + PUSH_RETRIES):
+                async with self._draw(req, allow) as result:
+                    if not result.albums:
+                        logger.warning(
+                            f"[random_pic] 定时推送到{target}抽图失败 {req}: {result.reason()}"
+                        )
+                        return
+                    failed, total = await self.dispatcher.deliver(
+                        result.albums, umo, ONEBOT, await self._self_id(bot), send
                     )
-                    return
-                await self._announce(
-                    send,
-                    f"{push_title(when)}：{STYLE_NAMES[req.style]}·{RATING_NAMES[req.rating]}，"
-                    f"{len(result.albums)} 个图集共 {result.images} 张。",
+                if failed < total:
+                    await self._announce(
+                        send,
+                        f"{push_title(when)}：{STYLE_NAMES[req.style]}·"
+                        f"{RATING_NAMES[req.rating]}，"
+                        f"{len(result.albums)} 个图集共 {result.images} 张。",
+                    )
+                    break
+                if attempt < PUSH_RETRIES:
+                    logger.warning(f"[random_pic] 定时推送到{target}发送失败，换一批重发")
+            else:
+                logger.warning(
+                    f"[random_pic] 定时推送到{target}重发 {PUSH_RETRIES} 次仍失败，放弃"
                 )
-                failed, total = await self.dispatcher.deliver(
-                    result.albums, umo, ONEBOT, await self._self_id(bot), send
-                )
+                return
         if failed:
             logger.warning(
                 f"[random_pic] 定时推送到{target}：{failed}/{total} 条消息发送失败"
