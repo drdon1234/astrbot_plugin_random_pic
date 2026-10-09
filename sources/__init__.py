@@ -96,6 +96,13 @@ class SourceSet:
             (s for s, _ in self.drawing if s.key == conf.fallback), None
         )
 
+    def add(self, drawing: list[tuple[Source, int]]):
+        """加入别处装配的图源（订阅），和配置里的图源一样参与抽图、/pdf 和链接识别。"""
+        for source, weight in drawing:
+            self.all.append(source)
+            self._by_key[source.key] = source
+            self.drawing.append((source, weight))
+
     @property
     def keys(self) -> list[str]:
         """所有图源键，包括没装上的。"""

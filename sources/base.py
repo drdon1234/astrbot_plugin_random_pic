@@ -7,6 +7,7 @@
 - link_re：作品链接（第 1 组是作品 id，有第 2 组时是 E-Hentai 画廊的 token），没有公开链接时为 None；
 - unavailable：缺少账号等不能使用的原因；
 - accepts(ctx)：这次请求能否使用该图源（子类在分级之外再加自己的限制）；
+- named(keywords)：关键词是否指名了该图源（订阅），指名时只从指名的图源里抽；
 - draw(ctx, n)：抽 n 个图集，返回 (图集, 错误说明)；
 - work(ref) / download_work(work, dest)：/pdf 查询和下载整个作品。
 """
@@ -101,6 +102,10 @@ class Source:
 
     def accepts(self, ctx: DrawContext) -> bool:
         return ctx.req.style == self.style and ctx.req.rating in self.usable_ratings
+
+    def named(self, keywords: list[str]) -> bool:
+        """关键词指名了这个图源（订阅的账号）：这次只从指名的图源里抽，不看风格。"""
+        return False
 
     async def draw(self, ctx: DrawContext, n: int) -> tuple[list[Album], list[str]]:
         raise NotImplementedError

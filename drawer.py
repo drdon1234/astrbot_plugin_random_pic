@@ -32,9 +32,24 @@ class Drawer:
         self.content = content
         self.tagdb = tagdb
 
+    def named(self, ctx: DrawContext) -> list:
+        """关键词指名的图源（订阅）。"""
+        return [s for s, _ in self.sources.drawing if s.named(ctx.req.keywords)]
+
     def assign(self, ctx: DrawContext) -> dict:
-        """每个图集按比例选一个这次能用的图源，返回 {图源: 图集数}；没有能用的图源时为空。"""
-        usable = [(s, w) for s, w in self.sources.drawing if s.accepts(ctx)]
+        """每个图集按比例选一个这次能用的图源，返回 {图源: 图集数}；没有能用的图源时为空。
+
+        关键词指名了订阅时只从指名的、分级相符的订阅里抽。
+        """
+        named = self.named(ctx)
+        if named:
+            usable = [
+                (s, w)
+                for s, w in self.sources.drawing
+                if s in named and ctx.req.rating in s.usable_ratings
+            ]
+        else:
+            usable = [(s, w) for s, w in self.sources.drawing if s.accepts(ctx)]
         if not usable:
             return {}
         picked, weights = zip(*usable)
@@ -61,11 +76,16 @@ class Drawer:
         ctx = DrawContext(req, allow_explicit, list(terms), index)
         plan = self.assign(ctx)
         if not plan:
+            named = self.named(ctx)
+            if named:
+                names = "、".join(s.name for s in named)
+                return DrawResult(errors=[f"{names} 没有{RATING_NAMES[req.rating]}内容"])
             kind = f"{STYLE_NAMES[req.style]}·{RATING_NAMES[req.rating]}"
             return DrawResult(
                 errors=[f"没有能抽{kind}的图源，请在图源管理里启用或调整适用分级"]
             )
-        fallback = self.sources.fallback
+        # 指名订阅时不补位（补位图源会把订阅名当关键词去搜）
+        fallback = None if self.named(ctx) else self.sources.fallback
 
         async def run(source, n: int) -> tuple[list[Album], list[str]]:
             """抽一个图源；没抽够时马上由补位图源补，不等别的图源。"""

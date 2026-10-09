@@ -112,6 +112,12 @@ class VideoSet:
         # Drawer 的补位只用于三次元图片
         self.fallback = None
 
+    def add(self, drawing: list[tuple[Source, int]]):
+        """加入别处装配的视频源（订阅）。"""
+        for source, weight in drawing:
+            self.all.append(source)
+            self.drawing.append((source, weight))
+
     def prepare(self):
         self.files.prepare()
 

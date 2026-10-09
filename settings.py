@@ -331,6 +331,99 @@ class Video:
                 setattr(self, f.name, f.type(**value))
 
 
+FEED_TEMPLATES = SCHEMA["feeds"]["items"]["subscriptions"]["templates"]
+X = "x"
+TELEGRAM = "telegram"
+# 账号的写法：X 用户名 1~15 位，Telegram 频道名 4~32 位、字母开头
+ACCOUNT_RE = {
+    X: re.compile(r"^[A-Za-z0-9_]{1,15}$"),
+    TELEGRAM: re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,31}$"),
+}
+# 粘贴的主页、频道链接 → 账号
+ACCOUNT_URL_RE = {
+    X: re.compile(
+        r"^(?:https?://)?(?:www\.|mobile\.)?(?:x|twitter)\.com/([^/?#]+)", re.I
+    ),
+    TELEGRAM: re.compile(r"^(?:https?://)?(?:www\.)?t\.me/(?:s/)?([^/?#]+)", re.I),
+}
+MEDIA_IMAGES = {"图片和视频": True, "仅图片": True, "仅视频": False}
+MEDIA_VIDEOS = {"图片和视频": True, "仅图片": False, "仅视频": True}
+
+
+def account_name(platform: str, text: str) -> str | None:
+    """配置里写的账号（可以带 @ 或是链接）→ 账号名，写法不对时返回 None。"""
+    text = text.strip()
+    match = ACCOUNT_URL_RE[platform].match(text)
+    name = (match.group(1) if match else text).removeprefix("@")
+    return name if ACCOUNT_RE[platform].match(name) else None
+
+
+@dataclass
+class Feed:
+    """一个订阅：X 博主或 Telegram 频道，帖子按设定的风格、分级抽取。"""
+
+    platform: str  # X / TELEGRAM
+    account: str
+    name: str
+    style: str
+    rating: str
+    images: bool  # 图片参与 /抽图
+    videos: bool  # 视频参与 /抽视频
+    weight: int
+    min_likes: int = 0
+
+    @classmethod
+    def parse(cls, entry) -> "Feed | None":
+        """配置里的一条订阅；停用、模板不认识或账号写错时返回 None。"""
+        if not isinstance(entry, dict):
+            return None
+        platform = entry.get("__template_key")
+        template = FEED_TEMPLATES.get(platform)
+        if template is None:
+            return None
+        values = _values(template["items"], entry)
+        if not values["enabled"]:
+            return None
+        account = account_name(platform, values["account"])
+        if account is None:
+            if values["account"]:
+                logger.warning(
+                    f"[random_pic] 订阅的账号写法不对，已忽略：{values['account']}"
+                )
+            return None
+        return cls(
+            platform=platform,
+            account=account,
+            name=values["name"],
+            style=STYLE_WORDS[values["style"]],
+            # Telegram 频道没有分级可依，一律按 R18
+            rating=RATING_WORDS[values.get("rating", "R18").lower()],
+            images=MEDIA_IMAGES[values["media"]],
+            videos=MEDIA_VIDEOS[values["media"]],
+            weight=_clamp(values["weight"], 1),
+            min_likes=_clamp(values.get("min_likes", 0), 0),
+        )
+
+    @property
+    def key(self) -> str:
+        """图源键（也用在 PDF 的存储名里）。"""
+        prefix = "tg" if self.platform == TELEGRAM else self.platform
+        return f"{prefix}_{self.account.lower()}"
+
+
+@dataclass
+class Feeds:
+    subscriptions: list[Feed]
+
+    def __post_init__(self):
+        feeds: dict[str, Feed] = {}
+        for feed in map(Feed.parse, self.subscriptions):
+            # 同一个账号订阅了两次时只用第一条
+            if feed and feed.key not in feeds:
+                feeds[feed.key] = feed
+        self.subscriptions = list(feeds.values())
+
+
 @dataclass
 class Env:
     """部署环境：网络代理，QQ 机器人和 AstrBot 共用的共享目录、PDF 目录（留空为不用 / 插件数据目录）。"""
@@ -399,6 +492,7 @@ class Settings:
     push: Push
     video: Video
     sources: Sources
+    feeds: Feeds
     env: Env
 
     @classmethod

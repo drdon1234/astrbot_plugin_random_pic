@@ -1110,6 +1110,274 @@
       }
     }
   },
+  "feeds": {
+    "description": "订阅（X / Telegram）",
+    "type": "object",
+    "hint": "把指定的 X（推特）博主、Telegram 公开频道的图片和视频加入抽图和 /抽视频，和同风格、同分级的其他图源按比例混合；关键词写订阅的账号或显示名称时只抽这个订阅，例如 /抽图 enako_cos。需要能访问 X、Telegram 的网络（见「网络与目录」的代理）。",
+    "items": {
+      "subscriptions": {
+        "description": "订阅列表",
+        "type": "template_list",
+        "default": [
+          {
+            "__template_key": "x",
+            "enabled": true,
+            "account": "re0nnn",
+            "name": "",
+            "style": "二次元",
+            "rating": "擦边",
+            "media": "仅图片",
+            "weight": 2,
+            "min_likes": 0
+          },
+          {
+            "__template_key": "x",
+            "enabled": true,
+            "account": "amik1_",
+            "name": "",
+            "style": "二次元",
+            "rating": "擦边",
+            "media": "仅图片",
+            "weight": 2,
+            "min_likes": 0
+          },
+          {
+            "__template_key": "x",
+            "enabled": true,
+            "account": "vitaminechan",
+            "name": "",
+            "style": "二次元",
+            "rating": "擦边",
+            "media": "仅图片",
+            "weight": 2,
+            "min_likes": 0
+          },
+          {
+            "__template_key": "x",
+            "enabled": true,
+            "account": "greem_bang",
+            "name": "",
+            "style": "二次元",
+            "rating": "R18",
+            "media": "仅图片",
+            "weight": 2,
+            "min_likes": 0
+          },
+          {
+            "__template_key": "x",
+            "enabled": true,
+            "account": "kurotsuki_machi",
+            "name": "",
+            "style": "二次元",
+            "rating": "R18",
+            "media": "仅图片",
+            "weight": 2,
+            "min_likes": 0
+          },
+          {
+            "__template_key": "x",
+            "enabled": true,
+            "account": "aphy3d",
+            "name": "",
+            "style": "二次元",
+            "rating": "R18",
+            "media": "仅视频",
+            "weight": 3,
+            "min_likes": 0
+          },
+          {
+            "__template_key": "x",
+            "enabled": true,
+            "account": "z1g3d",
+            "name": "",
+            "style": "二次元",
+            "rating": "R18",
+            "media": "仅视频",
+            "weight": 3,
+            "min_likes": 0
+          },
+          {
+            "__template_key": "x",
+            "enabled": true,
+            "account": "EnjiNight",
+            "name": "",
+            "style": "三次元",
+            "rating": "擦边",
+            "media": "图片和视频",
+            "weight": 3,
+            "min_likes": 0
+          },
+          {
+            "__template_key": "x",
+            "enabled": true,
+            "account": "Hidori_Rose",
+            "name": "",
+            "style": "三次元",
+            "rating": "R18",
+            "media": "仅视频",
+            "weight": 3,
+            "min_likes": 0
+          },
+          {
+            "__template_key": "telegram",
+            "enabled": true,
+            "account": "astasiangeli",
+            "name": "",
+            "style": "三次元",
+            "media": "图片和视频",
+            "weight": 3
+          },
+          {
+            "__template_key": "telegram",
+            "enabled": true,
+            "account": "GQMNST",
+            "name": "",
+            "style": "三次元",
+            "media": "仅图片",
+            "weight": 3
+          },
+          {
+            "__template_key": "telegram",
+            "enabled": true,
+            "account": "vixenp",
+            "name": "",
+            "style": "三次元",
+            "media": "图片和视频",
+            "weight": 3
+          }
+        ],
+        "templates": {
+          "x": {
+            "name": "X 博主",
+            "hint": "经 fxtwitter 的公开接口读取博主的媒体页，不用登录；不含转推，保留最近约 1000 条带图或视频的推文，每 6 小时更新。",
+            "display_item": "account",
+            "items": {
+              "enabled": {
+                "description": "启用",
+                "type": "bool",
+                "default": true
+              },
+              "account": {
+                "description": "账号",
+                "type": "string",
+                "default": "",
+                "hint": "博主的用户名（@ 后面的部分），也可以粘贴主页链接。"
+              },
+              "name": {
+                "description": "显示名称",
+                "type": "string",
+                "default": "",
+                "hint": "抽到时显示的来源名，关键词写它也能只抽这个订阅；留空为账号。"
+              },
+              "style": {
+                "description": "风格",
+                "type": "string",
+                "default": "三次元",
+                "options": [
+                  "三次元",
+                  "二次元"
+                ]
+              },
+              "rating": {
+                "description": "分级",
+                "type": "string",
+                "default": "R18",
+                "options": [
+                  "R18",
+                  "擦边"
+                ],
+                "hint": "推文没有分级，全部按这里的分级抽取（R18 受群聊、私聊的 R18 开关限制）。擦边订阅不抽博主标了敏感内容的推文；内容混杂或拿不准时选 R18。"
+              },
+              "media": {
+                "description": "抽取内容",
+                "type": "string",
+                "default": "图片和视频",
+                "options": [
+                  "图片和视频",
+                  "仅图片",
+                  "仅视频"
+                ],
+                "hint": "图片进入 /抽图，视频进入 /抽视频（需开启视频功能）。"
+              },
+              "weight": {
+                "description": "比例",
+                "type": "int",
+                "default": 5,
+                "slider": {
+                  "min": 1,
+                  "max": 10,
+                  "step": 1
+                },
+                "hint": "和同风格、同分级的其他图源、视频源一起抽时的比例。"
+              },
+              "min_likes": {
+                "description": "最低点赞数",
+                "type": "int",
+                "default": 0,
+                "hint": "只抽点赞不少于这个数的推文，0 为不限。"
+              }
+            }
+          },
+          "telegram": {
+            "name": "Telegram 频道",
+            "hint": "读取频道的网页预览（t.me/s/频道名），不用登录，从整个频道历史里随机抽。频道没有分级，一律按 R18 抽取（受群聊、私聊的 R18 开关限制）。图片是预览尺寸（长边约 800~1280），网页预览不提供的大视频抽不到；没有开放网页预览的频道不能订阅。",
+            "display_item": "account",
+            "items": {
+              "enabled": {
+                "description": "启用",
+                "type": "bool",
+                "default": true
+              },
+              "account": {
+                "description": "账号",
+                "type": "string",
+                "default": "",
+                "hint": "频道的用户名（t.me/ 后面的部分），也可以粘贴频道链接。"
+              },
+              "name": {
+                "description": "显示名称",
+                "type": "string",
+                "default": "",
+                "hint": "抽到时显示的来源名，关键词写它也能只抽这个订阅；留空为账号。"
+              },
+              "style": {
+                "description": "风格",
+                "type": "string",
+                "default": "三次元",
+                "options": [
+                  "三次元",
+                  "二次元"
+                ]
+              },
+              "media": {
+                "description": "抽取内容",
+                "type": "string",
+                "default": "图片和视频",
+                "options": [
+                  "图片和视频",
+                  "仅图片",
+                  "仅视频"
+                ],
+                "hint": "图片进入 /抽图，视频进入 /抽视频（需开启视频功能）。"
+              },
+              "weight": {
+                "description": "比例",
+                "type": "int",
+                "default": 5,
+                "slider": {
+                  "min": 1,
+                  "max": 10,
+                  "step": 1
+                },
+                "hint": "和同风格、同分级的其他图源、视频源一起抽时的比例。"
+              }
+            }
+          }
+        },
+        "hint": "默认订阅是 2026-10 抽样目检过的博主、频道，可以删改。"
+      }
+    }
+  },
   "env": {
     "description": "网络与目录",
     "type": "object",

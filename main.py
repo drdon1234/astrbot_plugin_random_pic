@@ -11,6 +11,7 @@ from astrbot.api.star import Context, Star, StarTools
 
 from .access import AccessControl
 from .drawer import Drawer, DrawResult
+from .feeds import FeedSet
 from .filters import HEAVY_TAGS, ContentFilter
 from .history import History, SentAlbum, albums_from_text, pick
 from .models import (
@@ -160,6 +161,19 @@ class RandomPicPlugin(Star):
             self.sources.danbooru,
             data_dir / "video_recent.json",
         )
+        self.feeds = FeedSet(
+            s.feeds,
+            self.http,
+            cache,
+            self.content,
+            opts,
+            data_dir,
+            self.videos.files,
+            self.videos.recent,
+        )
+        self.sources.add(self.feeds.images)
+        if s.video.enabled:
+            self.videos.add(self.feeds.videos)
         self.video_drawer = Drawer(self.videos, self.content, self.tagdb)
         self.video_reserve = self._video_reserve(media_dir / "reserve_video")
         self.reserve = self._reserve(media_dir / "reserve")
@@ -195,6 +209,7 @@ class RandomPicPlugin(Star):
         )
         self._preload: asyncio.Task | None = None
         self._warm_up: asyncio.Task | None = None
+        self._feeds_warm_up: asyncio.Task | None = None
 
     async def initialize(self):
         # 后台预加载标签库，避免第一次抽卡时等待下载
@@ -202,17 +217,20 @@ class RandomPicPlugin(Star):
         if self.settings.video.enabled:
             self.videos.prepare()
             self._warm_up = asyncio.create_task(self.videos.warm_up())
+        if self.feeds.feeds:
+            self._feeds_warm_up = asyncio.create_task(self.feeds.warm_up())
         self.reserve.start()
         self.video_reserve.start()
         self.pusher.start()
 
     async def terminate(self):
-        for task in (self._preload, self._warm_up):
+        for task in (self._preload, self._warm_up, self._feeds_warm_up):
             if task and not task.done():
                 task.cancel()
         self.pusher.stop()
         self.reserve.stop()
         self.video_reserve.stop()
+        await self.feeds.close()
         await self.http.close()
         await self.sources.close()
 
@@ -359,13 +377,21 @@ class RandomPicPlugin(Star):
             return None
         return event.message_str.split()[1:]
 
+    def _defaults(self, tokens: list[str]) -> tuple[str, str]:
+        """不写风格、分级时的默认值：参数指名了订阅时是这个订阅的，否则是配置的。"""
+        feed = self.feeds.named(tokens)
+        if feed:
+            return feed.conf.style, feed.conf.rating
+        return self.settings.draw.style, self.settings.draw.rating
+
     def _request(self, word: str, tokens: list[str]) -> DrawRequest:
         """按抽图指令词和参数生成请求。"""
         draw = self.settings.draw
         preset = DRAW_COMMANDS[word]
+        style, rating = self._defaults(tokens)
         defaults = DrawRequest(
-            preset.get("style", draw.style),
-            preset.get("rating", draw.rating),
+            preset.get("style", style),
+            preset.get("rating", rating),
             albums=draw.album_count,
             per_album=draw.images_per_album,
             random_character=preset.get("random_character", False),
@@ -438,8 +464,8 @@ class RandomPicPlugin(Star):
     def _video_request(self, tokens: list[str]) -> DrawRequest:
         """视频请求：风格、分级默认和抽图一样，每个「图集」就是一个视频。"""
         video = self.settings.video
-        draw = self.settings.draw
-        defaults = DrawRequest(draw.style, draw.rating, albums=video.default_count)
+        style, rating = self._defaults(tokens)
+        defaults = DrawRequest(style, rating, albums=video.default_count)
         req = parse_args(
             tokens, video.max_count, defaults, self.settings.whole.default_format
         )
@@ -738,6 +764,11 @@ class RandomPicPlugin(Star):
             lines.append("别名：/二次元 /三次元 /擦边 /色图")
         lines.append(f"R18：群聊{on[access.group_r18]}，私聊{on[access.private_r18]}")
         lines += self.sources.help_lines()
+        if self.feeds.feeds:
+            example = self.feeds.feeds[0].conf.name or self.feeds.feeds[0].conf.account
+            lines.append(
+                f"· 关键词写订阅的账号或名称时只抽这个订阅，例如 /抽图 {example}"
+            )
         if s.video.enabled and self.videos.drawing:
             lines += [
                 f"/{VIDEO_COMMAND} [二次元|三次元] [擦边|r18] [关键词...] [个数]：随机短视频（实验性），"
