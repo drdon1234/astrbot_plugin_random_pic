@@ -34,9 +34,12 @@ from .pool import Reserve, Spec
 from .push import Pusher
 from .sender import (
     FORWARD_MAX_NODES,
+    INLINE_BUDGET,
     ONEBOT,
     Composer,
     Dispatcher,
+    SendFailed,
+    Stage,
     send_direct,
 )
 from .settings import FORWARD_FORMAT, PDF_FORMAT, Settings
@@ -140,8 +143,12 @@ class RandomPicPlugin(Star):
         self.drawer = Drawer(self.sources, self.content, self.tagdb)
         self.reserve = self._reserve(data_dir / "reserve")
         self.history = History(data_dir / "sent_albums.json")
+        stage = self._stage(s.send.share_dir)
         self.dispatcher = Dispatcher(
-            self.history, Composer(s.send.header, s.send.caption), s.send.mode
+            self.history,
+            Composer(s.send.header, s.send.caption, None if stage else INLINE_BUDGET),
+            s.send.mode,
+            stage,
         )
         self.works = WorkService(
             self.sources,
@@ -181,6 +188,21 @@ class RandomPicPlugin(Star):
         self.reserve.stop()
         await self.http.close()
         await self.sources.close()
+
+    @staticmethod
+    def _stage(share_dir: str) -> Stage | None:
+        """配置了图片中转目录时图片以文件路径发送；目录建不起来时照旧编码进消息。"""
+        if not share_dir:
+            return None
+        stage = Stage(Path(share_dir))
+        try:
+            stage.prepare()
+        except OSError as e:
+            logger.warning(
+                f"[random_pic] 图片中转目录不可用，改为编码进消息发送: {e!r}"
+            )
+            return None
+        return stage
 
     def _reserve(self, root: Path) -> Reserve:
         """按默认图集数和每集张数维护二次元、三次元的擦边、R18 预备池（R18 群聊私聊都不允许时不维护）。"""
@@ -346,7 +368,9 @@ class RandomPicPlugin(Star):
             for chain in fallback:
                 yield event.chain_result(chain)
             if failed:
-                yield event.plain_result(self._send_failed_text(failed, total, is_private))
+                yield event.plain_result(
+                    self._send_failed_text(failed, total, is_private)
+                )
             if len(result.albums) < req.albums:
                 yield event.plain_result(
                     f"仅获取到 {len(result.albums)}/{req.albums} 个图集。"
@@ -371,19 +395,38 @@ class RandomPicPlugin(Star):
         fallback: list[list] = []
 
         async def send(chain: list) -> str | None:
-            delivered, message_id = await send_direct(event, chain)
+            delivered, message_id = await send_direct(
+                event, chain, self.dispatcher.stage
+            )
             if not delivered:
                 fallback.append(chain)
             return message_id
 
         return send, fallback
 
-    def _send_failed_text(self, failed: int, total: int, is_private: bool) -> str:
-        what = "这条消息" if total == 1 else f"其中 {failed}/{total} 条消息"
-        text = f"发送失败：QQ 拒发了{what}。"
-        if not is_private:
-            return text + "群聊里裸露较多的图容易被 QQ 拦截，可以私聊重新抽图。"
-        return text + "可能是图片内容被 QQ 拦截，可换个关键词或稍后重试。"
+    def _send_failed_text(
+        self, failed: list[SendFailed], total: int, is_private: bool
+    ) -> str:
+        """按失败原因分别说明：QQ 拒发，或超时、连接中断。"""
+
+        def what(n: int) -> str:
+            return "这条消息" if total == 1 else f"其中 {n}/{total} 条消息"
+
+        lines = []
+        rejected = sum(e.rejected for e in failed)
+        if rejected:
+            text = f"发送失败：QQ 拒发了{what(rejected)}。"
+            if not is_private:
+                text += "群聊里裸露较多的图容易被 QQ 拦截，可以私聊重新抽图。"
+            else:
+                text += "可能是图片内容被 QQ 拦截，可换个关键词或稍后重试。"
+            lines.append(text)
+        lost = len(failed) - rejected
+        if lost:
+            lines.append(
+                f"发送失败：{what(lost)}发送超时或与 QQ 的连接中断，请稍后重试。"
+            )
+        return "\n".join(lines)
 
     # ---- 完整作品 ----
 

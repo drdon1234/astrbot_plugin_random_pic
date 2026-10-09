@@ -204,6 +204,12 @@
         "description": "附带作者、标签和链接",
         "type": "bool",
         "default": true
+      },
+      "share_dir": {
+        "description": "图片中转目录",
+        "type": "string",
+        "default": "",
+        "hint": "QQ 机器人（如 NapCat）和 AstrBot 都能以同一路径访问的目录。填写后图片复制到这里、以文件路径发送，消息不再携带整张图片，发得更快，也不会因消息过大被断开；留空时图片编码进消息，过大时自动拆成几条发送。"
       }
     }
   },

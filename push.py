@@ -228,7 +228,11 @@ class Pusher:
         async def send(chain: list) -> str | None:
             if bot is not None:
                 delivered, message_id = await send_onebot(
-                    bot, chain, group_id, target.chat_id
+                    bot,
+                    chain,
+                    group_id,
+                    target.chat_id,
+                    stage=self.dispatcher.stage,
                 )
                 if delivered:
                     return message_id
@@ -236,7 +240,7 @@ class Pusher:
                 await self.context.send_message(umo, MessageChain(chain))
             except Exception as e:
                 logger.warning(f"[random_pic] 定时推送到{target}发送失败: {e!r}")
-                raise SendFailed(str(e)) from e
+                raise SendFailed.of(e) from e
             return None
 
         if req.whole:
@@ -254,7 +258,7 @@ class Pusher:
                     failed, total = await self.dispatcher.deliver(
                         result.albums, umo, ONEBOT, await self._self_id(bot), send
                     )
-                if failed < total:
+                if len(failed) < total:
                     await self._announce(
                         send,
                         f"{push_title(when)}：{STYLE_NAMES[req.style]}·"
@@ -263,7 +267,9 @@ class Pusher:
                     )
                     break
                 if attempt < PUSH_RETRIES:
-                    logger.warning(f"[random_pic] 定时推送到{target}发送失败，换一批重发")
+                    logger.warning(
+                        f"[random_pic] 定时推送到{target}发送失败，换一批重发"
+                    )
             else:
                 logger.warning(
                     f"[random_pic] 定时推送到{target}重发 {PUSH_RETRIES} 次仍失败，放弃"
@@ -271,7 +277,7 @@ class Pusher:
                 return
         if failed:
             logger.warning(
-                f"[random_pic] 定时推送到{target}：{failed}/{total} 条消息发送失败"
+                f"[random_pic] 定时推送到{target}：{len(failed)}/{total} 条消息发送失败"
             )
 
     @asynccontextmanager
@@ -284,15 +290,15 @@ class Pusher:
 
     async def _push_work(
         self, target: Target, umo: str, req: DrawRequest, bot, send: Send, when: str
-    ) -> tuple[int, int]:
+    ) -> tuple[list[SendFailed], int]:
         """随机完整作品：抽一个图集，先发作品信息，再推送整个作品（合并转发或 PDF）。
 
-        返回 (失败条数, 总条数)。
+        返回 (各条失败消息的错误, 总条数)。
         """
         picked = await self.works.random(req, not target.is_group)
         if isinstance(picked, str):
             logger.warning(f"[random_pic] 定时推送到{target}：{picked}")
-            return 0, 0
+            return [], 0
         album, source, work = picked
         if req.whole == PDF_FORMAT:
             parts = self.pdf.parts(work.pages)
@@ -325,7 +331,7 @@ class Pusher:
                 logger.warning(
                     f"[random_pic] 定时推送《{work.title}》没有下载到任何图片"
                 )
-                return 0, 0
+                return [], 0
             if missing:
                 logger.warning(
                     f"[random_pic] 定时推送《{work.title}》有 {missing} 页下载失败"

@@ -150,6 +150,7 @@ class Send:
     mode: str
     header: bool
     caption: bool
+    share_dir: str
 
 
 @dataclass

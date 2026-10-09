@@ -32,8 +32,10 @@ from .models import (
 # 抽图函数：(请求, 能否出 R18) → 结果
 DrawFn = Callable[[DrawRequest, bool], Awaitable[DrawResult]]
 MANIFEST = "bucket.json"
-# 一批一张都没抽到时隔多久再补
+# 一批没补满（或维护出错）时隔多久再补
 RETRY_DELAY = 120
+# 一批最多补几次；补了这么多次还不满就照样拿来用
+FILL_ATTEMPTS = 3
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,7 @@ class Spec:
 class Bucket:
     dir: Path
     albums: list[Album]
+    attempts: int = 0  # 补过几次
 
 
 def _album_to_json(album: Album) -> dict:
@@ -115,6 +118,7 @@ class Pool:
         self._cond = asyncio.Condition()
         self._wake = asyncio.Event()
         self._busy = True  # 正在补桶（或马上要补），取不到现成的桶时可以等
+        self._backoff = False  # 没补满或出错后正在隔一会儿再补，这期间取不到就不等
         self._task: asyncio.Task | None = None
 
     def start(self):
@@ -136,7 +140,8 @@ class Pool:
                     return None
                 await self._cond.wait()
             bucket = self.ready.pop(0)
-        self._busy = True
+        if not self._backoff:
+            self._busy = True
         self._wake.set()
         return bucket
 
@@ -145,44 +150,73 @@ class Pool:
     async def _run(self):
         try:
             await asyncio.to_thread(self._load)
-            logger.info(
-                f"[random_pic] 预备池（{self.name}）已有 {len(self.ready)} 批完整、"
-                f"{len(self._pending)} 批待补，目标 {self.batches} 批"
-            )
-            while True:
-                async with self._cond:
-                    if self._pending:
-                        bucket = self._pending.pop(0)
-                    elif len(self.ready) < self.batches:
-                        bucket = Bucket(self.root / uuid.uuid4().hex[:12], [])
-                    else:
-                        bucket = None
-                        self._busy = False
-                        self._wake.clear()
-                        self._cond.notify_all()
+        except Exception as e:
+            logger.error(f"[random_pic] 预备池（{self.name}）读取旧桶出错: {e!r}")
+        logger.info(
+            f"[random_pic] 预备池（{self.name}）已有 {len(self.ready)} 批完整、"
+            f"{len(self._pending)} 批待补，目标 {self.batches} 批"
+        )
+        while True:
+            bucket = None
+            try:
+                bucket = await self._next()
                 if bucket is None:
                     await self._wake.wait()
                     continue
                 self._busy = True
                 ok = await self._fill(bucket)
+                done = ok and (
+                    len(bucket.albums) >= self.spec.albums
+                    or bucket.attempts >= FILL_ATTEMPTS
+                )
                 async with self._cond:
-                    if ok:
+                    if done:
                         self.ready.append(bucket)
                     else:
+                        # 没补满的桶过一会儿接着补；这期间没有现成的桶时直接现抽
+                        if ok:
+                            self._pending.append(bucket)
                         self._busy = False
                     self._cond.notify_all()
-                if not ok:
-                    await asyncio.sleep(RETRY_DELAY)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.error(f"[random_pic] 预备池（{self.name}）出错: {e!r}", exc_info=e)
-            async with self._cond:
-                self._busy = False
-                self._cond.notify_all()
+                if not done:
+                    await self._back_off()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                # 出错后过一会儿接着维护，而不是让池子停掉
+                logger.error(
+                    f"[random_pic] 预备池（{self.name}）出错: {e!r}", exc_info=e
+                )
+                async with self._cond:
+                    if bucket is not None and bucket.dir.is_dir():
+                        if bucket not in self.ready and bucket not in self._pending:
+                            self._pending.append(bucket)
+                    self._busy = False
+                    self._cond.notify_all()
+                await self._back_off()
+
+    async def _back_off(self):
+        self._backoff = True
+        try:
+            await asyncio.sleep(RETRY_DELAY)
+        finally:
+            self._backoff = False
+
+    async def _next(self) -> Bucket | None:
+        """下一个要补的桶：先补待补的，再补新桶；已经够数时返回 None 并放开等待的取用。"""
+        async with self._cond:
+            if self._pending:
+                return self._pending.pop(0)
+            if len(self.ready) < self.batches:
+                return Bucket(self.root / uuid.uuid4().hex[:12], [])
+            self._busy = False
+            self._wake.clear()
+            self._cond.notify_all()
+            return None
 
     async def _fill(self, bucket: Bucket) -> bool:
         """把桶补到规定的图集数，返回桶里是否有图。"""
+        bucket.attempts += 1
         short = self.spec.albums - len(bucket.albums)
         if short > 0:
             req = DrawRequest(
