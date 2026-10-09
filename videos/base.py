@@ -31,8 +31,12 @@ MIN_SECONDS = 5
 
 
 # 视频的标题、描述和标签里明确指向小学、初中生的词（在内置黑名单之外；视频站没有统一的年龄标签）。
-# 雌小鬼、メスガキ多是梗，JK、女子高生、schoolgirl 多是校服装扮，都不算，和图片源一致
-YOUNG_WORDS = TagBlacklist(["小学生", "中学生", "女子中学生", "初中生", "jc"])
+# 雌小鬼、メスガキ多是梗，JK、女子高生、schoolgirl 多是校服装扮，都不算，和图片源一致。
+# 韩文的是 SOOP 用的：小学生、初中生、女初中生、小学生 / 初中生的俗称、未成年
+YOUNG_WORDS = TagBlacklist(
+    ["小学生", "中学生", "女子中学生", "初中生", "jc"]
+    + ["초등학생", "중학생", "여중생", "초딩", "중딩", "미성년"]
+)
 
 
 # MMD（MikuMikuDance）视频的标签和标题写法：Iwara 约三成带 mikumikudance 标签或标题写 MMD，
@@ -161,10 +165,14 @@ class VideoFiles:
             return f"大小 {size / MB:.0f} MB 超过上限"
         return None
 
+    def new_path(self) -> Path:
+        """下载目录里一个新的视频文件名。"""
+        self.root.mkdir(parents=True, exist_ok=True)
+        return self.root / f"{uuid.uuid4().hex}{VIDEO_SUFFIX}"
+
     async def download(self, url: str, headers: dict | None = None) -> Path | None:
         """下载一个 mp4，返回本地文件；超过大小上限、不是 mp4 或下载失败时返回 None。"""
-        self.root.mkdir(parents=True, exist_ok=True)
-        path = self.root / f"{uuid.uuid4().hex}{VIDEO_SUFFIX}"
+        path = self.new_path()
         ok = False
         try:
             await self._fetch(url, headers, path)

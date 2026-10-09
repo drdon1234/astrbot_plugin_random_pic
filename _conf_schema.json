@@ -371,7 +371,7 @@
   "video": {
     "description": "视频（实验性）",
     "type": "object",
-    "hint": "/抽视频 [二次元|三次元] [关键词...] [个数]：随机抽 R18 短视频，按「发送」里的方式发送。目前只有 R18，群聊需开启群聊 R18。",
+    "hint": "/抽视频 [二次元|三次元] [擦边|r18] [关键词...] [个数]：随机抽短视频，分级默认跟随「抽图」的默认分级，按「发送」里的方式发送。群聊抽 R18 需开启群聊 R18。",
     "items": {
       "enabled": {
         "description": "启用",
@@ -419,7 +419,7 @@
         "condition": {
           "enabled": true
         },
-        "hint": "关闭后不抽带 MMD（MikuMikuDance）标签或标题写着 MMD 的视频，主要影响 Iwara（约三成是 MMD）；没标出来的认不出。"
+        "hint": "关闭后不抽带 MMD（MikuMikuDance）标签或标题写着 MMD 的视频，主要影响 Iwara（R18 约三成是 MMD，擦边几乎全是，关闭时 Iwara 不提供擦边）；没标出来的认不出。"
       },
       "reserve_anime": {
         "description": "二次元视频预备批数",
@@ -428,7 +428,7 @@
         "condition": {
           "enabled": true
         },
-        "hint": "按默认个数预先抽好几批，不带关键词的 /抽视频 直接发，发完自动补；0 为不预备。视频较大（Iwara 一个 20~50 MB），群聊和私聊都不允许 R18 时不预备。"
+        "hint": "擦边、R18 各按默认个数预先抽好几批，不带关键词的 /抽视频 直接发，发完自动补；0 为不预备。视频较大（Iwara 一个 20~50 MB），群聊和私聊都不允许 R18 时不预备 R18。"
       },
       "reserve_real": {
         "description": "三次元视频预备批数",
@@ -436,7 +436,8 @@
         "default": 3,
         "condition": {
           "enabled": true
-        }
+        },
+        "hint": "同上，三次元的擦边、R18 各预备这么多批。"
       },
       "show_sources": {
         "description": "显示各视频源设置",
@@ -487,7 +488,7 @@
       "iwara": {
         "description": "Iwara（二次元）",
         "type": "object",
-        "hint": "MMD、Koikatsu 等 3D 视频，多为 2~7 分钟的舞蹈和性内容。",
+        "hint": "MMD、Koikatsu 等 3D 视频，多为 2~7 分钟。R18 取站内 ecchi 里有性内容迹象的；擦边取全年龄（general）里没有 R18 迹象的性感舞蹈，几乎都是 MMD，关闭「抽取 MMD 视频」时不提供。",
         "condition": {
           "enabled": true,
           "show_sources": true
@@ -497,6 +498,19 @@
             "description": "启用",
             "type": "bool",
             "default": true
+          },
+          "scope": {
+            "description": "适用分级",
+            "type": "string",
+            "default": "通用",
+            "options": [
+              "通用",
+              "仅擦边",
+              "仅R18"
+            ],
+            "condition": {
+              "enabled": true
+            }
           },
           "weight": {
             "description": "比例",
@@ -512,13 +526,22 @@
             }
           },
           "min_likes": {
-            "description": "最低点赞数",
+            "description": "R18 最低点赞数",
             "type": "int",
             "default": 1000,
             "condition": {
               "enabled": true
             },
             "hint": "按点赞排序，约 600 赞以上的有 5 万个。"
+          },
+          "min_likes_sensitive": {
+            "description": "擦边最低点赞数",
+            "type": "int",
+            "default": 150,
+            "condition": {
+              "enabled": true
+            },
+            "hint": "全年龄视频的点赞少得多：150 时约 1500 个可抽。"
           }
         }
       },
@@ -595,6 +618,73 @@
               "enabled": true
             },
             "hint": "只抽不低于此数的（200 时约 2000~3000 个）。"
+          }
+        }
+      },
+      "soop": {
+        "description": "SOOP（三次元·擦边）",
+        "type": "object",
+        "hint": "韩国直播站 SOOP（原 AfreecaTV）的官方短视频：女主播的舞蹈片段，多为 10~60 秒竖屏。需要 ffmpeg。",
+        "condition": {
+          "enabled": true,
+          "show_sources": true
+        },
+        "items": {
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true
+          },
+          "weight": {
+            "description": "比例",
+            "type": "int",
+            "default": 5,
+            "slider": {
+              "min": 1,
+              "max": 10,
+              "step": 1
+            },
+            "condition": {
+              "enabled": true
+            }
+          },
+          "min_views": {
+            "description": "最低播放量",
+            "type": "int",
+            "default": 1000,
+            "condition": {
+              "enabled": true
+            },
+            "hint": "从近一个月和近一年播放最多的片段里抽。"
+          }
+        }
+      },
+      "cosplaytele": {
+        "description": "CosplayTele 视频（三次元·R18）",
+        "type": "object",
+        "hint": "CosplayTele「Cosplay Nude」帖子里的视频（亚洲 coser），全片多为几分钟到几十分钟，随机截取 30 秒。可搜角色、作品名。需要 ffmpeg。",
+        "condition": {
+          "enabled": true,
+          "show_sources": true
+        },
+        "items": {
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true
+          },
+          "weight": {
+            "description": "比例",
+            "type": "int",
+            "default": 5,
+            "slider": {
+              "min": 1,
+              "max": 10,
+              "step": 1
+            },
+            "condition": {
+              "enabled": true
+            }
           }
         }
       }

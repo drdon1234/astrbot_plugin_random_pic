@@ -1,5 +1,6 @@
 """RedGifs：短视频站，按标签在全站搜高赞短片，只有 R18（站点没有分级，创作者自打的 SFW、Non-nude
-标签不可靠：目检 SFW 只有 2/8 算擦边、其余是指甲、下巴一类杂片，Non-nude 里混着性爱片段）。
+标签不可靠：目检 SFW 只有 2/8 算擦边、其余是指甲、下巴一类杂片，Non-nude 里混着性爱片段；
+版规写着禁止裸露的主题频道如 real-girls-on-tiktok、clothed-twerking，随机页里也有 3~6/8 露点）。
 
 接口（2026-10 实测，匿名）：
 - GET /v2/auth/temporary 取临时 token（约 24 小时有效），之后的请求带 Authorization: Bearer；

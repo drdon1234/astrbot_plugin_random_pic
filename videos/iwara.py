@@ -1,7 +1,7 @@
-"""Iwara（二次元 MMD、Koikatsu、Blender 等 3D 视频），只有 R18。
+"""Iwara（二次元 MMD、Koikatsu、Blender 等 3D 视频），擦边和 R18。
 
 接口（api.iwara.tv，2026-10 实测，匿名可用）：
-- GET /videos?rating=ecchi&sort=likes&limit=50&page=N[&tags=a,b]：按点赞从高到低分页（page 从 0 起），
+- GET /videos?rating=ecchi|general&sort=likes&limit=50&page=N[&tags=a,b]：按点赞从高到低分页（page 从 0 起），
   多个标签是「都要有」；匿名时返回的 count 不是总数，所以第一次用到某个搜索条件时先倍增再二分，
   试出整页点赞都够的页数（不带关键词约 20 次请求，启动时在后台先试；带标签的多半两三次）。
   sort=likes 第 100 页约 2800 赞、第 400 页约 1200 赞、第 1000 页约 640 赞；
@@ -9,10 +9,15 @@
 - GET /video/<id> 返回 fileUrl（带 expires），再带 X-Version = sha1("<文件 id>_<expires>_<密钥>")
   请求 fileUrl 得到各清晰度（Source、540、360）的地址；Source 动辄一两百 MB，优先取 540。
 
-分级：站内只分 general、ecchi 两档，ecchi 里穿着衣服的舞蹈和性内容混在一起，所以整站按 R18 处理，
-只取 ecchi，并且要有 R18 的迹象：标签或标题里有性内容的词，或者是 Koikatsu、Blender、HMV 一类
-（几乎都是性内容）；标题写明「No R-18」「健全」的不要。目检 24 段时没有这条规则有 5 段是穿着衣服的
-MMD 舞蹈；按规则验算 400 个 ecchi 视频放行 307 个，筛掉的多是没写任何 R18 迹象的舞蹈。片长多在 2~7 分钟。
+分级：站内只分 general、ecchi 两档。
+- R18 只取 ecchi，并且要有 R18 的迹象：标签或标题里有性内容的词，或者是 Koikatsu、Blender、HMV 一类
+  （几乎都是性内容）；标题写明「No R-18」「健全」的不要。目检 24 段时没有这条规则有 5 段是穿着衣服的
+  MMD 舞蹈；按规则验算 400 个 ecchi 视频放行 307 个，筛掉的多是没写任何 R18 迹象的舞蹈。
+  ecchi 里没有 R18 迹象的也不能当擦边：目检约四成仍是露点或性内容。
+- 擦边只取 general（全年龄），按点赞排的几乎都是穿比基尼、兔女郎装一类的性感 MMD 舞蹈，但也混着
+  标题写 R18、带 sex 标签或 Koikatsu 一类的露点视频，所以有 R18 迹象的不要。general 的点赞少得多：
+  200 赞以上约 1100 个、100 赞以上约 3500 个。关闭「抽取 MMD 视频」时不提供擦边。
+片长多在 2~7 分钟。
 
 未成年：标签没有统一的年龄标注。黑名单查标签和标题，再把每个标签经 Danbooru 补全成标签，是角色的
 按 Danbooru 统计的 loli / shota 比例过滤儿童设定的角色（可莉、纳西妲等），中文关键词也经 Danbooru 翻译。
@@ -27,7 +32,7 @@ from urllib.parse import parse_qs, urlparse
 
 from astrbot.api import logger
 
-from ..models import ANIME, EXPLICIT, Album, DrawContext, WorkRef
+from ..models import ANIME, EXPLICIT, SENSITIVE, Album, DrawContext, WorkRef
 from ..net import NETWORK_ERRORS, HttpClient, HttpError
 from ..sources.base import Source, split_terms
 from ..sources.danbooru import CHARACTER_CATEGORY, QUALIFIER_RE, DanbooruSource, tag_word
@@ -61,6 +66,8 @@ R18_TITLE_RE = re.compile(
     re.I,
 )
 NOT_R18_RE = re.compile(r"no\s*r-?18|non[- ]?r-?18|非\s*r-?18|健全|全年齢|全年龄|sfw", re.I)
+# 插件的分级 → 站内的分级
+SITE_RATINGS = {SENSITIVE: "general", EXPLICIT: "ecchi"}
 # 每个视频最多换这么多次（被过滤、下载失败时）
 TRIES = 4
 # 每次抽取最多翻这么多页候选
@@ -84,7 +91,7 @@ class IwaraSource(Source):
     name = "Iwara"
     style = ANIME
     intro = "MMD、3D 舞蹈与动画，可搜角色、作品名"
-    ratings = frozenset({EXPLICIT})
+    ratings = frozenset({SENSITIVE, EXPLICIT})
 
     def __init__(
         self,
@@ -96,17 +103,22 @@ class IwaraSource(Source):
         danbooru: DanbooruSource,
         *,
         min_likes: int,
+        min_likes_sensitive: int,
         allow_mmd: bool = True,
     ):
+        """min_likes / min_likes_sensitive：R18（ecchi）和擦边（general）的最低点赞数。"""
         super().__init__(cache, content, opts)
         self.http = http
         self.files = files
         self.danbooru = danbooru
-        self.min_likes = min_likes
+        self.min_likes = {EXPLICIT: min_likes, SENSITIVE: min_likes_sensitive}
         self.allow_mmd = allow_mmd
+        # 擦边几乎都是 MMD：不抽 MMD 时不提供擦边
+        if not allow_mmd:
+            self.ratings = frozenset({EXPLICIT})
         self.recent = Recent()
         self.exclude = AI_TAGS if content.block_ai else frozenset()
-        # 搜索条件（标签）→ 可以抽的页数
+        # (分级, 搜索条件) → 可以抽的页数
         self._pages = TTLCache(PAGES_TTL, 1024)
         # 关键词 → Iwara 标签（找不到时为 None）
         self._tags = TTLCache(TAG_TTL, 4096)
@@ -166,15 +178,26 @@ class IwaraSource(Source):
 
         return await self._child.load(tag, load)
 
-    def _reject(self, video: dict, local: set[str]) -> str | None:
-        if video.get("rating") != "ecchi":
+    @staticmethod
+    def r18_signal(video: dict) -> bool:
+        """标签或标题里有 R18 的迹象（标题写明不是 R18 的除外）。"""
+        title = str(video.get("title") or "")
+        if NOT_R18_RE.search(title):
+            return False
+        tags = tag_ids(video)
+        return bool(R18_TITLE_RE.search(title)) or any(
+            hint in tag for tag in tags for hint in R18_TAG_HINTS
+        )
+
+    def _reject(self, video: dict, local: set[str], rating: str) -> str | None:
+        if video.get("rating") != SITE_RATINGS[rating]:
             return f"分级是 {video.get('rating')}"
         if video.get("private") or video.get("unlisted") or video.get("embedUrl"):
             return "不是公开的站内视频"
         file = video.get("file")
         if not isinstance(file, dict) or file.get("type", "video") != "video":
             return "没有视频文件"
-        if int(video.get("numLikes") or 0) < self.min_likes:
+        if int(video.get("numLikes") or 0) < self.min_likes[rating]:
             return "点赞太少"
         tags = tag_ids(video)
         reason = self.content.plain_tags_reason(tags)
@@ -187,14 +210,13 @@ class IwaraSource(Source):
         term = self.content.blacklist.hit([title]) or young_word([title, *tags])
         if term:
             return f"标题或标签命中 {term}"
-        if NOT_R18_RE.search(title):
-            return "标题写明不是 R18"
         if not self.allow_mmd and is_mmd(tags, title):
             return "是 MMD 视频"
-        if not R18_TITLE_RE.search(title) and not any(
-            hint in tag for tag in tags for hint in R18_TAG_HINTS
-        ):
+        r18 = self.r18_signal(video)
+        if rating == EXPLICIT and not r18:
             return "看不出是 R18（多为穿着衣服的舞蹈）"
+        if rating == SENSITIVE and r18:
+            return "有 R18 的迹象"
         return self.files.reason((file or {}).get("duration"))
 
     async def _child_tag(self, video: dict) -> str | None:
@@ -204,9 +226,9 @@ class IwaraSource(Source):
 
     # ---- 抽取 ----
 
-    async def _list(self, tags: list[str], page: int) -> list[dict]:
+    async def _list(self, rating: str, tags: list[str], page: int) -> list[dict]:
         params = {
-            "rating": "ecchi",
+            "rating": SITE_RATINGS[rating],
             "sort": "likes",
             "limit": str(PAGE_SIZE),
             "page": str(page),
@@ -217,26 +239,30 @@ class IwaraSource(Source):
         results = data.get("results") if isinstance(data, dict) else None
         return [v for v in results or [] if isinstance(v, dict)]
 
-    async def _full(self, tags: list[str], page: int) -> bool:
+    async def _full(self, rating: str, tags: list[str], page: int) -> bool:
         """这一页是满的，且最后一个（点赞最少的）也达到最低点赞。"""
-        videos = await self._list(tags, page)
+        videos = await self._list(rating, tags, page)
         return (
             len(videos) >= PAGE_SIZE
-            and int(videos[-1].get("numLikes") or 0) >= self.min_likes
+            and int(videos[-1].get("numLikes") or 0) >= self.min_likes[rating]
         )
 
-    async def pages(self, tags: list[str]) -> int:
+    async def pages(self, tags: list[str], rating: str = EXPLICIT) -> int:
         """可以抽的页数：整页点赞都够的页，再加上后面一页（其中点赞不够的抽到时过滤）。"""
 
         async def load() -> int:
-            return await count_pages(lambda p: self._full(tags, p), 0, MAX_PAGE)
+            return await count_pages(
+                lambda p: self._full(rating, tags, p), 0, MAX_PAGE
+            )
 
-        return await self._pages.load(",".join(tags), load)
+        return await self._pages.load(f"{rating}:{','.join(tags)}", load)
 
-    async def _random_page(self, tags: list[str]) -> list[dict]:
-        return await self._list(tags, random.randrange(await self.pages(tags)))
+    async def _random_page(self, rating: str, tags: list[str]) -> list[dict]:
+        page = random.randrange(await self.pages(tags, rating))
+        return await self._list(rating, tags, page)
 
     async def draw(self, ctx: DrawContext, n: int) -> tuple[list[Album], list[str]]:
+        rating = ctx.req.rating
         positive, negative = split_terms(ctx.req.keywords)
         try:
             resolved = await asyncio.gather(*(self.resolve(w, ctx) for w in positive))
@@ -268,7 +294,7 @@ class IwaraSource(Source):
                         key = f"{self.key}:{vid}"
                         if vid in seen or key in self.recent:
                             continue
-                        reason = self._reject(video, local)
+                        reason = self._reject(video, local, rating)
                         if reason is None:
                             seen.add(vid)
                             self.recent.add(key)
@@ -277,7 +303,7 @@ class IwaraSource(Source):
                     if fetches >= MAX_FETCHES:
                         return None
                     fetches += 1
-                    videos = await self._random_page(tags)
+                    videos = await self._random_page(rating, tags)
                     random.shuffle(videos)
                     queue.extend(videos)
 

@@ -277,6 +277,28 @@ class LikesSite(Site):
         self.min_likes = _clamp(self.min_likes, 0)
 
 
+@dataclass(kw_only=True)
+class IwaraSite(LikesSite):
+    """Iwara：R18（ecchi）和擦边（general）各有最低点赞数。"""
+
+    min_likes_sensitive: int
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.min_likes_sensitive = _clamp(self.min_likes_sensitive, 0)
+
+
+@dataclass(kw_only=True)
+class ViewsSite(Site):
+    """带最低播放量的视频站（SOOP）。"""
+
+    min_views: int
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.min_views = _clamp(self.min_views, 0)
+
+
 @dataclass
 class Video:
     """/抽视频（实验性）：个数、大小和时长上限与各视频源。"""
@@ -290,9 +312,11 @@ class Video:
     reserve_anime: int
     reserve_real: int
     danbooru: DanbooruSite
-    iwara: LikesSite
+    iwara: IwaraSite
     redgifs_hentai: LikesSite
     redgifs_cosplay: LikesSite
+    soop: ViewsSite
+    cosplaytele: Site
 
     def __post_init__(self):
         self.max_count = _clamp(self.max_count, 1)

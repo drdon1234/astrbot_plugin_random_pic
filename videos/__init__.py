@@ -1,4 +1,6 @@
-"""视频源（实验性）：Danbooru 视频、Iwara、RedGifs 动画（二次元）和 RedGifs Cosplay（三次元），只有 R18。
+"""视频源（实验性）：
+- 二次元：Danbooru 视频、RedGifs 动画（R18），Iwara（擦边、R18）；
+- 三次元：RedGifs Cosplay、CosplayTele 视频（R18），SOOP（擦边）。
 
 VideoSet 和图片的 SourceSet 一样提供 drawing（参与抽取的源和比例），交给同一个 Drawer 按比例抽取。
 """
@@ -14,9 +16,11 @@ from ..settings import Video
 from ..sources.base import Source
 from ..sources.danbooru import DanbooruSource
 from .base import Recent, VideoFiles
+from .cosplaytele import CosplayTeleVideoSource
 from .danbooru import DanbooruVideoSource
 from .iwara import IwaraSource
 from .redgifs import RedGifsSource
+from .soop import TERMS, SoopSource
 
 # 动画片段的标签：RedGifs 动画只要带其中之一的，Cosplay（真人）不要带的
 ANIMATION_TAGS = frozenset(
@@ -55,6 +59,7 @@ class VideoSet:
                     *args,
                     danbooru,
                     min_likes=conf.iwara.min_likes,
+                    min_likes_sensitive=conf.iwara.min_likes_sensitive,
                     allow_mmd=conf.mmd,
                 ),
                 conf.iwara,
@@ -89,12 +94,20 @@ class VideoSet:
                 ),
                 conf.redgifs_cosplay,
             ),
+            (SoopSource(*args, min_views=conf.soop.min_views), conf.soop),
+            (CosplayTeleVideoSource(http, cache, content, opts, self.files), conf.cosplaytele),
         ]
         self.all = [source for source, _ in sources]
-        for source in self.all:
-            source.recent = self.recent
+        for source, site in sources:
+            source.scope = site.ratings
+            if hasattr(source, "recent"):
+                source.recent = self.recent
+            if site.enabled and source.unavailable:
+                logger.info(f"[random_pic] {source.name} 不参与抽视频：{source.unavailable}")
         self.drawing: list[tuple[Source, int]] = [
-            (source, site.weight) for source, site in sources if site.enabled
+            (source, site.weight)
+            for source, site in sources
+            if site.enabled and not source.unavailable and source.usable_ratings
         ]
         # Drawer 的补位只用于三次元图片
         self.fallback = None
@@ -103,13 +116,17 @@ class VideoSet:
         self.files.prepare()
 
     async def warm_up(self):
-        """后台先试出 Iwara、RedGifs 不带关键词时能抽的页数，第一次抽视频时不用等。"""
+        """后台先试出 Iwara、RedGifs、SOOP 不带关键词时能抽的页数，第一次抽视频时不用等。"""
         for source, _ in self.drawing:
             try:
                 if isinstance(source, IwaraSource):
-                    await source.pages([])
+                    for rating in source.usable_ratings:
+                        await source.pages([], rating)
                 elif isinstance(source, RedGifsSource):
                     await source.pages()
+                elif isinstance(source, SoopSource):
+                    for term in TERMS:
+                        await source.pages(term)
             except Exception as e:
                 logger.warning(f"[random_pic] {source.name} 页数预热失败: {e!r}")
 

@@ -1,3 +1,4 @@
 aiohttp>=3.10
 Pillow>=9.0
 jmcomic>=2.7,<3
+cryptography>=41

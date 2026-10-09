@@ -255,21 +255,24 @@ class RandomPicPlugin(Star):
         )
 
     def _video_reserve(self, root: Path) -> Reserve:
-        """按默认个数维护二次元、三次元的 R18 视频预备池（视频关闭或 R18 群聊私聊都不允许时不维护）。"""
+        """按默认个数维护二次元、三次元的擦边、R18 视频预备池（视频关闭时不维护，
+        R18 群聊私聊都不允许时不维护 R18 的，没有视频源的风格和分级也不维护）。"""
         s = self.settings
-        on = s.video.enabled and (s.access.group_r18 or s.access.private_r18)
-        batches = {
-            ANIME: s.video.reserve_anime if on else 0,
-            REAL: s.video.reserve_real if on else 0,
-        }
+        explicit = s.access.group_r18 or s.access.private_r18
+        batches = {ANIME: s.video.reserve_anime, REAL: s.video.reserve_real}
         count = self._video_request([]).albums
         specs, allowed = {}, {}
         for style, n in batches.items():
-            spec = Spec(style, EXPLICIT, count, 1)
-            specs[spec] = n
-            allowed[spec] = {
-                source.key for source, _ in self.videos.drawing if source.style == style
-            }
+            for rating in (SENSITIVE, EXPLICIT):
+                keys = {
+                    source.key
+                    for source, _ in self.videos.drawing
+                    if source.style == style and rating in source.usable_ratings
+                }
+                on = s.video.enabled and keys and (rating != EXPLICIT or explicit)
+                spec = Spec(style, rating, count, 1)
+                specs[spec] = n if on else 0
+                allowed[spec] = keys
         return Reserve(
             self.video_drawer.draw, root, specs, allowed, move=True, label="视频·"
         )
@@ -324,7 +327,7 @@ class RandomPicPlugin(Star):
 
     @filter.command(VIDEO_COMMAND)
     async def draw_video(self, event: AstrMessageEvent):
-        """随机抽 R18 短视频（实验性）。用法：/抽视频 [二次元|三次元] [关键词...] [个数]"""
+        """随机抽短视频（实验性）。用法：/抽视频 [二次元|三次元] [擦边|r18] [关键词...] [个数]"""
         async for result in self._draw_video(event):
             yield result
 
@@ -431,11 +434,10 @@ class RandomPicPlugin(Star):
     # ---- 视频 ----
 
     def _video_request(self, tokens: list[str]) -> DrawRequest:
-        """视频请求：默认 R18（目前只有 R18 视频源），每个「图集」就是一个视频。"""
+        """视频请求：风格、分级默认和抽图一样，每个「图集」就是一个视频。"""
         video = self.settings.video
-        defaults = DrawRequest(
-            self.settings.draw.style, EXPLICIT, albums=video.default_count
-        )
+        draw = self.settings.draw
+        defaults = DrawRequest(draw.style, draw.rating, albums=video.default_count)
         req = parse_args(
             tokens, video.max_count, defaults, self.settings.whole.default_format
         )
@@ -457,8 +459,7 @@ class RandomPicPlugin(Star):
             return
         if req.style not in self.videos.styles(req.rating):
             kind = f"{STYLE_NAMES[req.style]}·{RATING_NAMES[req.rating]}"
-            hint = "视频目前只有 R18。" if req.rating != EXPLICIT else ""
-            yield event.plain_result(f"没有能抽{kind}视频的视频源。{hint}")
+            yield event.plain_result(f"没有能抽{kind}视频的视频源。")
             return
         is_private = event.is_private_chat()
         user_id = str(event.get_sender_id())
@@ -737,7 +738,7 @@ class RandomPicPlugin(Star):
         lines += self.sources.help_lines()
         if s.video.enabled and self.videos.drawing:
             lines += [
-                f"/{VIDEO_COMMAND} [二次元|三次元] [关键词...] [个数]：随机 R18 短视频（实验性），"
+                f"/{VIDEO_COMMAND} [二次元|三次元] [擦边|r18] [关键词...] [个数]：随机短视频（实验性），"
                 f"默认 {s.video.default_count} 个、最多 {s.video.max_count} 个",
                 "视频源：",
                 *self.videos.help_lines(),
