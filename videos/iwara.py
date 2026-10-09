@@ -9,8 +9,10 @@
 - GET /video/<id> 返回 fileUrl（带 expires），再带 X-Version = sha1("<文件 id>_<expires>_<密钥>")
   请求 fileUrl 得到各清晰度（Source、540、360）的地址；Source 动辄一两百 MB，优先取 540。
 
-分级：站内只分 general、ecchi 两档，ecchi 里擦边舞蹈和性内容混在一起（目检 6/8 擦边或 R18），
-所以整站按 R18 处理，只取 ecchi。片长多在 2~7 分钟。
+分级：站内只分 general、ecchi 两档，ecchi 里穿着衣服的舞蹈和性内容混在一起，所以整站按 R18 处理，
+只取 ecchi，并且要有 R18 的迹象：标签或标题里有性内容的词，或者是 Koikatsu、Blender、HMV 一类
+（几乎都是性内容）；标题写明「No R-18」「健全」的不要。目检 24 段时没有这条规则有 5 段是穿着衣服的
+MMD 舞蹈；按规则验算 400 个 ecchi 视频放行 307 个，筛掉的多是没写任何 R18 迹象的舞蹈。片长多在 2~7 分钟。
 
 未成年：标签没有统一的年龄标注。黑名单查标签和标题，再把每个标签经 Danbooru 补全成标签，是角色的
 按 Danbooru 统计的 loli / shota 比例过滤儿童设定的角色（可莉、纳西妲等），中文关键词也经 Danbooru 翻译。
@@ -20,16 +22,17 @@ import asyncio
 import hashlib
 import json
 import random
+import re
 from urllib.parse import parse_qs, urlparse
 
 from astrbot.api import logger
 
-from ..models import ANIME, EXPLICIT, Album, DrawContext
+from ..models import ANIME, EXPLICIT, Album, DrawContext, WorkRef
 from ..net import NETWORK_ERRORS, HttpClient, HttpError
 from ..sources.base import Source, split_terms
 from ..sources.danbooru import CHARACTER_CATEGORY, QUALIFIER_RE, DanbooruSource, tag_word
 from ..util import TTLCache
-from .base import VideoFiles, young_word
+from .base import VideoFiles, count_pages, is_mmd, young_word
 
 API = "https://api.iwara.tv"
 SITE = "https://www.iwara.tv"
@@ -42,6 +45,22 @@ PAGES_TTL = 6 * 3600
 TAG_TTL = 86400
 QUALITIES = ("540", "360", "Source")
 AI_TAGS = frozenset({"ai", "ai_generated", "aigc", "stable_diffusion"})
+# 标签里有这些片段时算有 R18 迹象（Koikatsu、Blender、HS2 是 H 向的 3D 工具，HMV 是 H 向剪辑）
+R18_TAG_HINTS = (
+    "sex", "r18", "r-18", "nude", "naked", "hentai", "creampie", "blowjob", "anal",
+    "cum", "strip", "pussy", "nipple", "uncensored", "squirt", "ahegao", "gangbang",
+    "fellatio", "penetration", "dildo", "hmv", "koikatsu", "blender", "honey_select",
+    "hs2", "ntr", "netorare", "futanari", "bbc", "paizuri", "masturbat", "orgasm",
+    "breeding", "hypno", "exhibition", "doggy", "from_behind", "tentacle", "cowgirl",
+    "missionary", "handjob", "hand_job", "titjob", "oppai", "bukkake", "facial",
+)
+R18_TITLE_RE = re.compile(
+    r"r-?18|sex|hmv|ntr|エロ|えっち|エッチ|全裸|裸|做爱|性爱|セックス|中出|骑乘|後入|后入|侵犯|"
+    r"口交|淫|自慰|オナ|ちんぽ|おっぱい|プッシー|触手|突かれ|ぱんぱん|逆バニー|コイカツ|恋活|"
+    r"anal|hand ?job|cowgirl|doggy|blowjob|creampie|fuck",
+    re.I,
+)
+NOT_R18_RE = re.compile(r"no\s*r-?18|non[- ]?r-?18|非\s*r-?18|健全|全年齢|全年龄|sfw", re.I)
 # 每个视频最多换这么多次（被过滤、下载失败时）
 TRIES = 4
 # 每次抽取最多翻这么多页候选
@@ -77,12 +96,14 @@ class IwaraSource(Source):
         danbooru: DanbooruSource,
         *,
         min_likes: int,
+        allow_mmd: bool = True,
     ):
         super().__init__(cache, content, opts)
         self.http = http
         self.files = files
         self.danbooru = danbooru
         self.min_likes = min_likes
+        self.allow_mmd = allow_mmd
         self.exclude = AI_TAGS if content.block_ai else frozenset()
         # 搜索条件（标签）→ 可以抽的页数
         self._pages = TTLCache(PAGES_TTL, 1024)
@@ -165,6 +186,14 @@ class IwaraSource(Source):
         term = self.content.blacklist.hit([title]) or young_word([title, *tags])
         if term:
             return f"标题或标签命中 {term}"
+        if NOT_R18_RE.search(title):
+            return "标题写明不是 R18"
+        if not self.allow_mmd and is_mmd(tags, title):
+            return "是 MMD 视频"
+        if not R18_TITLE_RE.search(title) and not any(
+            hint in tag for tag in tags for hint in R18_TAG_HINTS
+        ):
+            return "看不出是 R18（多为穿着衣服的舞蹈）"
         return self.files.reason((file or {}).get("duration"))
 
     async def _child_tag(self, video: dict) -> str | None:
@@ -199,20 +228,7 @@ class IwaraSource(Source):
         """可以抽的页数：整页点赞都够的页，再加上后面一页（其中点赞不够的抽到时过滤）。"""
 
         async def load() -> int:
-            if not await self._full(tags, 0):
-                return 1
-            low, high = 0, 1  # low 是满页，high 待查
-            while await self._full(tags, high):
-                if high >= MAX_PAGE - 1:
-                    return MAX_PAGE
-                low, high = high, min(high * 2, MAX_PAGE - 1)
-            while high - low > 1:
-                mid = (low + high) // 2
-                if await self._full(tags, mid):
-                    low = mid
-                else:
-                    high = mid
-            return high + 1
+            return await count_pages(lambda p: self._full(tags, p), 0, MAX_PAGE)
 
         return await self._pages.load(",".join(tags), load)
 
@@ -329,5 +345,6 @@ class IwaraSource(Source):
             total=1,
             pictures=[(1, path)],
             details=details,
+            work=WorkRef(self.key, str(video["id"])),
             duration=file.get("duration"),
         )

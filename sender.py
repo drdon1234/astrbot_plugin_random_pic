@@ -118,12 +118,16 @@ class Composer:
             return [Comp.Plain("\n" + "\n".join(album.details))]
         return []
 
-    def video_messages(self, albums: list[Album], staged: bool) -> list[Message]:
-        """视频：QQ 的视频消息不能带文字，每个视频先发一条标题和说明，再单独发视频。
+    def video_messages(
+        self, albums: list[Album], staged: bool, mode: str, uin: str
+    ) -> list[Message]:
+        """视频的消息。QQ 的视频消息不能带文字，所以每个视频的标题和说明单独一条（或一个节点）。
 
-        staged 为 False（没有中转目录）时视频编码进消息，超过大小上限的不发。
+        合并转发（QQ 上，只有一个视频时也用）：标题、视频各一个节点，节点数或大小超过上限时拆成几条；
+        其他方式：每个视频先发一条标题和说明，再单独发视频。
+        staged 为 False（没有中转目录）时视频编码进消息，单个超过大小上限的不发。
         """
-        messages = []
+        parts: list[tuple[int, list]] = []  # (序号, 消息段)，依次是标题、视频
         for idx, album in enumerate(albums, 1):
             _, path = album.pictures[0]
             text = []
@@ -132,17 +136,34 @@ class Composer:
             if self.caption and album.details:
                 text += album.details
             if text:
-                messages.append(([Comp.Plain("\n".join(text))], [idx]))
+                parts.append((idx, [Comp.Plain("\n".join(text))]))
             if staged:
-                video = Comp.Video.fromFileSystem(str(path))
+                parts.append((idx, [Comp.Video.fromFileSystem(str(path))]))
             elif self._over(_size(path)):
-                messages.append(([Comp.Plain("视频太大，没有中转目录时发不出去。")], []))
-                continue
+                parts.append((0, [Comp.Plain("视频太大，没有中转目录时发不出去。")]))
             else:
                 video = Comp.Video.fromBase64(
                     base64.b64encode(path.read_bytes()).decode()
                 )
-            messages.append(([video], [idx]))
+                parts.append((idx, [video]))
+        if mode != FORWARD:
+            return [(content, [idx] if idx else []) for idx, content in parts]
+        messages, nodes, idxs, size = [], [], [], 0
+        for idx, content in parts:
+            n = sum(
+                _size(Path(c.path)) if getattr(c, "path", "") else len(c.file)
+                for c in content
+                if isinstance(c, Comp.Video)
+            )
+            if nodes and (len(nodes) >= FORWARD_MAX_NODES or self._over(size + n)):
+                messages.append(([Comp.Nodes(nodes)], idxs))
+                nodes, idxs, size = [], [], 0
+            nodes.append(Comp.Node(content=content, uin=uin, name="抽视频"))
+            if idx and idx not in idxs:
+                idxs.append(idx)
+            size += n if self.budget else 0
+        if nodes:
+            messages.append(([Comp.Nodes(nodes)], idxs))
         return messages
 
     def forward_album(self, album: Album, uin: str) -> list[Message]:

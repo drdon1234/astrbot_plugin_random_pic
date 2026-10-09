@@ -266,7 +266,9 @@ class Sources:
 
 
 @dataclass(kw_only=True)
-class IwaraSite(Site):
+class LikesSite(Site):
+    """带最低点赞数的视频站（Iwara、RedGifs）。"""
+
     min_likes: int
 
     def __post_init__(self):
@@ -283,16 +285,21 @@ class Video:
     max_count: int
     max_mb: int
     max_seconds: int
+    mmd: bool
+    reserve_anime: int
+    reserve_real: int
     danbooru: DanbooruSite
-    iwara: IwaraSite
-    redgifs_hentai: Site
-    redgifs_cosplay: Site
+    iwara: LikesSite
+    redgifs_hentai: LikesSite
+    redgifs_cosplay: LikesSite
 
     def __post_init__(self):
         self.max_count = _clamp(self.max_count, 1)
         self.default_count = _clamp(self.default_count, 1, self.max_count)
         self.max_mb = _clamp(self.max_mb, 0)
         self.max_seconds = _clamp(self.max_seconds, 0)
+        self.reserve_anime = _clamp(self.reserve_anime, 0)
+        self.reserve_real = _clamp(self.reserve_real, 0)
         for f in fields(self):
             value = getattr(self, f.name)
             if isinstance(value, dict):

@@ -170,6 +170,7 @@ class ContentFilter:
         )
         self.heavy = heavy
         self.block_ai = block_ai
+        self.block_trans = block_trans
 
     def heavy_hit(self, tags: list[str]) -> str | None:
         """返回命中的重口标签名，未命中返回 None。"""

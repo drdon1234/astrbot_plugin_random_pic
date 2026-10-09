@@ -76,6 +76,7 @@ def _album_to_json(album: Album) -> dict:
         "pictures": [[page, path.name] for page, path in album.pictures],
         "details": album.details,
         "work": [work.source, work.id, work.token] if work else None,
+        "duration": album.duration,
     }
 
 
@@ -88,6 +89,7 @@ def _album_from_json(data: dict, folder: Path) -> Album:
         pictures=[(int(page), folder / name) for page, name in data["pictures"]],
         details=list(data.get("details") or []),
         work=WorkRef(*work) if work else None,
+        duration=data.get("duration"),
     )
 
 
@@ -97,7 +99,10 @@ def _remove(paths):
 
 
 class Pool:
-    """一个分级的预备池。allowed：允许出现在这个池里的图源键（作品图源不在其中的图集会被删掉）。"""
+    """一个分级的预备池。allowed：允许出现在这个池里的图源键（作品图源不在其中的图集会被删掉）。
+
+    move 为 True 时把抽到的文件移进桶（视频：下载的是临时文件，不必留两份），否则复制（图片缓存另有清理）。
+    """
 
     def __init__(
         self,
@@ -106,8 +111,10 @@ class Pool:
         spec: Spec,
         batches: int,
         allowed: set[str],
+        move: bool = False,
     ):
         self.draw_fn = draw
+        self.move = move
         self.root = root
         self.spec = spec
         self.batches = batches
@@ -252,7 +259,10 @@ class Pool:
             for page, path in album.pictures:
                 dest = bucket.dir / f"{prefix}_{page}{path.suffix}"
                 try:
-                    shutil.copyfile(path, dest)
+                    if self.move:
+                        shutil.move(path, dest)
+                    else:
+                        shutil.copyfile(path, dest)
                 except OSError as e:
                     logger.warning(f"[random_pic] 预备池复制图片失败 {path}: {e!r}")
                     continue
@@ -325,8 +335,12 @@ class Reserve:
         root: Path,
         specs: dict[Spec, int],
         allowed: dict[Spec, set[str]],
+        move: bool = False,
     ):
-        """specs：要维护的池的规格 → 批数（批数为 0 或不在其中的不维护）；allowed：规格 → 可用图源键。"""
+        """specs：要维护的池的规格 → 批数（批数为 0 或不在其中的不维护）；allowed：规格 → 可用图源键。
+
+        move：抽到的文件移进桶而不是复制（视频）。
+        """
         self.draw_fn = draw
         self.root = root
         # 5.5.x 的池只有三次元，目录是 root/分级
@@ -345,6 +359,7 @@ class Reserve:
                     spec,
                     batches,
                     allowed.get(spec, set()),
+                    move,
                 )
         # 不维护的池删掉旧桶
         for style in (REAL, ANIME):

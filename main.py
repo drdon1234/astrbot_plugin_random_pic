@@ -10,7 +10,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools
 
 from .access import AccessControl
-from .drawer import Drawer
+from .drawer import Drawer, DrawResult
 from .filters import HEAVY_TAGS, ContentFilter
 from .history import History, SentAlbum, albums_from_text, pick
 from .models import (
@@ -33,7 +33,9 @@ from .pdf import PdfError, PdfStore
 from .pool import Reserve, Spec
 from .push import Pusher
 from .sender import (
+    FORWARD,
     FORWARD_MAX_NODES,
+    MIXED,
     INLINE_BUDGET,
     ONEBOT,
     Composer,
@@ -155,6 +157,7 @@ class RandomPicPlugin(Star):
             self.sources.danbooru,
         )
         self.video_drawer = Drawer(self.videos, self.content, self.tagdb)
+        self.video_reserve = self._video_reserve(data_dir / "reserve_video")
         self.reserve = self._reserve(data_dir / "reserve")
         self.history = History(data_dir / "sent_albums.json")
         stage = self._stage(s.send.share_dir)
@@ -197,6 +200,7 @@ class RandomPicPlugin(Star):
             self.videos.prepare()
             self._warm_up = asyncio.create_task(self.videos.warm_up())
         self.reserve.start()
+        self.video_reserve.start()
         self.pusher.start()
 
     async def terminate(self):
@@ -205,6 +209,7 @@ class RandomPicPlugin(Star):
                 task.cancel()
         self.pusher.stop()
         self.reserve.stop()
+        self.video_reserve.stop()
         await self.http.close()
         await self.sources.close()
 
@@ -247,6 +252,24 @@ class RandomPicPlugin(Star):
         return Reserve(
             lambda req, allow: self.drawer.draw(req, allow), root, specs, allowed
         )
+
+    def _video_reserve(self, root: Path) -> Reserve:
+        """按默认个数维护二次元、三次元的 R18 视频预备池（视频关闭或 R18 群聊私聊都不允许时不维护）。"""
+        s = self.settings
+        on = s.video.enabled and (s.access.group_r18 or s.access.private_r18)
+        batches = {
+            ANIME: s.video.reserve_anime if on else 0,
+            REAL: s.video.reserve_real if on else 0,
+        }
+        count = self._video_request([]).albums
+        specs, allowed = {}, {}
+        for style, n in batches.items():
+            spec = Spec(style, EXPLICIT, count, 1)
+            specs[spec] = n
+            allowed[spec] = {
+                source.key for source, _ in self.videos.drawing if source.style == style
+            }
+        return Reserve(self.video_drawer.draw, root, specs, allowed, move=True)
 
     @filter.command("抽图")
     async def draw_pic(self, event: AstrMessageEvent):
@@ -442,9 +465,20 @@ class RandomPicPlugin(Star):
         if denied:
             yield event.plain_result(denied)
             return
-        result = await self.video_drawer.draw(
-            req, self.access.explicit_allowed(is_private, user_id)
-        )
+        async with self.video_reserve.draw(
+            req,
+            self.access.explicit_allowed(is_private, user_id),
+            self.video_drawer.draw,
+        ) as result:
+            async for out in self._send_videos(event, req, result):
+                yield out
+
+    async def _send_videos(
+        self, event: AstrMessageEvent, req: DrawRequest, result: DrawResult
+    ):
+        """按全局发送方式发出抽到的视频，发完删掉下载的文件（预备池的桶由预备池删）。"""
+        is_private = event.is_private_chat()
+        user_id = str(event.get_sender_id())
         paths = [path for album in result.albums for _, path in album.pictures]
         try:
             if not result.albums:
@@ -456,7 +490,12 @@ class RandomPicPlugin(Star):
                 self.dispatcher.stage is not None
                 or event.get_platform_name() != ONEBOT
             )
-            messages = self.dispatcher.composer.video_messages(result.albums, staged)
+            mode = self.dispatcher.mode
+            if mode == FORWARD and event.get_platform_name() != ONEBOT:
+                mode = MIXED
+            messages = self.dispatcher.composer.video_messages(
+                result.albums, staged, mode, str(event.get_self_id())
+            )
             sender, fallback = self._sender(event)
             failed = await self.dispatcher.send_all(messages, [], sender)
             for chain in fallback:

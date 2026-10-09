@@ -18,6 +18,11 @@ from .danbooru import DanbooruVideoSource
 from .iwara import IwaraSource
 from .redgifs import RedGifsSource
 
+# 动画片段的标签：RedGifs 动画只要带其中之一的，Cosplay（真人）不要带的
+ANIMATION_TAGS = frozenset(
+    {"animation", "anime", "3d", "cartoon", "animated", "sfm", "blender", "rule34"}
+)
+
 
 class VideoSet:
     def __init__(
@@ -35,11 +40,18 @@ class VideoSet:
         args = (http, cache, content, opts, self.files)
         sources: list[tuple[Source, object]] = [
             (
-                DanbooruVideoSource(*args, min_score=conf.danbooru.min_score),
+                DanbooruVideoSource(
+                    *args, min_score=conf.danbooru.min_score, allow_mmd=conf.mmd
+                ),
                 conf.danbooru,
             ),
             (
-                IwaraSource(*args, danbooru, min_likes=conf.iwara.min_likes),
+                IwaraSource(
+                    *args,
+                    danbooru,
+                    min_likes=conf.iwara.min_likes,
+                    allow_mmd=conf.mmd,
+                ),
                 conf.iwara,
             ),
             (
@@ -48,9 +60,12 @@ class VideoSet:
                     key="redgifs_hentai",
                     name="RedGifs 动画",
                     style=ANIME,
-                    niche="hanime",
+                    tag="Hentai",
                     intro="高赞动画片段",
                     verified_only=False,
+                    min_likes=conf.redgifs_hentai.min_likes,
+                    require=ANIMATION_TAGS,
+                    allow_mmd=conf.mmd,
                 ),
                 conf.redgifs_hentai,
             ),
@@ -60,9 +75,12 @@ class VideoSet:
                     key="redgifs_cosplay",
                     name="RedGifs Cosplay",
                     style=REAL,
-                    niche="nsfw-cosplay",
+                    tag="Cosplay",
                     intro="实名认证 coser 的高赞短片",
                     verified_only=True,
+                    min_likes=conf.redgifs_cosplay.min_likes,
+                    reject=ANIMATION_TAGS,
+                    allow_mmd=conf.mmd,
                 ),
                 conf.redgifs_cosplay,
             ),
@@ -78,13 +96,15 @@ class VideoSet:
         self.files.prepare()
 
     async def warm_up(self):
-        """后台先试出 Iwara 不带关键词时的页数，第一次抽视频时不用等。"""
+        """后台先试出 Iwara、RedGifs 不带关键词时能抽的页数，第一次抽视频时不用等。"""
         for source, _ in self.drawing:
-            if isinstance(source, IwaraSource):
-                try:
+            try:
+                if isinstance(source, IwaraSource):
                     await source.pages([])
-                except Exception as e:
-                    logger.warning(f"[random_pic] Iwara 页数预热失败: {e!r}")
+                elif isinstance(source, RedGifsSource):
+                    await source.pages()
+            except Exception as e:
+                logger.warning(f"[random_pic] {source.name} 页数预热失败: {e!r}")
 
     def styles(self, rating: str) -> set[str]:
         """这个分级有视频源的风格。"""

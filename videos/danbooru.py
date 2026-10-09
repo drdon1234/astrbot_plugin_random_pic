@@ -13,7 +13,7 @@ from dataclasses import replace
 from astrbot.api import logger
 
 
-from ..models import EXPLICIT, Album, DrawContext
+from ..models import EXPLICIT, Album, DrawContext, WorkRef
 from ..net import HttpError
 from ..sources.danbooru import (
     EXCLUDE_TAGS,
@@ -23,7 +23,7 @@ from ..sources.danbooru import (
     DanbooruSource,
     Pool,
 )
-from .base import VideoFiles
+from .base import MMD_TAGS, VideoFiles
 
 # 视频都带 animated，3D 动画也要；其余排除的标签和图片相同
 VIDEO_EXCLUDE_TAGS = EXCLUDE_TAGS - {"animated", "3d"}
@@ -38,14 +38,24 @@ class DanbooruVideoSource(DanbooruSource):
     ratings = frozenset({EXPLICIT})
     fields = FIELDS + ",media_asset[duration]"
 
-    def __init__(self, http, cache, content, opts, files: VideoFiles, *, min_score: int):
+    def __init__(
+        self,
+        http,
+        cache,
+        content,
+        opts,
+        files: VideoFiles,
+        *,
+        min_score: int,
+        allow_mmd: bool = True,
+    ):
         super().__init__(
             http,
             cache,
             content,
             opts,
             min_score=min_score,
-            exclude_tags=VIDEO_EXCLUDE_TAGS,
+            exclude_tags=VIDEO_EXCLUDE_TAGS | (frozenset() if allow_mmd else MMD_TAGS),
         )
         self.files = files
         # random:N 超时过的搜索条件
@@ -98,5 +108,6 @@ class DanbooruVideoSource(DanbooruSource):
             total=1,
             pictures=[(1, path)],
             details=details,
+            work=WorkRef(self.key, str(post.get("id"))),
             duration=self._duration(post),
         )
