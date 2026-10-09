@@ -112,6 +112,7 @@ class Pool:
         batches: int,
         allowed: set[str],
         move: bool = False,
+        label: str = "",
     ):
         self.draw_fn = draw
         self.move = move
@@ -119,7 +120,7 @@ class Pool:
         self.spec = spec
         self.batches = batches
         self.allowed = allowed
-        self.name = f"{STYLE_NAMES[spec.style]}·{RATING_NAMES[spec.rating]}"
+        self.name = f"{label}{STYLE_NAMES[spec.style]}·{RATING_NAMES[spec.rating]}"
         self.ready: list[Bucket] = []
         self._pending: list[Bucket] = []  # 重载后要补图集的旧桶
         self._cond = asyncio.Condition()
@@ -336,10 +337,11 @@ class Reserve:
         specs: dict[Spec, int],
         allowed: dict[Spec, set[str]],
         move: bool = False,
+        label: str = "",
     ):
         """specs：要维护的池的规格 → 批数（批数为 0 或不在其中的不维护）；allowed：规格 → 可用图源键。
 
-        move：抽到的文件移进桶而不是复制（视频）。
+        move：抽到的文件移进桶而不是复制（视频）；label：日志里池名的前缀。
         """
         self.draw_fn = draw
         self.root = root
@@ -360,6 +362,7 @@ class Reserve:
                     batches,
                     allowed.get(spec, set()),
                     move,
+                    label,
                 )
         # 不维护的池删掉旧桶
         for style in (REAL, ANIME):

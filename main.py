@@ -269,7 +269,9 @@ class RandomPicPlugin(Star):
             allowed[spec] = {
                 source.key for source, _ in self.videos.drawing if source.style == style
             }
-        return Reserve(self.video_drawer.draw, root, specs, allowed, move=True)
+        return Reserve(
+            self.video_drawer.draw, root, specs, allowed, move=True, label="视频·"
+        )
 
     @filter.command("抽图")
     async def draw_pic(self, event: AstrMessageEvent):
