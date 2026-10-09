@@ -28,7 +28,14 @@ from ..models import EXPLICIT, Album, DrawContext, WorkRef
 from ..net import NETWORK_ERRORS, HttpClient, HttpError, RateLimiter
 from ..sources.base import Source, split_terms
 from ..util import TTLCache
-from .base import MMD_TAGS, VideoFiles, count_pages, young_word
+from .base import (
+    MMD_TAGS,
+    Recent,
+    RecentAuthors,
+    VideoFiles,
+    count_pages,
+    young_word,
+)
 
 API = "https://api.redgifs.com/v2"
 PAGE_SIZE = 80
@@ -56,6 +63,11 @@ FETISH_TAGS = frozenset(
 )
 # 每个视频最多换这么多次（被过滤、下载失败时）
 TRIES = 4
+# 最近这么多次抽到的作者不再抽（一次抽取里也是每个作者一个）
+AUTHOR_WINDOW = 15
+# 判断一页是否达标：不少于这么多个条目，且点赞的中位数不低于最低点赞。
+# order=top 并不严格按点赞排（第 1 页里也夹着一百多赞的），不能要求整页每个都达标
+FULL_PAGE = PAGE_SIZE - 5
 # 每次抽取最多翻这么多页候选
 MAX_FETCHES = 6
 
@@ -103,6 +115,8 @@ class RedGifsSource(Source):
             | reject
         )
         self.limiter = RateLimiter(REQUEST_INTERVAL)
+        self.recent = Recent()
+        self.authors = RecentAuthors(AUTHOR_WINDOW)
         self._token = TTLCache(TOKEN_TTL, 1)
         self._pages = TTLCache(PAGES_TTL, 4)
 
@@ -154,11 +168,12 @@ class RedGifsSource(Source):
         return [g for g in data.get("gifs") or [] if isinstance(g, dict)]
 
     async def _full(self, page: int) -> bool:
-        """这一页是满的，且点赞最少的也达到最低点赞。"""
+        """这一页（基本）是满的，且点赞的中位数达到最低点赞。"""
         gifs = await self._page(page)
-        return len(gifs) >= PAGE_SIZE and all(
-            int(g.get("likes") or 0) >= self.min_likes for g in gifs
-        )
+        if len(gifs) < FULL_PAGE:
+            return False
+        likes = sorted(int(g.get("likes") or 0) for g in gifs)
+        return likes[len(likes) // 2] >= self.min_likes
 
     async def pages(self) -> int:
         """可以抽的页数（页码从 1 起）。"""
@@ -207,8 +222,6 @@ class RedGifsSource(Source):
         if pages <= 0:
             return [], [f"{self.name} 没有视频"]
         seen: set[str] = set()
-        # 高赞的片子集中在少数作者（目检 24 段里 9 段是同一个人），一次抽取里每个作者只出一个
-        authors: set[str] = set()
         queue: list[dict] = []
         fetches = 0
         lock = asyncio.Lock()
@@ -221,13 +234,16 @@ class RedGifsSource(Source):
                     while queue:
                         gif = queue.pop()
                         gid = gif.get("id")
+                        key = f"{self.key}:{gid}"
+                        # 高赞的片子集中在少数作者（目检 24 段里 9 段是同一个人），作者也换着来
                         author = str(gif.get("userName") or "")
-                        if gid in seen or (author and author in authors):
+                        if gid in seen or key in self.recent or author in self.authors:
                             continue
                         reason = self._reject(gif, local)
                         if reason is None:
                             seen.add(gid)
-                            authors.add(author)
+                            self.recent.add(key)
+                            self.authors.add(author)
                             return gif
                         logger.debug(f"[random_pic] 跳过 {self.name} {gid}: {reason}")
                     if fetches >= MAX_FETCHES:

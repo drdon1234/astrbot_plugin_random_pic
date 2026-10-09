@@ -32,7 +32,7 @@ from ..net import NETWORK_ERRORS, HttpClient, HttpError
 from ..sources.base import Source, split_terms
 from ..sources.danbooru import CHARACTER_CATEGORY, QUALIFIER_RE, DanbooruSource, tag_word
 from ..util import TTLCache
-from .base import VideoFiles, count_pages, is_mmd, young_word
+from .base import Recent, VideoFiles, count_pages, is_mmd, young_word
 
 API = "https://api.iwara.tv"
 SITE = "https://www.iwara.tv"
@@ -104,6 +104,7 @@ class IwaraSource(Source):
         self.danbooru = danbooru
         self.min_likes = min_likes
         self.allow_mmd = allow_mmd
+        self.recent = Recent()
         self.exclude = AI_TAGS if content.block_ai else frozenset()
         # 搜索条件（标签）→ 可以抽的页数
         self._pages = TTLCache(PAGES_TTL, 1024)
@@ -264,11 +265,13 @@ class IwaraSource(Source):
                     while queue:
                         video = queue.pop()
                         vid = video.get("id")
-                        if vid in seen:
+                        key = f"{self.key}:{vid}"
+                        if vid in seen or key in self.recent:
                             continue
                         reason = self._reject(video, local)
                         if reason is None:
                             seen.add(vid)
+                            self.recent.add(key)
                             return video
                         logger.debug(f"[random_pic] 跳过 Iwara {vid}: {reason}")
                     if fetches >= MAX_FETCHES:

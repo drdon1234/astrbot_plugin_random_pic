@@ -155,6 +155,7 @@ class RandomPicPlugin(Star):
             opts,
             data_dir / "video_tmp",
             self.sources.danbooru,
+            data_dir / "video_recent.json",
         )
         self.video_drawer = Drawer(self.videos, self.content, self.tagdb)
         self.video_reserve = self._video_reserve(data_dir / "reserve_video")

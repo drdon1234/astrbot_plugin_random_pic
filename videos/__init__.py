@@ -13,7 +13,7 @@ from ..net import HttpClient, ImageCache
 from ..settings import Video
 from ..sources.base import Source
 from ..sources.danbooru import DanbooruSource
-from .base import VideoFiles
+from .base import Recent, VideoFiles
 from .danbooru import DanbooruVideoSource
 from .iwara import IwaraSource
 from .redgifs import RedGifsSource
@@ -34,9 +34,14 @@ class VideoSet:
         opts: DrawOptions,
         root: Path,
         danbooru: DanbooruSource,
+        recent_path: Path | None = None,
     ):
-        """danbooru 是图片的 Danbooru 源：Iwara 借它翻译关键词、判断儿童角色。"""
+        """danbooru 是图片的 Danbooru 源：Iwara 借它翻译关键词、判断儿童角色。
+
+        recent_path：保存最近抽过的视频的文件，各视频源共用（None 时只在内存里）。
+        """
         self.files = VideoFiles(http, root, conf.max_mb, conf.max_seconds)
+        self.recent = Recent(recent_path)
         args = (http, cache, content, opts, self.files)
         sources: list[tuple[Source, object]] = [
             (
@@ -86,6 +91,8 @@ class VideoSet:
             ),
         ]
         self.all = [source for source, _ in sources]
+        for source in self.all:
+            source.recent = self.recent
         self.drawing: list[tuple[Source, int]] = [
             (source, site.weight) for source, site in sources if site.enabled
         ]

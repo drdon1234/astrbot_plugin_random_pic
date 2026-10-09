@@ -23,7 +23,7 @@ from ..sources.danbooru import (
     DanbooruSource,
     Pool,
 )
-from .base import MMD_TAGS, VideoFiles
+from .base import MMD_TAGS, Recent, VideoFiles
 
 # 视频都带 animated，3D 动画也要；其余排除的标签和图片相同
 VIDEO_EXCLUDE_TAGS = EXCLUDE_TAGS - {"animated", "3d"}
@@ -58,6 +58,7 @@ class DanbooruVideoSource(DanbooruSource):
             exclude_tags=VIDEO_EXCLUDE_TAGS | (frozenset() if allow_mmd else MMD_TAGS),
         )
         self.files = files
+        self.recent = Recent()
         # random:N 超时过的搜索条件
         self._slow: set[str] = set()
 
@@ -95,9 +96,12 @@ class DanbooruVideoSource(DanbooruSource):
         hit = next((t for t in tags if t in self.exclude or t in local), None)
         if hit:
             return f"带排除的标签 {hit}"
+        if f"{self.key}:{post.get('id')}" in self.recent:
+            return "最近抽过"
         return self.files.reason(self._duration(post), int(post.get("file_size") or 0))
 
     async def _album(self, post: dict, ctx: DrawContext) -> Album | None:
+        self.recent.add(f"{self.key}:{post.get('id')}")
         path = await self.files.download(post["file_url"], headers=HEADERS)
         if path is None:
             return None
