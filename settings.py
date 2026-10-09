@@ -346,6 +346,9 @@ ACCOUNT_URL_RE = {
     ),
     TELEGRAM: re.compile(r"^(?:https?://)?(?:www\.)?t\.me/(?:s/)?([^/?#]+)", re.I),
 }
+# 抽图来源：网站（图源管理、视频里的网站）或订阅，只能选一种
+FROM_SITES = "网站"
+FROM_FEEDS = "订阅"
 MEDIA_IMAGES = {"图片和视频": True, "仅图片": True, "仅视频": False}
 MEDIA_VIDEOS = {"图片和视频": True, "仅图片": False, "仅视频": True}
 
@@ -413,7 +416,13 @@ class Feed:
 
 @dataclass
 class Feeds:
+    mode: str  # FROM_SITES / FROM_FEEDS
     subscriptions: list[Feed]
+
+    @property
+    def active(self) -> bool:
+        """订阅参与抽图（抽图来源选了订阅）。"""
+        return self.mode == FROM_FEEDS
 
     def __post_init__(self):
         feeds: dict[str, Feed] = {}

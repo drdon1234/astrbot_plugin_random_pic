@@ -118,6 +118,11 @@ class VideoSet:
             self.all.append(source)
             self.drawing.append((source, weight))
 
+    def use_only(self, drawing: list[tuple[Source, int]]):
+        """只从这些视频源（订阅）抽，配置里的视频源不再参与。"""
+        self.drawing = []
+        self.add(drawing)
+
     def prepare(self):
         self.files.prepare()
 

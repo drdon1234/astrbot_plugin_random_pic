@@ -174,9 +174,13 @@ class RandomPicPlugin(Star):
             self.videos.files,
             self.videos.recent,
         )
-        self.sources.add(self.feeds.images)
-        if s.video.enabled:
-            self.videos.add(self.feeds.videos)
+        # 抽图来源选订阅时只从订阅抽；选网站时订阅只登记，/全集 还能获取以前抽到的订阅作品
+        if s.feeds.active:
+            self.sources.use_only(self.feeds.images)
+            if s.video.enabled:
+                self.videos.use_only(self.feeds.videos)
+        else:
+            self.sources.add(self.feeds.images, draw=False)
         self.video_drawer = Drawer(self.videos, self.content, self.tagdb)
         self.video_reserve = self._video_reserve(media_dir / "reserve_video")
         self.reserve = self._reserve(media_dir / "reserve")
@@ -221,7 +225,7 @@ class RandomPicPlugin(Star):
         if self.settings.video.enabled:
             self.videos.prepare()
             self._warm_up = asyncio.create_task(self.videos.warm_up())
-        if self.feeds.feeds:
+        if self.settings.feeds.active and self.feeds.feeds:
             self._feeds_warm_up = asyncio.create_task(self.feeds.warm_up())
         self.reserve.start()
         self.video_reserve.start()
@@ -268,12 +272,13 @@ class RandomPicPlugin(Star):
             default = self._request(STYLE_NAMES[style], [])
             min_pages = s.draw.min_pages if style == REAL else 0
             spec = Spec(style, rating, default.albums, default.per_album, min_pages)
-            specs[spec] = n
             allowed[spec] = {
                 source.key
                 for source, _ in self.sources.drawing
                 if source.style == style and rating in source.usable_ratings
             }
+            # 没有图源的风格·分级（如只从订阅抽时）不维护
+            specs[spec] = n if allowed[spec] else 0
         return Reserve(
             lambda req, allow: self.drawer.draw(req, allow), root, specs, allowed
         )
@@ -389,7 +394,7 @@ class RandomPicPlugin(Star):
 
     def _defaults(self, tokens: list[str]) -> tuple[str, str]:
         """不写风格、分级时的默认值：参数指名了订阅时是这个订阅的，否则是配置的。"""
-        feed = self.feeds.named(tokens)
+        feed = self.feeds.named(tokens) if self.settings.feeds.active else None
         if feed:
             return feed.conf.style, feed.conf.rating
         return self.settings.draw.style, self.settings.draw.rating
@@ -820,7 +825,7 @@ class RandomPicPlugin(Star):
             lines.append("别名：/二次元 /三次元 /擦边 /色图")
         lines.append(f"R18：群聊{on[access.group_r18]}，私聊{on[access.private_r18]}")
         lines += self.sources.help_lines()
-        if self.feeds.feeds:
+        if s.feeds.active and self.feeds.feeds:
             example = self.feeds.feeds[0].conf.name or self.feeds.feeds[0].conf.account
             lines.append(
                 f"· 关键词写订阅的账号或名称时只抽这个订阅，例如 /抽图 {example}"

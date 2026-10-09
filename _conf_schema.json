@@ -1113,8 +1113,15 @@
   "feeds": {
     "description": "订阅（X / Telegram）",
     "type": "object",
-    "hint": "把指定的 X（推特）博主、Telegram 公开频道的图片和视频加入抽图和 /抽视频，和同风格、同分级的其他图源按比例混合；关键词写订阅的账号或显示名称时只抽这个订阅，例如 /抽图 enako_cos。需要能访问 X、Telegram 的网络（见「网络与目录」的代理）。",
+    "hint": "抽图来源选「订阅」时，从指定的 X（推特）博主、Telegram 公开频道抽图片和视频（/抽图、/抽视频），同风格、同分级的订阅按比例混合；关键词写订阅的账号或显示名称时只抽这个订阅，例如 /抽图 enako_cos。需要能访问 X、Telegram 的网络（见「网络与目录」的代理）。",
     "items": {
+      "mode": {
+        "description": "抽图来源",
+        "type": "string",
+        "options": ["网站", "订阅"],
+        "default": "网站",
+        "hint": "网站：从「图源管理」「视频」里的网站抽，订阅不参与；订阅：/抽图、/抽视频 和推送只从下面的订阅抽，网站不参与（也不补位）。两者只能选一种。"
+      },
       "subscriptions": {
         "description": "订阅列表",
         "type": "template_list",
