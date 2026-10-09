@@ -3,6 +3,7 @@
 不带关键词的默认抽图和定时推送直接拿一批发送，发完删掉这批并在后台补一批新的。
 每批（桶）存在共享目录（没有时为插件数据目录）里，插件重载后按当前配置同步：多的图集、图片删掉，少的补抽。
 没有现成的桶但正在补时，等正在补的这一批。
+管理员可以刷新：丢掉所有现成的和正在补的桶，从头补满。
 """
 
 import asyncio
@@ -127,10 +128,11 @@ class Pool:
         self._wake = asyncio.Event()
         self._busy = True  # 正在补桶（或马上要补），取不到现成的桶时可以等
         self._backoff = False  # 没补满或出错后正在隔一会儿再补，这期间取不到就不等
+        self._filling: Bucket | None = None  # 正在补、还没放进 ready / _pending 的桶
         self._task: asyncio.Task | None = None
 
-    def start(self):
-        self._task = asyncio.create_task(self._run())
+    def start(self, load: bool = True):
+        self._task = asyncio.create_task(self._run(load))
 
     def stop(self):
         if self._task and not self._task.done():
@@ -153,17 +155,53 @@ class Pool:
         self._wake.set()
         return bucket
 
+    # ---- 刷新 ----
+
+    async def refresh(self) -> int:
+        """丢掉现成的和正在补的桶，重新开始补，返回丢掉的批数。
+
+        正在发送的桶（已经取走的）不动，发完照常删掉。
+        """
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
+        async with self._cond:
+            buckets = [*self.ready, *self._pending]
+            if self._filling is not None:
+                buckets.append(self._filling)
+            dropped = len(self.ready) + len(self._pending)
+            self.ready.clear()
+            self._pending.clear()
+            self._filling = None
+            self._busy = True
+            self._wake.clear()
+        for bucket in buckets:
+            await asyncio.to_thread(shutil.rmtree, bucket.dir, True)
+        logger.info(f"[random_pic] 预备池（{self.name}）刷新：丢弃 {dropped} 批")
+        # 不再读目录：目录里剩下的是正在发送的桶
+        self.start(load=False)
+        return dropped
+
+    async def settled(self) -> int:
+        """等这一轮补完（补满，或没补满、出错后隔一会儿再补时），返回现成的批数。"""
+        async with self._cond:
+            await self._cond.wait_for(
+                lambda: not self._busy or self._task is None or self._task.done()
+            )
+            return len(self.ready)
+
     # ---- 维护 ----
 
-    async def _run(self):
-        try:
-            await asyncio.to_thread(self._load)
-        except Exception as e:
-            logger.error(f"[random_pic] 预备池（{self.name}）读取旧桶出错: {e!r}")
-        logger.info(
-            f"[random_pic] 预备池（{self.name}）已有 {len(self.ready)} 批完整、"
-            f"{len(self._pending)} 批待补，目标 {self.batches} 批"
-        )
+    async def _run(self, load: bool = True):
+        if load:
+            try:
+                await asyncio.to_thread(self._load)
+            except Exception as e:
+                logger.error(f"[random_pic] 预备池（{self.name}）读取旧桶出错: {e!r}")
+            logger.info(
+                f"[random_pic] 预备池（{self.name}）已有 {len(self.ready)} 批完整、"
+                f"{len(self._pending)} 批待补，目标 {self.batches} 批"
+            )
         while True:
             bucket = None
             try:
@@ -171,6 +209,7 @@ class Pool:
                 if bucket is None:
                     await self._wake.wait()
                     continue
+                self._filling = bucket
                 self._busy = True
                 ok = await self._fill(bucket)
                 done = ok and (
@@ -185,6 +224,7 @@ class Pool:
                         if ok:
                             self._pending.append(bucket)
                         self._busy = False
+                    self._filling = None
                     self._cond.notify_all()
                 if not done:
                     await self._back_off()
@@ -199,6 +239,7 @@ class Pool:
                     if bucket is not None and bucket.dir.is_dir():
                         if bucket not in self.ready and bucket not in self._pending:
                             self._pending.append(bucket)
+                    self._filling = None
                     self._busy = False
                     self._cond.notify_all()
                 await self._back_off()
@@ -377,6 +418,17 @@ class Reserve:
     def stop(self):
         for pool in self.pools.values():
             pool.stop()
+
+    async def refresh(self) -> int:
+        """所有池丢掉现成的和正在补的桶、重新补，返回丢掉的批数。"""
+        dropped = await asyncio.gather(*(p.refresh() for p in self.pools.values()))
+        return sum(dropped)
+
+    async def settled(self) -> list[tuple[str, int, int]]:
+        """等所有池这一轮补完，返回每个池的（名称, 现成批数, 目标批数）。"""
+        pools = list(self.pools.values())
+        ready = await asyncio.gather(*(p.settled() for p in pools))
+        return [(p.name, n, p.batches) for p, n in zip(pools, ready)]
 
     @asynccontextmanager
     async def draw(self, req: DrawRequest, allow_explicit: bool, draw: DrawFn):

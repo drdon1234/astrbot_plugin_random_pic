@@ -72,6 +72,9 @@ WHOLE_COMMANDS = {"全集": None, "pdf": PDF_FORMAT}
 # 抽图参数里表示「随机抽一个完整作品」的词 → 发送方式（None 为配置的默认方式）
 WHOLE_WORDS = {"全集": None, "pdf": PDF_FORMAT}
 VIDEO_COMMAND = "抽视频"
+REFRESH_COMMAND = "刷新预备池"
+# 刷新预备池后最多等多久报告结果（之后在后台接着补）
+REFRESH_WAIT = 1800
 # 群聊不带唤醒前缀时也能触发的指令词（整条消息就是指令词，或后面跟空格和参数）
 NO_PREFIX_RE = (
     rf"(?i)^\s*({'|'.join([*DRAW_COMMANDS, *WHOLE_COMMANDS, VIDEO_COMMAND])})(?:\s|$)"
@@ -210,6 +213,7 @@ class RandomPicPlugin(Star):
         self._preload: asyncio.Task | None = None
         self._warm_up: asyncio.Task | None = None
         self._feeds_warm_up: asyncio.Task | None = None
+        self._refreshing = False
 
     async def initialize(self):
         # 后台预加载标签库，避免第一次抽卡时等待下载
@@ -351,6 +355,12 @@ class RandomPicPlugin(Star):
         async for result in self._draw_video(event):
             yield result
 
+    @filter.command(REFRESH_COMMAND, alias={"刷新预选池"})
+    async def refresh_reserve(self, event: AstrMessageEvent):
+        """管理员私聊：丢掉预备池里抽好的图和视频，按当前配置重新抽。可加 图片 或 视频 只刷新一种"""
+        async for result in self._refresh_reserve(event):
+            yield result
+
     @filter.regex(NO_PREFIX_RE)
     async def no_prefix(self, event: AstrMessageEvent):
         """群聊里不带 / 也能触发本插件的指令。"""
@@ -458,6 +468,52 @@ class RandomPicPlugin(Star):
                 yield event.plain_result(
                     f"仅获取到 {len(result.albums)}/{req.albums} 个图集。"
                 )
+
+    # ---- 刷新预备池 ----
+
+    async def _refresh_reserve(self, event: AstrMessageEvent):
+        """只有管理员在私聊里能用，其他人不回复。等这一轮补完后报告每个池补了几批。"""
+        if not event.is_private_chat() or not self.access.is_admin(
+            str(event.get_sender_id())
+        ):
+            return
+        tokens = event.message_str.split()[1:]
+        reserves = []
+        if "视频" not in tokens:
+            reserves.append(self.reserve)
+        if not {"图片", "图"} & set(tokens):
+            reserves.append(self.video_reserve)
+        reserves = [r for r in reserves if r.pools]
+        if not reserves:
+            yield event.plain_result("没有在维护的预备池。")
+            return
+        if self._refreshing:
+            yield event.plain_result("预备池正在刷新，请等这次刷新完成。")
+            return
+        self._refreshing = True
+        try:
+            dropped = sum([await r.refresh() for r in reserves])
+            pools = [p for r in reserves for p in r.pools.values()]
+            yield event.plain_result(
+                f"已丢弃 {dropped} 批，正在按当前配置重新抽 {len(pools)} 个预备池"
+                f"（共 {sum(p.batches for p in pools)} 批），抽完后告诉你……"
+            )
+            try:
+                results = await asyncio.wait_for(
+                    asyncio.gather(*(r.settled() for r in reserves)), REFRESH_WAIT
+                )
+            except asyncio.TimeoutError:
+                yield event.plain_result(
+                    f"{REFRESH_WAIT // 60} 分钟还没抽完，之后在后台接着抽。"
+                )
+                return
+            lines = ["预备池刷新完成："]
+            for name, ready, batches in (row for rows in results for row in rows):
+                note = "" if ready >= batches else "（没抽满，稍后自动接着抽）"
+                lines.append(f"· {name}：{ready}/{batches} 批{note}")
+            yield event.plain_result("\n".join(lines))
+        finally:
+            self._refreshing = False
 
     # ---- 视频 ----
 
