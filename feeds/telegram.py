@@ -7,7 +7,8 @@
 - 每条消息是带 data-post="<频道>/<id>" 的块。相册（一组图片、视频）是一个块，id 是第一项的；
   图片是 tgme_widget_message_photo_wrap 的 background-image（cdn*.telesco.pe 的 jpg，长边约 800~1280，
   没有防盗链）；视频是 tgme_widget_message_video_player 里的 <video src>（带 token 的 mp4，有时效，
-  抓到后马上下载），太大的视频没有 src、写着「Media is too big」；时长在 message_video_duration 里；
+  抓到后马上下载），太大的视频没有 src、写着「Media is too big」；时长在 message_video_duration 里，
+  GIF 动图也是 <video>，但没有时长；
 - GET t.me/<频道>/<id>?embed=1：单条消息（相册里任意一项的 id 都给出整个相册），/pdf 用。
 """
 
@@ -81,14 +82,12 @@ def parse_posts(page: str, channel: str) -> list[Post]:
         clips = []
         for player in VIDEO_RE.findall(block):
             src = VIDEO_SRC_RE.search(player)
-            if not src:  # 太大，网页预览不提供
-                continue
             duration = DURATION_RE.search(player)
+            # 没有地址的太大，网页预览不提供；没有时长的是 GIF 动图
+            if not src or not duration:
+                continue
             clips.append(
-                Clip(
-                    [(html.unescape(src.group(1)), 0, 0)],
-                    seconds(duration.group(1)) if duration else None,
-                )
+                Clip([(html.unescape(src.group(1)), 0, 0)], seconds(duration.group(1)))
             )
         texts = TEXT_RE.findall(block)
         posted = TIME_RE.search(block)
