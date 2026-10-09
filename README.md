@@ -7,6 +7,8 @@ AstrBot 随机抽图插件。图片按两个维度划分：
 
 二次元来自 [Danbooru](#danbooru)（按用户投票分筛选的高分插画）；三次元从 E-Hentai / ExHentai、[哔咔](#哔咔)、[CosplayTele](#cosplaytele)、[NudeCosplay](#nudecosplay)、[XiuRen](#xiuren)、[PixiBB](#pixibb) 和 [禁漫天堂](#禁漫天堂) 中按比例选（默认均分）。每个站点都可以在「图源管理」里单独开关、限定只用于擦边或 R18。不带关键词就是在整个池子里完全随机。
 
+另有实验性的 `/抽视频`：从 Danbooru、Iwara、RedGifs 随机抽 R18 短视频，见[视频](#视频实验性)。
+
 一次抽卡抽若干个**图集**，每个图集是同一个画廊 / 帖子 / 本子里的几张图。每个图集第一张图上方有两行标题，后面的图上方只有页码：
 
 ```
