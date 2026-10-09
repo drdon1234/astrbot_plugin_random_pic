@@ -333,7 +333,7 @@ class Video:
 
 @dataclass
 class Env:
-    """部署环境：网络代理，QQ 机器人和 AstrBot 共用的中转目录、PDF 目录（留空为不用 / 插件数据目录）。"""
+    """部署环境：网络代理，QQ 机器人和 AstrBot 共用的共享目录、PDF 目录（留空为不用 / 插件数据目录）。"""
 
     proxy: str
     share_dir: str

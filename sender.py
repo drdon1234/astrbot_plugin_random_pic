@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import os
 import shutil
 import uuid
 from collections.abc import Awaitable, Callable
@@ -28,9 +29,9 @@ SEND_INTERVAL = 0.5
 # 图片编码（base64）进消息时，一条消息里图片原文件的总字节数上限。
 # NapCat 的 WebSocket 单条上限是 50 MB，超过时连接被断开、发送要等到超时才失败；base64 会大三分之一
 INLINE_BUDGET = 30 * 1024 * 1024
-# 插件复制到中转目录的图片的文件名前缀
+# 发送时在共享目录里给图片、视频建的链接的文件名前缀
 STAGE_PREFIX = "rp_"
-# 发送超时、连接中断时 QQ 机器人可能还在读中转目录里的文件（大视频上传要很久），这么多秒后再删
+# 发送超时、连接中断时 QQ 机器人可能还在读这些文件（大视频上传要很久），这么多秒后再删
 STAGE_KEEP_SECONDS = 600
 
 # 一条消息：(消息段, 其中的图集序号)
@@ -125,7 +126,7 @@ class Composer:
 
         合并转发（QQ 上，只有一个视频时也用）：标题、视频各一个节点，节点数或大小超过上限时拆成几条；
         其他方式：每个视频先发一条标题和说明，再单独发视频。
-        staged 为 False（没有中转目录）时视频编码进消息，单个超过大小上限的不发。
+        staged 为 False（没有共享目录）时视频编码进消息，单个超过大小上限的不发。
         """
         parts: list[tuple[int, list]] = []  # (序号, 消息段)，依次是标题、视频
         for idx, album in enumerate(albums, 1):
@@ -140,7 +141,7 @@ class Composer:
             if staged:
                 parts.append((idx, [Comp.Video.fromFileSystem(str(path))]))
             elif self._over(_size(path)):
-                parts.append((0, [Comp.Plain("视频太大，没有中转目录时发不出去。")]))
+                parts.append((0, [Comp.Plain("视频太大，没有共享目录时发不出去。")]))
             else:
                 video = Comp.Video.fromBase64(
                     base64.b64encode(path.read_bytes()).decode()
@@ -267,16 +268,18 @@ class SendFailed(Exception):
 
 
 class Stage:
-    """图片中转目录：QQ 机器人（如 NapCat）也能以同一路径读取的目录。
+    """共享目录：QQ 机器人（如 NapCat）也能以同一路径读取的目录，插件把图片、视频直接存在里面。
 
-    发送前把图片复制过去，消息里只放 file:// 路径，不再把整张图编码进消息；发完删掉。
+    发送时给每个文件建一个硬链接（不复制数据），消息里只放链接的 file:// 路径，不再把整个文件
+    编码进消息；发完删掉链接。用链接而不是原文件，是为了发送超时时原文件被缓存、预备池删掉后
+    QQ 机器人仍能读到。文件不在同一文件系统（建不了硬链接）时复制。
     """
 
     def __init__(self, root: Path):
         self.root = root
 
     def prepare(self):
-        """建好目录并删掉上次没删掉的图片。"""
+        """建好目录并删掉上次没删掉的链接。"""
         self.root.mkdir(parents=True, exist_ok=True)
         for path in self.root.glob(f"{STAGE_PREFIX}*"):
             path.unlink(missing_ok=True)
@@ -296,13 +299,16 @@ class Stage:
         return True
 
     def segments(self, content: list, copies: list[Path]) -> list[dict]:
-        """消息段 → OneBot 消息段：图片复制到中转目录，复制出的文件记进 copies。"""
+        """消息段 → OneBot 消息段：图片、视频链接到共享目录，建出的文件记进 copies。"""
         out = []
         for comp in content:
             if isinstance(comp, (Comp.Image, Comp.Video)):
                 src = Path(comp.path)
                 dest = self.root / f"{STAGE_PREFIX}{uuid.uuid4().hex}{src.suffix}"
-                shutil.copyfile(src, dest)
+                try:
+                    os.link(src, dest)
+                except OSError:
+                    shutil.copyfile(src, dest)
                 copies.append(dest)
                 kind = "video" if isinstance(comp, Comp.Video) else "image"
                 out.append({"type": kind, "data": {"file": dest.resolve().as_uri()}})
@@ -340,7 +346,7 @@ async def send_direct(
     """QQ（OneBot）上直接调用发送接口，拿到消息 ID 供 /pdf 按回复查图集。
 
     返回 (是否已发送, 消息 ID)。其他平台或组装消息出错时返回未发送，由 AstrBot 照常发送；
-    发送接口本身报错时抛出 SendFailed。stage 是图片中转目录（可选）。
+    发送接口本身报错时抛出 SendFailed。stage 是共享目录（可选）。
     """
     bot = getattr(event, "bot", None)
     if event.get_platform_name() != ONEBOT or bot is None:
@@ -370,7 +376,7 @@ async def send_onebot(
 ) -> tuple[bool, str | None]:
     """调用 OneBot 接口发到群 group_id，group_id 为空时私聊发给 user_id。返回值同 send_direct。
 
-    有中转目录时图片以文件路径发送，否则由 AstrBot 编码成 base64。
+    有共享目录时图片以文件路径发送，否则由 AstrBot 编码成 base64。
     """
     copies: list[Path] = []
     try:
@@ -434,7 +440,7 @@ class Dispatcher:
         mode: str,
         stage: Stage | None = None,
     ):
-        """stage：图片中转目录，QQ 上直接发送时使用（可选）。"""
+        """stage：共享目录，QQ 上直接发送时使用（可选）。"""
         self.history = history
         self.composer = composer
         self.mode = mode

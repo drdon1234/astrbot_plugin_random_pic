@@ -124,6 +124,9 @@ class RandomPicPlugin(Star):
         super().__init__(context)
         self.settings = s = Settings.load(config)
         data_dir = Path(StarTools.get_data_dir(PLUGIN_NAME))
+        stage = self._stage(s.env.share_dir)
+        # 要发送的图片、视频直接存在共享目录（有的话），发送时不用再复制
+        media_dir = stage.root if stage else data_dir
         self.access = AccessControl(s.access)
         self.content = ContentFilter(
             s.filter.extra_blacklist,
@@ -135,7 +138,7 @@ class RandomPicPlugin(Star):
         eh = s.sources.ehentai
         site = resolve_site(eh.site, eh.cookies)
         self.http = HttpClient(s.env.proxy, site_cookies(site, eh.cookies))
-        cache = ImageCache(self.http, data_dir / "cache")
+        cache = ImageCache(self.http, media_dir / "cache")
         opts = DrawOptions(
             from_start=s.draw.from_start,
             explicit_skip=s.draw.explicit_skip,
@@ -153,15 +156,14 @@ class RandomPicPlugin(Star):
             cache,
             self.content,
             opts,
-            data_dir / "video_tmp",
+            media_dir / "video_tmp",
             self.sources.danbooru,
             data_dir / "video_recent.json",
         )
         self.video_drawer = Drawer(self.videos, self.content, self.tagdb)
-        self.video_reserve = self._video_reserve(data_dir / "reserve_video")
-        self.reserve = self._reserve(data_dir / "reserve")
+        self.video_reserve = self._video_reserve(media_dir / "reserve_video")
+        self.reserve = self._reserve(media_dir / "reserve")
         self.history = History(data_dir / "sent_albums.json")
-        stage = self._stage(s.env.share_dir)
         self.dispatcher = Dispatcher(
             self.history,
             Composer(s.send.header, s.send.caption, None if stage else INLINE_BUDGET),
@@ -172,7 +174,7 @@ class RandomPicPlugin(Star):
             self.sources,
             self.access,
             self.drawer,
-            data_dir / "work_tmp",
+            media_dir / "work_tmp",
             s.whole.max_pages,
         )
         self.pdf = PdfStore(
@@ -216,7 +218,7 @@ class RandomPicPlugin(Star):
 
     @staticmethod
     def _stage(share_dir: str) -> Stage | None:
-        """配置了图片中转目录时图片以文件路径发送；目录建不起来时照旧编码进消息。"""
+        """配置了共享目录时图片、视频存在那里并以文件路径发送；目录建不起来时照旧编码进消息。"""
         if not share_dir:
             return None
         stage = Stage(Path(share_dir))
@@ -224,7 +226,7 @@ class RandomPicPlugin(Star):
             stage.prepare()
         except OSError as e:
             logger.warning(
-                f"[random_pic] 图片中转目录不可用，改为编码进消息发送: {e!r}"
+                f"[random_pic] 共享目录不可用，改为编码进消息发送: {e!r}"
             )
             return None
         return stage

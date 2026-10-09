@@ -157,7 +157,7 @@ def sniff_ext(head: bytes) -> str | None:
 
 
 class ImageCache:
-    """把图片下载到插件数据目录的缓存中，并按总大小自动清理。"""
+    """把图片下载到缓存目录（共享目录或插件数据目录下），并按总大小自动清理。"""
 
     def __init__(
         self,
