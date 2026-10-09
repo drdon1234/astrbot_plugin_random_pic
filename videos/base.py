@@ -24,23 +24,9 @@ CHUNK = 256 * 1024
 VIDEO_SUFFIX = ".mp4"
 
 
-# 视频的标题、描述和标签里指向未成年设定的词（在内置黑名单之外；视频站没有统一的年龄标签）
-YOUNG_WORDS = TagBlacklist(
-    [
-        "雌小鬼",
-        "メスガキ",
-        "mesugaki",
-        "小学生",
-        "中学生",
-        "女子中学生",
-        "初中生",
-        "jc",
-        "jk",
-        "女子高生",
-        "高中生",
-        "schoolgirl",
-    ]
-)
+# 视频的标题、描述和标签里明确指向小学、初中生的词（在内置黑名单之外；视频站没有统一的年龄标签）。
+# 雌小鬼、メスガキ多是梗，JK、女子高生、schoolgirl 多是校服装扮，都不算，和图片源一致
+YOUNG_WORDS = TagBlacklist(["小学生", "中学生", "女子中学生", "初中生", "jc"])
 
 
 def young_word(texts: list[str]) -> str | None:

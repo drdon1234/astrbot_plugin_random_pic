@@ -10,7 +10,8 @@ niche 的选择和目检（各抽 8 段，45% 处截帧）：nsfw-cosplay（约 
 OnlyFans coser；hanime（约 5.8 万）7/8 是 R18 动画片段。korean-nsfw 有 AI 换脸、明星和偷拍外流，不用。
 
 年龄：用户上传站，35% 的 cosplay 片段带 Teen 标签（站方指 18~19 岁）。真人频道只要实名认证创作者的
-（约七成），并排除 Teen、18 Years Old、Schoolgirl 一类标签；动画频道同样排除这些标签。
+（约七成），认证过年龄，Teen 不再排除；动画频道没有认证，排除 Teen、Young 一类标签。
+18 Years Old、Barely Legal 写明成年，Schoolgirl、School Uniform 是装扮，都不排除。
 """
 
 import asyncio
@@ -34,19 +35,8 @@ PAGES_TTL = 3600
 TOKEN_TTL = 20 * 3600
 VIDEO_TYPE = 1
 # 低龄指向的标签（RedGifs 的标签首字母大写，比较时转小写）
-YOUNG_TAGS = frozenset(
-    {
-        "teen",
-        "teens",
-        "18 years old",
-        "19 years old",
-        "barely legal",
-        "schoolgirl",
-        "school uniform",
-        "petite teen",
-        "young",
-    }
-)
+# 没有实名认证的频道（动画）排除的标签（RedGifs 的标签首字母大写，比较时转小写）
+YOUNG_TAGS = frozenset({"teen", "teens", "petite teen", "young"})
 AI_TAGS = frozenset({"ai", "ai generated", "ai porn", "ai hentai", "ai art"})
 # 每个视频最多换这么多次（被过滤、下载失败时）
 TRIES = 4
@@ -81,7 +71,9 @@ class RedGifsSource(Source):
         self.niche = niche
         self.intro = intro
         self.verified_only = verified_only
-        self.exclude = YOUNG_TAGS | (AI_TAGS if content.block_ai else frozenset())
+        self.exclude = (frozenset() if verified_only else YOUNG_TAGS) | (
+            AI_TAGS if content.block_ai else frozenset()
+        )
         self._token = TTLCache(TOKEN_TTL, 1)
         self._pages = TTLCache(PAGES_TTL, 4)
 
