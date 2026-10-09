@@ -156,6 +156,8 @@ class DanbooruSource(Source):
     style = ANIME
     intro = "高分插画，可搜中文角色、作品名，支持 /随机角色"
     link_re = re.compile(r"https?://danbooru\.donmai\.us/posts/(\d+)")
+    # 抽帖子时取的字段
+    fields = FIELDS
 
     def __init__(
         self,
@@ -330,7 +332,7 @@ class DanbooruSource(Source):
         if pool.uniform:
             k = min(MAX_BATCH, max(PAGE_SIZE, want))
             posts = await self._posts(
-                f"{pool.query} random:{k}", limit=str(k), only=FIELDS
+                f"{pool.query} random:{k}", limit=str(k), only=self.fields
             )
         else:
             oldest, newest = pool.bounds
@@ -338,7 +340,7 @@ class DanbooruSource(Source):
                 pool.query,
                 page=f"b{random.randint(oldest + 1, newest + 1)}",
                 limit=str(PAGE_SIZE),
-                only=FIELDS,
+                only=self.fields,
             )
         random.shuffle(posts)
         return posts
@@ -504,7 +506,18 @@ class DanbooruSource(Source):
                 break
         if path is None:
             return None
-        index = ctx.index
+        title, details = self.describe(post, ctx.index)
+        return Album(
+            source=self.name,
+            title=title,
+            total=1,
+            pictures=[(1, path)],
+            details=details,
+            work=WorkRef(self.key, str(post.get("id"))),
+        )
+
+    def describe(self, post: dict, index: TagIndex | None) -> tuple[str, list[str]]:
+        """帖子的标题（角色或作品名）和说明文字。"""
         characters = display_names(
             str(post.get("tag_string_character") or ""), "character", index
         )
@@ -524,14 +537,7 @@ class DanbooruSource(Source):
         elif source.startswith("http"):
             details.append(f"出处：{source}")
         details.append(f"帖子：{API}/posts/{post.get('id')}")
-        return Album(
-            source=self.name,
-            title="、".join(characters or works) or "无标题",
-            total=1,
-            pictures=[(1, path)],
-            details=details,
-            work=WorkRef(self.key, str(post.get("id"))),
-        )
+        return "、".join(characters or works) or "无标题", details
 
     # ---- 整本打包 ----
 

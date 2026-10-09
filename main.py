@@ -47,6 +47,7 @@ from .sources import SourceSet
 from .sources.base import Source, SourceError
 from .sources.ehentai_api import resolve_site, site_cookies
 from .tags import TagDB
+from .videos import VideoSet
 from .works import WorkService, describe
 
 PLUGIN_NAME = "astrbot_plugin_random_pic"
@@ -67,8 +68,11 @@ ALIASES = {"二次元", "三次元", "擦边", "色图"}
 WHOLE_COMMANDS = {"全集": None, "pdf": PDF_FORMAT}
 # 抽图参数里表示「随机抽一个完整作品」的词 → 发送方式（None 为配置的默认方式）
 WHOLE_WORDS = {"全集": None, "pdf": PDF_FORMAT}
+VIDEO_COMMAND = "抽视频"
 # 群聊不带唤醒前缀时也能触发的指令词（整条消息就是指令词，或后面跟空格和参数）
-NO_PREFIX_RE = rf"(?i)^\s*({'|'.join([*DRAW_COMMANDS, *WHOLE_COMMANDS])})(?:\s|$)"
+NO_PREFIX_RE = (
+    rf"(?i)^\s*({'|'.join([*DRAW_COMMANDS, *WHOLE_COMMANDS, VIDEO_COMMAND])})(?:\s|$)"
+)
 
 
 def parse_args(
@@ -141,6 +145,16 @@ class RandomPicPlugin(Star):
         )
         self.tagdb = TagDB(self.http, data_dir / "ehtag.json.gz")
         self.drawer = Drawer(self.sources, self.content, self.tagdb)
+        self.videos = VideoSet(
+            s.video,
+            self.http,
+            cache,
+            self.content,
+            opts,
+            data_dir / "video_tmp",
+            self.sources.danbooru,
+        )
+        self.video_drawer = Drawer(self.videos, self.content, self.tagdb)
         self.reserve = self._reserve(data_dir / "reserve")
         self.history = History(data_dir / "sent_albums.json")
         stage = self._stage(s.send.share_dir)
@@ -174,16 +188,21 @@ class RandomPicPlugin(Star):
             self.reserve,
         )
         self._preload: asyncio.Task | None = None
+        self._warm_up: asyncio.Task | None = None
 
     async def initialize(self):
         # 后台预加载标签库，避免第一次抽卡时等待下载
         self._preload = asyncio.create_task(self.tagdb.get())
+        if self.settings.video.enabled:
+            self.videos.prepare()
+            self._warm_up = asyncio.create_task(self.videos.warm_up())
         self.reserve.start()
         self.pusher.start()
 
     async def terminate(self):
-        if self._preload and not self._preload.done():
-            self._preload.cancel()
+        for task in (self._preload, self._warm_up):
+            if task and not task.done():
+                task.cancel()
         self.pusher.stop()
         self.reserve.stop()
         await self.http.close()
@@ -277,6 +296,12 @@ class RandomPicPlugin(Star):
         async for result in self._whole(event, "pdf"):
             yield result
 
+    @filter.command(VIDEO_COMMAND)
+    async def draw_video(self, event: AstrMessageEvent):
+        """随机抽 R18 短视频（实验性）。用法：/抽视频 [二次元|三次元] [关键词...] [个数]"""
+        async for result in self._draw_video(event):
+            yield result
+
     @filter.regex(NO_PREFIX_RE)
     async def no_prefix(self, event: AstrMessageEvent):
         """群聊里不带 / 也能触发本插件的指令。"""
@@ -286,11 +311,12 @@ class RandomPicPlugin(Star):
         if not self.settings.draw.no_prefix:
             return
         word = event.message_str.split()[0].lower()
-        handler = (
-            self._whole(event, word)
-            if word in WHOLE_COMMANDS
-            else self._draw(event, word)
-        )
+        if word == VIDEO_COMMAND:
+            handler = self._draw_video(event)
+        elif word in WHOLE_COMMANDS:
+            handler = self._whole(event, word)
+        else:
+            handler = self._draw(event, word)
         async for result in handler:
             yield result
 
@@ -375,6 +401,76 @@ class RandomPicPlugin(Star):
                 yield event.plain_result(
                     f"仅获取到 {len(result.albums)}/{req.albums} 个图集。"
                 )
+
+    # ---- 视频 ----
+
+    def _video_request(self, tokens: list[str]) -> DrawRequest:
+        """视频请求：默认 R18（目前只有 R18 视频源），每个「图集」就是一个视频。"""
+        video = self.settings.video
+        defaults = DrawRequest(
+            self.settings.draw.style, EXPLICIT, albums=video.default_count
+        )
+        req = parse_args(
+            tokens, video.max_count, defaults, self.settings.whole.default_format
+        )
+        req.per_album = 1
+        return req
+
+    async def _draw_video(self, event: AstrMessageEvent):
+        if not self.settings.video.enabled:
+            return
+        tokens = self._args(event)
+        if tokens is None:
+            return
+        if tokens and tokens[0].lower() in HELP_WORDS:
+            yield event.plain_result(self.help_text())
+            return
+        req = self._video_request(tokens)
+        if req.whole:
+            yield event.plain_result("视频没有完整作品，请去掉「全集」「pdf」。")
+            return
+        if req.style not in self.videos.styles(req.rating):
+            kind = f"{STYLE_NAMES[req.style]}·{RATING_NAMES[req.rating]}"
+            hint = "视频目前只有 R18。" if req.rating != EXPLICIT else ""
+            yield event.plain_result(f"没有能抽{kind}视频的视频源。{hint}")
+            return
+        is_private = event.is_private_chat()
+        user_id = str(event.get_sender_id())
+        denied = self.access.gate(req.rating, is_private, user_id) or self.access.take(
+            user_id, req
+        )
+        if denied:
+            yield event.plain_result(denied)
+            return
+        result = await self.video_drawer.draw(
+            req, self.access.explicit_allowed(is_private, user_id)
+        )
+        paths = [path for album in result.albums for _, path in album.pictures]
+        try:
+            if not result.albums:
+                logger.warning(f"[random_pic] 获取视频失败 {req}: {result.reason()}")
+                yield event.plain_result(f"获取视频失败：{result.reason()}")
+                return
+            self.access.used(user_id, len(result.albums))
+            staged = (
+                self.dispatcher.stage is not None
+                or event.get_platform_name() != ONEBOT
+            )
+            messages = self.dispatcher.composer.video_messages(result.albums, staged)
+            sender, fallback = self._sender(event)
+            failed = await self.dispatcher.send_all(messages, [], sender)
+            for chain in fallback:
+                yield event.chain_result(chain)
+            if failed:
+                yield event.plain_result(
+                    self._send_failed_text(failed, len(messages), is_private)
+                )
+            if len(result.albums) < req.albums:
+                yield event.plain_result(
+                    f"仅获取到 {len(result.albums)}/{req.albums} 个视频。"
+                )
+        finally:
+            self.videos.files.remove(paths)
 
     async def _draw_whole(
         self, event: AstrMessageEvent, req: DrawRequest, user_id: str
@@ -597,6 +693,13 @@ class RandomPicPlugin(Star):
             lines.append("别名：/二次元 /三次元 /擦边 /色图")
         lines.append(f"R18：群聊{on[access.group_r18]}，私聊{on[access.private_r18]}")
         lines += self.sources.help_lines()
+        if s.video.enabled and self.videos.drawing:
+            lines += [
+                f"/{VIDEO_COMMAND} [二次元|三次元] [关键词...] [个数]：随机 R18 短视频（实验性），"
+                f"默认 {s.video.default_count} 个、最多 {s.video.max_count} 个",
+                "视频源：",
+                *self.videos.help_lines(),
+            ]
         lines += [
             "示例：/抽图 原神 2　/抽图 二次元 芙莉莲　/抽图 全集 原神",
             "/抽图 帮助：显示本说明",

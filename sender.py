@@ -1,6 +1,7 @@
 """把图集排成要发送的消息、逐条发出并登记，QQ（OneBot）上直接调用发送接口拿到消息 ID。"""
 
 import asyncio
+import base64
 import shutil
 import uuid
 from collections.abc import Awaitable, Callable
@@ -12,6 +13,7 @@ from astrbot.api.event import AstrMessageEvent
 
 from .history import History, SentAlbum, clean_title, header_text, page_text
 from .models import Album
+from .util import duration_text
 
 FORWARD = "合并转发"
 MIXED = "图文混合"
@@ -28,6 +30,8 @@ SEND_INTERVAL = 0.5
 INLINE_BUDGET = 30 * 1024 * 1024
 # 插件复制到中转目录的图片的文件名前缀
 STAGE_PREFIX = "rp_"
+# 发送超时、连接中断时 QQ 机器人可能还在读中转目录里的文件（大视频上传要很久），这么多秒后再删
+STAGE_KEEP_SECONDS = 600
 
 # 一条消息：(消息段, 其中的图集序号)
 Message = tuple[list, list[int]]
@@ -114,6 +118,33 @@ class Composer:
             return [Comp.Plain("\n" + "\n".join(album.details))]
         return []
 
+    def video_messages(self, albums: list[Album], staged: bool) -> list[Message]:
+        """视频：QQ 的视频消息不能带文字，每个视频先发一条标题和说明，再单独发视频。
+
+        staged 为 False（没有中转目录）时视频编码进消息，超过大小上限的不发。
+        """
+        messages = []
+        for idx, album in enumerate(albums, 1):
+            _, path = album.pictures[0]
+            text = []
+            if self.header:
+                text.append(video_header(idx, album))
+            if self.caption and album.details:
+                text += album.details
+            if text:
+                messages.append(([Comp.Plain("\n".join(text))], [idx]))
+            if staged:
+                video = Comp.Video.fromFileSystem(str(path))
+            elif self._over(_size(path)):
+                messages.append(([Comp.Plain("视频太大，没有中转目录时发不出去。")], []))
+                continue
+            else:
+                video = Comp.Video.fromBase64(
+                    base64.b64encode(path.read_bytes()).decode()
+                )
+            messages.append(([video], [idx]))
+        return messages
+
     def forward_album(self, album: Album, uin: str) -> list[Message]:
         """整个图集用合并转发发送：每张图一个节点，超过 FORWARD_MAX_NODES 张或大小上限时拆成几条。
 
@@ -191,6 +222,13 @@ class Composer:
         return messages
 
 
+def video_header(idx: int, album: Album) -> str:
+    """视频上方的两行标题：「【序号】标题」和「时长 · 来源」。"""
+    length = duration_text(album.duration)
+    second = f"{length} · {album.source}" if length else album.source
+    return f"【{idx}】{clean_title(album.title)}\n{second}"
+
+
 class SendFailed(Exception):
     """OneBot 发送接口报错，交给 AstrBot 重发也会同样失败。
 
@@ -224,12 +262,12 @@ class Stage:
 
     @staticmethod
     def supports(chain: list) -> bool:
-        """消息里只有文字、本地图片和（只含这两种的）合并转发时才能改用文件路径发送。"""
+        """消息里只有文字、本地图片和视频以及（只含这些的）合并转发时才能改用文件路径发送。"""
         for comp in chain:
             if isinstance(comp, Comp.Nodes):
                 if not all(Stage.supports(node.content) for node in comp.nodes):
                     return False
-            elif isinstance(comp, Comp.Image):
+            elif isinstance(comp, (Comp.Image, Comp.Video)):
                 if not getattr(comp, "path", ""):
                     return False
             elif not isinstance(comp, Comp.Plain):
@@ -240,12 +278,13 @@ class Stage:
         """消息段 → OneBot 消息段：图片复制到中转目录，复制出的文件记进 copies。"""
         out = []
         for comp in content:
-            if isinstance(comp, Comp.Image):
+            if isinstance(comp, (Comp.Image, Comp.Video)):
                 src = Path(comp.path)
                 dest = self.root / f"{STAGE_PREFIX}{uuid.uuid4().hex}{src.suffix}"
                 shutil.copyfile(src, dest)
                 copies.append(dest)
-                out.append({"type": "image", "data": {"file": dest.resolve().as_uri()}})
+                kind = "video" if isinstance(comp, Comp.Video) else "image"
+                out.append({"type": kind, "data": {"file": dest.resolve().as_uri()}})
             elif comp.text.strip():
                 out.append({"type": "text", "data": {"text": comp.text}})
         return out
@@ -267,6 +306,11 @@ class Stage:
     def remove(copies: list[Path]):
         for path in copies:
             path.unlink(missing_ok=True)
+
+    @staticmethod
+    def remove_later(copies: list[Path], delay: float = STAGE_KEEP_SECONDS):
+        if copies:
+            asyncio.get_running_loop().call_later(delay, Stage.remove, list(copies))
 
 
 async def send_direct(
@@ -344,7 +388,12 @@ async def send_onebot(
         ret = await bot.call_action(action, **payload, **target)
     except Exception as e:
         logger.warning(f"[random_pic] 发送失败（{action}）: {e!r}")
-        raise SendFailed.of(e) from e
+        failed = SendFailed.of(e)
+        if not failed.rejected:
+            # 可能只是等回应超时，QQ 机器人还在读文件，晚些再删
+            Stage.remove_later(copies)
+            copies = []
+        raise failed from e
     finally:
         Stage.remove(copies)
     message_id = ret.get("message_id") if isinstance(ret, dict) else None
@@ -401,6 +450,6 @@ class Dispatcher:
             except SendFailed as e:
                 failed.append(e)
                 continue
-            if message_id and idxs:
+            if message_id and idxs and sent:
                 self.history.record_message(message_id, [sent[idx - 1] for idx in idxs])
         return failed

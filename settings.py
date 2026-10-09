@@ -265,6 +265,40 @@ class Sources:
         return getattr(self, key)
 
 
+@dataclass(kw_only=True)
+class IwaraSite(Site):
+    min_likes: int
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.min_likes = _clamp(self.min_likes, 0)
+
+
+@dataclass
+class Video:
+    """/抽视频（实验性）：个数、大小和时长上限与各视频源。"""
+
+    enabled: bool
+    default_count: int
+    max_count: int
+    max_mb: int
+    max_seconds: int
+    danbooru: DanbooruSite
+    iwara: IwaraSite
+    redgifs_hentai: Site
+    redgifs_cosplay: Site
+
+    def __post_init__(self):
+        self.max_count = _clamp(self.max_count, 1)
+        self.default_count = _clamp(self.default_count, 1, self.max_count)
+        self.max_mb = _clamp(self.max_mb, 0)
+        self.max_seconds = _clamp(self.max_seconds, 0)
+        for f in fields(self):
+            value = getattr(self, f.name)
+            if isinstance(value, dict):
+                setattr(self, f.name, f.type(**value))
+
+
 @dataclass
 class PushTask:
     """一条推送任务：每天从 start 起按间隔（interval_minutes）推送，或按每天的时间点（times）推送。"""
@@ -321,6 +355,7 @@ class Settings:
     filter: Filter
     send: Send
     whole: Whole
+    video: Video
     sources: Sources
     push: Push
 

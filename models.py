@@ -79,6 +79,7 @@ class Album:
     pictures: list[tuple[int, Path]]  # (页码，从 1 开始, 本地文件)，按页码排序
     details: list[str] = field(default_factory=list)  # 说明文字，每项一行
     work: WorkRef | None = None
+    duration: float | None = None  # 视频的时长（秒），图片和未知时为 None
 
 
 # 每个图源最多同时处理的图集数、整本下载最多同时下载的页数

@@ -247,6 +247,161 @@
       }
     }
   },
+  "video": {
+    "description": "视频（实验性）",
+    "type": "object",
+    "hint": "/抽视频 [二次元|三次元] [关键词...] [个数]：随机抽 R18 短视频，逐条发送。目前只有 R18，群聊需开启群聊 R18；视频较大，建议填写图片中转目录。",
+    "items": {
+      "enabled": {
+        "description": "启用",
+        "type": "bool",
+        "default": true
+      },
+      "default_count": {
+        "description": "默认个数",
+        "type": "int",
+        "default": 1
+      },
+      "max_count": {
+        "description": "每次最多个数",
+        "type": "int",
+        "default": 3
+      },
+      "max_mb": {
+        "description": "单个视频大小上限（MB）",
+        "type": "int",
+        "default": 50,
+        "hint": "超过的换一个，0 为不限。QQ 发送大视频较慢。"
+      },
+      "max_seconds": {
+        "description": "单个视频时长上限（秒）",
+        "type": "int",
+        "default": 300,
+        "hint": "站点给出时长时按它筛选，0 为不限。"
+      },
+      "danbooru": {
+        "description": "Danbooru 视频（二次元）",
+        "type": "object",
+        "hint": "高分动画短片，按「图源管理」里 Danbooru 同样的规则过滤儿童角色。",
+        "items": {
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true
+          },
+          "weight": {
+            "description": "比例",
+            "type": "int",
+            "default": 5,
+            "slider": {
+              "min": 1,
+              "max": 10,
+              "step": 1
+            },
+            "condition": {
+              "enabled": true
+            },
+            "hint": "同一风格的视频源按比例混合。"
+          },
+          "min_score": {
+            "description": "最低评分",
+            "type": "int",
+            "default": 150,
+            "condition": {
+              "enabled": true
+            }
+          }
+        }
+      },
+      "iwara": {
+        "description": "Iwara（二次元）",
+        "type": "object",
+        "hint": "MMD、Koikatsu 等 3D 视频，多为 2~7 分钟的舞蹈和性内容。",
+        "items": {
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true
+          },
+          "weight": {
+            "description": "比例",
+            "type": "int",
+            "default": 5,
+            "slider": {
+              "min": 1,
+              "max": 10,
+              "step": 1
+            },
+            "condition": {
+              "enabled": true
+            },
+            "hint": "同一风格的视频源按比例混合。"
+          },
+          "min_likes": {
+            "description": "最低点赞数",
+            "type": "int",
+            "default": 1000,
+            "condition": {
+              "enabled": true
+            },
+            "hint": "按点赞排序，约 600 赞以上的有 5 万个。"
+          }
+        }
+      },
+      "redgifs_hentai": {
+        "description": "RedGifs 动画（二次元）",
+        "type": "object",
+        "hint": "RedGifs 的 hanime 频道，动画片段。",
+        "items": {
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true
+          },
+          "weight": {
+            "description": "比例",
+            "type": "int",
+            "default": 5,
+            "slider": {
+              "min": 1,
+              "max": 10,
+              "step": 1
+            },
+            "condition": {
+              "enabled": true
+            },
+            "hint": "同一风格的视频源按比例混合。"
+          }
+        }
+      },
+      "redgifs_cosplay": {
+        "description": "RedGifs Cosplay（三次元）",
+        "type": "object",
+        "hint": "RedGifs 的 nsfw-cosplay 频道，只取实名认证创作者的片段，多为欧美 coser。",
+        "items": {
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true
+          },
+          "weight": {
+            "description": "比例",
+            "type": "int",
+            "default": 5,
+            "slider": {
+              "min": 1,
+              "max": 10,
+              "step": 1
+            },
+            "condition": {
+              "enabled": true
+            },
+            "hint": "同一风格的视频源按比例混合。"
+          }
+        }
+      }
+    }
+  },
   "sources": {
     "description": "图源管理",
     "type": "object",

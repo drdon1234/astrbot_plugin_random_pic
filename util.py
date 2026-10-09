@@ -106,6 +106,14 @@ async def shared(
     return await asyncio.shield(future)
 
 
+def duration_text(seconds: float | None) -> str:
+    """秒数 → 「1:05」，未知时为空。"""
+    if not seconds:
+        return ""
+    total = round(float(seconds))
+    return f"{total // 60}:{total % 60:02d}"
+
+
 class TTLCache:
     """带过期时间、数量上限的缓存，超出上限时丢掉最早放入的。值可以是 None。"""
 
