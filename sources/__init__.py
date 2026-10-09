@@ -70,7 +70,7 @@ class SourceSet:
                     content,
                     opts,
                     domain=conf.jmcomic.domain,
-                    proxy=conf.proxy,
+                    proxy=settings.env.proxy,
                     min_likes=conf.jmcomic.min_likes,
                 )
             )

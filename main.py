@@ -134,7 +134,7 @@ class RandomPicPlugin(Star):
 
         eh = s.sources.ehentai
         site = resolve_site(eh.site, eh.cookies)
-        self.http = HttpClient(s.sources.proxy, site_cookies(site, eh.cookies))
+        self.http = HttpClient(s.env.proxy, site_cookies(site, eh.cookies))
         cache = ImageCache(self.http, data_dir / "cache")
         opts = DrawOptions(
             from_start=s.draw.from_start,
@@ -161,7 +161,7 @@ class RandomPicPlugin(Star):
         self.video_reserve = self._video_reserve(data_dir / "reserve_video")
         self.reserve = self._reserve(data_dir / "reserve")
         self.history = History(data_dir / "sent_albums.json")
-        stage = self._stage(s.send.share_dir)
+        stage = self._stage(s.env.share_dir)
         self.dispatcher = Dispatcher(
             self.history,
             Composer(s.send.header, s.send.caption, None if stage else INLINE_BUDGET),
@@ -176,7 +176,7 @@ class RandomPicPlugin(Star):
             s.whole.max_pages,
         )
         self.pdf = PdfStore(
-            Path(s.whole.pdf_dir) if s.whole.pdf_dir else data_dir / "pdf",
+            Path(s.env.pdf_dir) if s.env.pdf_dir else data_dir / "pdf",
             data_dir / "pdf_tmp",
             self.sources.keys,
         )
@@ -334,7 +334,7 @@ class RandomPicPlugin(Star):
         # 带了唤醒前缀、@ 了机器人或私聊时，已经由上面的指令处理
         if getattr(event, "is_at_or_wake_command", False):
             return
-        if not self.settings.draw.no_prefix:
+        if not self.settings.access.no_prefix:
             return
         word = event.message_str.split()[0].lower()
         if word == VIDEO_COMMAND:
@@ -372,7 +372,7 @@ class RandomPicPlugin(Star):
     # ---- 抽图 ----
 
     async def _draw(self, event: AstrMessageEvent, word: str):
-        if word in ALIASES and not self.settings.draw.aliases:
+        if word in ALIASES and not self.settings.access.aliases:
             return
         tokens = self._args(event)
         if tokens is None:
@@ -731,7 +731,7 @@ class RandomPicPlugin(Star):
                 "· 回复的消息里有多个图集时加序号（【】里的数字），如 /全集 2；也可以 /全集 <作品链接>",
                 "· /抽图 全集 [参数]：直接随机抽一个完整作品，写 pdf 则打包成 PDF",
             ]
-        if draw.aliases:
+        if access.aliases:
             lines.append("别名：/二次元 /三次元 /擦边 /色图")
         lines.append(f"R18：群聊{on[access.group_r18]}，私聊{on[access.private_r18]}")
         lines += self.sources.help_lines()

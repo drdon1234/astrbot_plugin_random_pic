@@ -2,6 +2,7 @@
 
 只有用户需要选择的项才放进配置：各站点的开关、适用分级、比例和质量门槛（评分、点赞数）在图源管理里，
 超时、缓存大小等调优参数是各模块里的常量。
+schema 里 show_ 开头的开关只用来在配置面板上收起、展开一组设置（其他项的 condition 引用它），不进入设置。
 """
 
 import json
@@ -24,6 +25,8 @@ FORWARD_FORMAT = "合并转发"
 TIME_RE = re.compile(r"^(\d{1,2})[:：](\d{2})$")
 PUSH_TEMPLATES = SCHEMA["push"]["items"]["tasks"]["templates"]
 SITE_SCHEMA = SCHEMA["sources"]["items"]
+# 只控制配置面板显示的开关的键前缀
+PANEL_PREFIX = "show_"
 # 图源的「适用分级」→ 参与抽取的分级
 SCOPES = {
     "通用": frozenset({SENSITIVE, EXPLICIT}),
@@ -63,6 +66,7 @@ def _values(items: dict, conf: dict) -> dict:
     return {
         key: _coerce(spec, conf.get(key, spec.get("default")))
         for key, spec in items.items()
+        if not key.startswith(PANEL_PREFIX)
     }
 
 
@@ -87,15 +91,13 @@ class Draw:
     album_count: int
     images_per_album: int
     max_images: int
-    min_pages: int
+    page_pick: str
     explicit_skip: float
+    min_pages: int
     reserve_real_sensitive: int
     reserve_real_explicit: int
     reserve_anime_sensitive: int
     reserve_anime_explicit: int
-    page_pick: str
-    aliases: bool
-    no_prefix: bool
 
     def __post_init__(self):
         self.album_count = _clamp(self.album_count, 1)
@@ -131,6 +133,8 @@ class Access:
     user_blacklist: list[str]
     cooldown_seconds: int
     daily_limit: int
+    no_prefix: bool
+    aliases: bool
 
     def __post_init__(self):
         self.cooldown_seconds = _clamp(self.cooldown_seconds, 0)
@@ -150,7 +154,6 @@ class Send:
     mode: str
     header: bool
     caption: bool
-    share_dir: str
 
 
 @dataclass
@@ -158,7 +161,6 @@ class Whole:
     enabled: bool
     default_format: str
     max_pages: int
-    pdf_dir: str
 
     def __post_init__(self):
         self.max_pages = _clamp(self.max_pages, 1)
@@ -242,9 +244,8 @@ class JMSite(Site):
 
 @dataclass
 class Sources:
-    """网络代理、补位图源和各图源站点的设置，站点的键是图源键。"""
+    """补位图源和各图源站点的设置，站点的键是图源键。"""
 
-    proxy: str
     fallback: str  # 补位图源的键，"off" 为不补位
     danbooru: DanbooruSite
     ehentai: EHentaiSite
@@ -307,6 +308,15 @@ class Video:
 
 
 @dataclass
+class Env:
+    """部署环境：网络代理，QQ 机器人和 AstrBot 共用的中转目录、PDF 目录（留空为不用 / 插件数据目录）。"""
+
+    proxy: str
+    share_dir: str
+    pdf_dir: str
+
+
+@dataclass
 class PushTask:
     """一条推送任务：每天从 start 起按间隔（interval_minutes）推送，或按每天的时间点（times）推送。"""
 
@@ -362,9 +372,10 @@ class Settings:
     filter: Filter
     send: Send
     whole: Whole
+    push: Push
     video: Video
     sources: Sources
-    push: Push
+    env: Env
 
     @classmethod
     def load(cls, config) -> "Settings":
