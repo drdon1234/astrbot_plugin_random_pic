@@ -210,7 +210,6 @@ class RedGifsSource(Source):
             return None
         tags = [str(t) for t in gif.get("tags") or []]
         user = str(gif.get("userName") or "")
-        description = " ".join(str(gif.get("description") or "").split())
         details = []
         if user:
             details.append(f"作者：{user}")
@@ -220,7 +219,8 @@ class RedGifsSource(Source):
         details.append(f"链接：https://www.redgifs.com/watch/{gif.get('id')}")
         return Album(
             source=self.name,
-            title=description[:40] or user or str(gif.get("id")),
+            # 描述多是推广文字和链接，标题用作者名
+            title=user or str(gif.get("id")),
             total=1,
             pictures=[(1, path)],
             details=details,
