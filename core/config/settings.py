@@ -42,7 +42,7 @@ def _coerce(spec: dict, value):
     default = spec["default"]
     try:
         if kind == "bool":
-            value = bool(value)
+            value = value if isinstance(value, bool) else default
         elif kind == "int":
             value = int(value)
         elif kind == "float":
@@ -130,6 +130,22 @@ class Access:
     def __post_init__(self):
         self.cooldown_seconds = _clamp(self.cooldown_seconds, 0)
         self.daily_limit = _clamp(self.daily_limit, 0)
+
+
+@dataclass
+class Commands:
+    draw: list[str]
+    random_character: list[str]
+    anime: list[str]
+    real: list[str]
+    sensitive: list[str]
+    explicit: list[str]
+    whole: list[str]
+    pdf: list[str]
+    video: list[str]
+    refresh: list[str]
+    help: list[str]
+    help_words: list[str]
 
 
 @dataclass
@@ -513,6 +529,7 @@ class Settings:
     video: Video
     send: Send
     access: Access
+    commands: Commands
     filter: Filter
     reserve: Reserves
     whole: Whole

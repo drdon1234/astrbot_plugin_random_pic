@@ -270,7 +270,18 @@ class EHentaiSource(Source):
             return f"不是三次元分类（{gallery.category}）"
         return self.rating_reason(
             gallery_rating(gallery.tags), ctx
-        ) or self.content.tags_reason(gallery.tags)
+        ) or self._content_reason(gallery)
+
+    def _content_reason(self, gallery: Gallery) -> str | None:
+        """搜索结果与直接指定的完整作品共用的内容复核，不依赖搜索端过滤。"""
+        reason = self.content.tags_reason(gallery.tags)
+        if reason:
+            return reason
+        if self.content.block_ai and any(
+            tag.strip().lower() == "other:ai generated" for tag in gallery.tags
+        ):
+            return "带已屏蔽的 AI 标签 other:ai generated"
+        return None
 
     def _album(
         self, gallery: Gallery, pictures: list[Picture], index: TagIndex | None
@@ -336,13 +347,17 @@ class EHentaiSource(Source):
             title=gallery.title,
             pages=gallery.filecount,
             rating=gallery_rating(gallery.tags),
-            blocked=self.content.tags_reason(gallery.tags),
+            blocked=self._content_reason(gallery),
             data=gallery,
         )
 
     async def page_items(self, work: Work) -> list[str]:
         """画廊全部单页的地址。"""
         return [url for _, url in await self.api.all_page_urls(work.data)]
+
+    async def close(self):
+        await super().close()
+        await self.api.close()
 
     async def download_page(self, page_url: str, dest: Path) -> Path | None:
         """IP 被封、额度用尽时整本打包停止，其他错误只算这一页失败。"""

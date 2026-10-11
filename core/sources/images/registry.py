@@ -3,6 +3,7 @@
 SourceSet 按配置装配所有图源，是抽图、/pdf、链接识别和帮助里「有哪些图源」的唯一来源。
 """
 
+import asyncio
 from pathlib import Path
 
 from astrbot.api import logger
@@ -141,5 +142,9 @@ class SourceSet:
         return lines
 
     async def close(self):
-        for source in self.all:
-            await source.close()
+        results = await asyncio.gather(
+            *(source.close() for source in self.all), return_exceptions=True
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result

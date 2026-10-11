@@ -1,7 +1,10 @@
 """按发送模式将图集和视频组装为消息。"""
 
+from __future__ import annotations
+
 import base64
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import astrbot.api.message_components as Comp
 
@@ -19,6 +22,9 @@ from .types import (
     Message,
 )
 
+if TYPE_CHECKING:
+    from ..commands.catalog import CommandCatalog
+
 
 def resolve_mode(mode: str, platform: str, albums: int) -> str:
     """合并转发只在 QQ / OneBot 上可用；只有一个图集时也不用合并转发。"""
@@ -35,11 +41,18 @@ def _size(path: Path) -> int:
 
 
 class Composer:
-    def __init__(self, header: bool, caption: bool, budget: int | None = INLINE_BUDGET):
+    def __init__(
+        self,
+        header: bool,
+        caption: bool,
+        budget: int | None = INLINE_BUDGET,
+        commands: CommandCatalog | None = None,
+    ):
         """budget：一条消息里图片的总字节数上限，None 为不限（图片以文件路径发送时）。"""
         self.header = header
         self.caption = caption
         self.budget = budget
+        self.commands = commands
 
     def _bytes(self, pictures: list[tuple[int, Path]]) -> int:
         return sum(_size(path) for _, path in pictures) if self.budget else 0
@@ -77,6 +90,22 @@ class Composer:
             content += self.picture_content(idx, album, page, path, i == 0)
         if last:
             content += self.caption_content(album)
+            if self.commands and album.work and (self.header or self.caption):
+                # 关闭标题后，引用文字无法恢复批次序号；多作品交给选择提示确认。
+                target = str(idx) if self.header else ""
+                choices = [
+                    self.commands.command(action, target)
+                    for action in ("全集", "pdf")
+                    if self.commands.enabled(action)
+                ]
+                if choices:
+                    content.append(
+                        Comp.Plain(
+                            "\n获取完整作品：回复此消息发送 "
+                            + " 或 ".join(choices)
+                            + "。"
+                        )
+                    )
         return content
 
     def picture_content(

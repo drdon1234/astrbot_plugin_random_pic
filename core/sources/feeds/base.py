@@ -3,6 +3,7 @@
 import re
 
 from ...config.settings import Feed as FeedConf
+from ...utils import close_caches
 from .models import Post
 
 
@@ -45,8 +46,12 @@ class Feed:
         """按 id 查一个帖子，不存在时返回 None。"""
         raise NotImplementedError
 
+    async def resolve(self, post: Post) -> Post | None:
+        """抽取候选的当前元数据；无持久化索引的订阅直接使用刚抓到的帖子。"""
+        return post
+
     async def warm_up(self):
         pass
 
     async def close(self):
-        pass
+        await close_caches(self)

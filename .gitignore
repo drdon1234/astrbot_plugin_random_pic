@@ -1,4 +1,6 @@
 /test/
+/docs/plans/
+/docs/project-review.md
 __pycache__/
 *.pyc
 .pytest_cache/

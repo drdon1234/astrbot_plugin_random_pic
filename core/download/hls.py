@@ -14,6 +14,7 @@ import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from urllib.parse import urljoin, urlsplit
 
 from astrbot.api import logger
@@ -30,8 +31,53 @@ SEGMENT_CONCURRENCY = 3
 FFMPEG_TIMEOUT = 300
 # 下载的分片总大小超过上限这么多倍时不再转码，直接放弃（转码一般能压到 1/3 以下）
 RAW_FACTOR = 4
+# 网络读取、解密与文件拼接每次只保留一个小块。
+CHUNK_BYTES = 64 * 1024
 
 ATTR_RE = re.compile(r'([A-Z0-9-]+)=("[^"]*"|[^,]*)')
+
+
+class _RawTooLarge(Exception):
+    pass
+
+
+class _Budget:
+    """init 和所有分片共用预算；预留读块，避免并发读取越过共同上限。"""
+
+    def __init__(self, limit: int | None):
+        self.limit = limit
+        self.total = 0
+        self._reserved = 0
+        self._changed = asyncio.Condition()
+
+    async def read(self, content) -> bytes:
+        if self.limit is None:
+            return await content.read(CHUNK_BYTES)
+        async with self._changed:
+            while True:
+                if self.total > self.limit:
+                    raise _RawTooLarge
+                # 多读一个字节判定超限；包含所有正在进行的读取，最多累计多读这一个字节。
+                available = self.limit + 1 - self.total - self._reserved
+                if available > 0:
+                    size = min(CHUNK_BYTES, available)
+                    self._reserved += size
+                    break
+                await self._changed.wait()
+        try:
+            data = await content.read(size)
+        except BaseException:
+            async with self._changed:
+                self._reserved -= size
+                self._changed.notify_all()
+            raise
+        async with self._changed:
+            self._reserved -= size
+            self.total += len(data)
+            self._changed.notify_all()
+            if self.total > self.limit:
+                raise _RawTooLarge
+        return data
 
 
 def _attrs(text: str) -> dict[str, str]:
@@ -214,13 +260,60 @@ class HlsDownloader:
         self.http = http
         self.max_bytes = max_bytes
 
-    async def _bytes(self, url: str, headers: dict | None) -> bytes:
+    async def _key(self, url: str, headers: dict | None) -> bytes:
         async with self.http.request(
             "GET", url, headers=headers, timeout=DOWNLOAD_TIMEOUT
         ) as resp:
             if resp.status != 200:
                 raise HttpError(f"HTTP {resp.status}", resp.status)
-            return await resp.read()
+            key = bytearray()
+            while len(key) <= 16:
+                chunk = await resp.content.read(17 - len(key))
+                if not chunk:
+                    break
+                key.extend(chunk)
+            if len(key) != 16:
+                raise HttpError(f"密钥长度不对（{len(key)} 字节）")
+            return bytes(key)
+
+    async def _stream(
+        self,
+        url: str,
+        output,
+        headers: dict | None,
+        budget: _Budget,
+        key: bytes | None = None,
+        iv: bytes | None = None,
+    ):
+        decryptor = None
+        if key is not None:
+            from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+            decryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
+        tail = b""
+        async with self.http.request(
+            "GET", url, headers=headers, timeout=DOWNLOAD_TIMEOUT
+        ) as resp:
+            if resp.status != 200:
+                raise HttpError(f"HTTP {resp.status}", resp.status)
+            while chunk := await budget.read(resp.content):
+                if decryptor is None:
+                    output.write(chunk)
+                else:
+                    # CBC 最后一个块包含 padding，延后写它，其余明文立即落盘。
+                    plain = tail + decryptor.update(chunk)
+                    if len(plain) > 16:
+                        output.write(plain[:-16])
+                        tail = plain[-16:]
+                    else:
+                        tail = plain
+        if decryptor is not None:
+            try:
+                tail += decryptor.finalize()
+            except ValueError as exc:
+                raise HttpError("加密分片长度不完整") from exc
+            pad = tail[-1] if tail else 0
+            output.write(tail[:-pad] if 0 < pad <= 16 else tail)
 
     async def playlist(
         self, url: str, headers: dict | None = None
@@ -304,29 +397,47 @@ class HlsDownloader:
     async def _fetch(
         self, media: Media, segments: list[Segment], raw: Path, headers: dict | None
     ) -> bool:
-        key = await self._bytes(media.key, headers) if media.key else None
-        if key is not None and len(key) != 16:
-            raise HttpError(f"密钥长度不对（{len(key)} 字节）")
-        semaphore = asyncio.Semaphore(SEGMENT_CONCURRENCY)
+        key = await self._key(media.key, headers) if media.key else None
+        budget = _Budget(None if self.max_bytes is None else self.max_bytes * RAW_FACTOR)
+        try:
+            # 每次只保留一组并发分片，明文和加密分片都逐块写入临时文件。
+            with TemporaryDirectory(prefix=raw.name + ".", dir=raw.parent) as directory:
+                async def one(index: int, segment: Segment) -> Path:
+                    path = Path(directory) / str(index)
+                    iv = media.iv or segment.sequence.to_bytes(16, "big")
+                    with path.open("wb") as output:
+                        await self._stream(segment.url, output, headers, budget, key, iv)
+                    return path
 
-        async def one(segment: Segment) -> bytes:
-            async with semaphore:
-                data = await self._bytes(segment.url, headers)
-            if key is not None:
-                iv = media.iv or segment.sequence.to_bytes(16, "big")
-                data = decrypt(data, key, iv)
-            return data
-
-        parts = await asyncio.gather(*map(one, segments))
-        size = sum(len(p) for p in parts)
-        if self.max_bytes is not None and size > self.max_bytes * RAW_FACTOR:
-            logger.info(f"[random_pic] 视频片段 {size / MB:.0f} MB 太大，已跳过")
+                with raw.open("wb") as output:
+                    if media.init:
+                        await self._stream(media.init, output, headers, budget)
+                    for start in range(0, len(segments), SEGMENT_CONCURRENCY):
+                        tasks = [
+                            asyncio.create_task(one(index, segment))
+                            for index, segment in enumerate(
+                                segments[start : start + SEGMENT_CONCURRENCY], start
+                            )
+                        ]
+                        try:
+                            parts = await asyncio.gather(*tasks)
+                        except BaseException:
+                            for task in tasks:
+                                task.cancel()
+                            cleanup = asyncio.gather(*tasks, return_exceptions=True)
+                            while not cleanup.done():
+                                try:
+                                    await asyncio.shield(cleanup)
+                                except asyncio.CancelledError:
+                                    continue
+                            raise
+                        for path in parts:
+                            with path.open("rb") as part:
+                                shutil.copyfileobj(part, output, CHUNK_BYTES)
+                            path.unlink()
+        except _RawTooLarge:
+            logger.info(f"[random_pic] 视频片段 {budget.total / MB:.0f} MB 太大，已跳过")
             return False
-        with raw.open("wb") as f:
-            if media.init:
-                f.write(await self._bytes(media.init, headers))
-            for part in parts:
-                f.write(part)
         return True
 
     async def _transcode(self, path: Path) -> bool:

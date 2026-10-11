@@ -139,7 +139,8 @@ class FeedSource(Source):
                         if post.id in seen:
                             continue
                         seen.add(post.id)
-                        if not self._usable(post):
+                        post = await self.feed.resolve(post)
+                        if post is None or not self._usable(post):
                             continue
                         reason = self.reject(post, words, excludes)
                         if reason:

@@ -10,6 +10,28 @@ from typing import Any
 MIN_SPARE_PAGES = 2
 
 
+async def run_thread(func: Callable[..., Any], *args, **kwargs) -> Any:
+    """在线程执行磁盘工作；取消时等真实线程退出，再向上传播取消。
+
+    线程不能随等待者一起取消。等待期间再次收到取消也不能提前返回，否则调用者可能
+    清理仍在读写的目录，或让旧线程在刷新完成后重新写入旧状态。
+    """
+    task = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if not task.cancelled():
+            task.exception()  # 取消优先传播，但仍读取线程异常，避免无人接收的异常告警
+        raise
+
+
 def page_order(total: int, *, from_start: bool, skip: float = 0.0) -> list[int]:
     """所有候选页（从 0 开始）的尝试顺序。
 
@@ -122,6 +144,8 @@ class TTLCache:
         self.size = size
         self._data: dict = {}
         self._inflight: dict = {}
+        self._closed = False
+        self._closing: asyncio.Future | None = None
 
     def __contains__(self, key) -> bool:
         hit = self._data.get(key)
@@ -131,6 +155,8 @@ class TTLCache:
         return self._data[key][1] if key in self else default
 
     def put(self, key, value, ttl: float | None = None):
+        if self._closed:
+            return
         self._data.pop(key, None)
         self._data[key] = (time.monotonic() + (self.ttl if ttl is None else ttl), value)
         while len(self._data) > self.size:
@@ -146,6 +172,8 @@ class TTLCache:
         ttl: float | None = None,
     ) -> Any:
         """先查缓存；没有时调用 factory()，同一个 key 并发只调用一次。出错时不缓存。"""
+        if self._closed:
+            raise RuntimeError("缓存已关闭")
         if key in self:
             return self.get(key)
 
@@ -155,3 +183,27 @@ class TTLCache:
             return value
 
         return await shared(self._inflight, key, run)
+
+    async def close(self):
+        """停止共享加载并等待清理完成；取消关闭等待者不打断清理。"""
+        if not self._closed:
+            self._closed = True
+            self._data.clear()
+            futures = list(self._inflight.values())
+            for future in futures:
+                if not future.done():
+                    future.cancel()
+            self._closing = asyncio.gather(*futures, return_exceptions=True)
+        await asyncio.shield(self._closing)
+        self._inflight.clear()
+
+
+async def close_caches(owner) -> None:
+    """关闭对象直接持有的 TTLCache 字段，全部尝试后传播首个异常。"""
+    caches = [value for value in vars(owner).values() if isinstance(value, TTLCache)]
+    results = await asyncio.gather(
+        *(cache.close() for cache in caches), return_exceptions=True
+    )
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result

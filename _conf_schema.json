@@ -1308,13 +1308,14 @@
       "cooldown_seconds": {
         "description": "每人冷却（秒）",
         "type": "int",
-        "default": 10
+        "default": 10,
+        "hint": "图片、视频和完整作品共用冷却；请求通过检查后开始计时。"
       },
       "daily_limit": {
         "description": "每人每日张数上限",
         "type": "int",
         "default": 0,
-        "hint": "完整作品按页数计，一个视频算一张。0 表示不限，重启后清零。"
+        "hint": "按成功发送的图片或完整作品页数计，一个视频算一张；处理中预留额度，失败部分释放。整本额度不足时拒绝。0 表示不限，重启后清零。"
       },
       "show_limits": {
         "description": "展开名单与指令设置",
@@ -1366,6 +1367,153 @@
         "condition": {
           "show_limits": true
         }
+      }
+    }
+  },
+  "commands": {
+    "description": "命令与帮助",
+    "type": "object",
+    "hint": "自定义每种操作的触发词；替换列表后旧词不再生效。AstrBot「命令管理」中保存的改名和别名优先，帮助显示实际生效的词。独立帮助默认使用「抽图帮助」，不占用 AstrBot 的 help。",
+    "items": {
+      "show_triggers": {
+        "description": "展开命令触发词",
+        "type": "bool",
+        "default": false,
+        "hint": "仅控制下方配置的显示，不影响命令生效。修改触发词并保存后需重载插件；每项的第一个词用于帮助示例。"
+      },
+      "draw": {
+        "description": "抽图",
+        "type": "list",
+        "default": [
+          "抽图"
+        ],
+        "condition": {
+          "show_triggers": true
+        },
+        "hint": "可填写多个完整词，不带 /，不含空格；不同操作的触发词不能重复。"
+      },
+      "random_character": {
+        "description": "随机角色",
+        "type": "list",
+        "default": [
+          "随机角色"
+        ],
+        "condition": {
+          "show_triggers": true
+        },
+        "hint": "可填写多个完整词，不带 /，不含空格；不同操作的触发词不能重复。"
+      },
+      "anime": {
+        "description": "二次元快捷入口",
+        "type": "list",
+        "default": [
+          "二次元"
+        ],
+        "condition": {
+          "show_triggers": true
+        },
+        "hint": "可填写多个完整词，不带 /，不含空格；不同操作的触发词不能重复。"
+      },
+      "real": {
+        "description": "三次元快捷入口",
+        "type": "list",
+        "default": [
+          "三次元"
+        ],
+        "condition": {
+          "show_triggers": true
+        },
+        "hint": "可填写多个完整词，不带 /，不含空格；不同操作的触发词不能重复。"
+      },
+      "sensitive": {
+        "description": "擦边快捷入口",
+        "type": "list",
+        "default": [
+          "擦边"
+        ],
+        "condition": {
+          "show_triggers": true
+        },
+        "hint": "可填写多个完整词，不带 /，不含空格；不同操作的触发词不能重复。"
+      },
+      "explicit": {
+        "description": "R18 快捷入口",
+        "type": "list",
+        "default": [
+          "色图"
+        ],
+        "condition": {
+          "show_triggers": true
+        },
+        "hint": "可填写多个完整词，不带 /，不含空格；不同操作的触发词不能重复。"
+      },
+      "whole": {
+        "description": "完整作品",
+        "type": "list",
+        "default": [
+          "全集"
+        ],
+        "condition": {
+          "show_triggers": true
+        },
+        "hint": "可填写多个完整词，不带 /，不含空格；不同操作的触发词不能重复。"
+      },
+      "pdf": {
+        "description": "作品 PDF",
+        "type": "list",
+        "default": [
+          "pdf"
+        ],
+        "condition": {
+          "show_triggers": true
+        },
+        "hint": "可填写多个完整词，不带 /，不含空格；不同操作的触发词不能重复。"
+      },
+      "video": {
+        "description": "抽视频",
+        "type": "list",
+        "default": [
+          "抽视频"
+        ],
+        "condition": {
+          "show_triggers": true
+        },
+        "hint": "可填写多个完整词，不带 /，不含空格；不同操作的触发词不能重复。"
+      },
+      "refresh": {
+        "description": "刷新预备池",
+        "type": "list",
+        "default": [
+          "刷新预备池",
+          "刷新预选池"
+        ],
+        "condition": {
+          "show_triggers": true
+        },
+        "hint": "可填写多个完整词，不带 /，不含空格；不同操作的触发词不能重复。"
+      },
+      "help": {
+        "description": "独立帮助",
+        "type": "list",
+        "default": [
+          "抽图帮助"
+        ],
+        "condition": {
+          "show_triggers": true
+        },
+        "hint": "可填写多个完整词，不带 /，不含空格；不同操作的触发词不能重复。"
+      },
+      "help_words": {
+        "description": "参数中的帮助词",
+        "type": "list",
+        "default": [
+          "帮助",
+          "help"
+        ],
+        "condition": {
+          "show_triggers": true
+        },
+        "hint": "在命令参数的任意位置出现这些词时显示帮助，不执行操作。"
       }
     }
   },

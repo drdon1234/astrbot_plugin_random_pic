@@ -3,10 +3,12 @@
 import asyncio
 import os
 import shutil
+import time
 import uuid
 from pathlib import Path
 
 import astrbot.api.message_components as Comp
+from astrbot.api import logger
 
 # 发送时在共享目录里给图片、视频建的链接的文件名前缀
 STAGE_PREFIX = "rp_"
@@ -28,10 +30,23 @@ class Stage:
         self.root = root
 
     def prepare(self):
-        """建好目录并删掉上次没删掉的链接。"""
+        """建好目录，仅回收超过上传保护期的暂存文件。"""
         self.root.mkdir(parents=True, exist_ok=True)
+        for lease in self.root.glob(f"{STAGE_PREFIX}*.lease"):
+            try:
+                expires = float(lease.read_text(encoding="ascii"))
+            except (OSError, ValueError):
+                continue
+            if expires <= time.time():
+                self.remove([lease.with_suffix('')])
+        # 缺失或损坏的标记无法证明媒体已过期，先赋予一次完整保护期再回收。
         for path in self.root.glob(f"{STAGE_PREFIX}*"):
-            path.unlink(missing_ok=True)
+            if not path.is_file() or path.suffix == '.lease':
+                continue
+            try:
+                float(Path(f"{path}.lease").read_text(encoding="ascii"))
+            except (OSError, ValueError):
+                self.protect([path])
 
     @staticmethod
     def supports(chain: list) -> bool:
@@ -54,11 +69,13 @@ class Stage:
             if isinstance(comp, (Comp.Image, Comp.Video)):
                 src = Path(comp.path)
                 dest = self.root / f"{STAGE_PREFIX}{uuid.uuid4().hex}{src.suffix}"
+                # 在创建前登记，复制中途失败或取消后也能清理半成品。
+                copies.append(dest)
+                self.protect([dest])
                 try:
                     os.link(src, dest)
                 except OSError:
                     shutil.copyfile(src, dest)
-                copies.append(dest)
                 kind = "video" if isinstance(comp, Comp.Video) else "image"
                 out.append({"type": kind, "data": {"file": dest.resolve().as_uri()}})
             elif comp.text.strip():
@@ -79,11 +96,29 @@ class Stage:
         ]
 
     @staticmethod
+    def protect(copies: list[Path], delay: float = STAGE_KEEP_SECONDS):
+        # 独立小文件记录期限，不改变硬链接对应的原始资产时间戳；重载仍可读取。
+        expires = str(time.time() + delay)
+        for path in copies:
+            Path(f"{path}.lease").write_text(expires, encoding="ascii")
+
+    @staticmethod
     def remove(copies: list[Path]):
         for path in copies:
             path.unlink(missing_ok=True)
+            Path(f"{path}.lease").unlink(missing_ok=True)
 
     @staticmethod
     def remove_later(copies: list[Path], delay: float = STAGE_KEEP_SECONDS):
         if copies:
+            try:
+                Stage.protect(copies, delay)
+            except OSError as e:
+                # 延长期限失败时去掉旧期限，重载不得按过期标记立即删除媒体。
+                for path in copies:
+                    try:
+                        Path(f"{path}.lease").unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                logger.warning(f"[random_pic] 更新发送文件保护期限失败，按延时回收: {e!r}")
             asyncio.get_running_loop().call_later(delay, Stage.remove, list(copies))

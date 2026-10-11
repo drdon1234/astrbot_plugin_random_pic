@@ -97,15 +97,19 @@ class Drawer:
         # 指名订阅时不补位（补位图源会把订阅名当关键词去搜）
         fallback = None if self.named(ctx) else self.sources.fallback
 
-        async def run(source, n: int) -> tuple[list[Album], list[str]]:
-            """抽一个图源；没抽够时马上由补位图源补，不等别的图源。"""
+        async def attempt(source, n: int) -> tuple[list[Album], list[str]]:
+            """主来源与补位来源使用相同的异常隔离，取消继续向上传播。"""
             try:
-                albums, errors = await source.draw(ctx, n)
+                return await source.draw(ctx, n)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 logger.error(f"[random_pic] {source.name} 抽取出错: {e!r}", exc_info=e)
-                albums, errors = [], [f"{source.name} 出错：{e!r}"]
+                return [], [f"{source.name} 出错：{e!r}"]
+
+        async def run(source, n: int) -> tuple[list[Album], list[str]]:
+            """抽一个图源；没抽够时马上由补位图源补，不等别的图源。"""
+            albums, errors = await attempt(source, n)
             short = n - len(albums)
             if (
                 short > 0
@@ -113,13 +117,20 @@ class Drawer:
                 and source is not fallback
                 and fallback.accepts(ctx)
             ):
-                more, more_errors = await fallback.draw(ctx, short)
+                more, more_errors = await attempt(fallback, short)
                 albums, errors = albums + more, errors + more_errors
             return albums, errors
 
         result = DrawResult()
-        jobs = [run(source, n) for source, n in plan.items()]
-        for albums, errors in await asyncio.gather(*jobs):
+        jobs = [asyncio.create_task(run(source, n)) for source, n in plan.items()]
+        try:
+            outcomes = await asyncio.gather(*jobs)
+        finally:
+            for job in jobs:
+                if not job.done():
+                    job.cancel()
+            await asyncio.gather(*jobs, return_exceptions=True)
+        for albums, errors in outcomes:
             result.albums.extend(albums)
             result.errors.extend(errors)
         random.shuffle(result.albums)

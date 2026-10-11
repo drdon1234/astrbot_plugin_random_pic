@@ -101,14 +101,17 @@ R18_TAG_HINTS = (
     "bukkake",
     "facial",
 )
-R18_TITLE_RE = re.compile(
-    r"r-?18|sex|hmv|ntr|エロ|えっち|エッチ|全裸|裸|做爱|性爱|セックス|中出|骑乘|後入|后入|侵犯|"
-    r"口交|淫|自慰|オナ|ちんぽ|おっぱい|プッシー|触手|突かれ|ぱんぱん|逆バニー|コイカツ|恋活|"
+R18_CONTENT_TITLE_RE = re.compile(
+    r"sex|ntr|エロ|えっち|エッチ|全裸|裸|做爱|性爱|セックス|中出|骑乘|後入|后入|侵犯|"
+    r"口交|淫|自慰|オナ|ちんぽ|おっぱい|プッシー|触手|突かれ|ぱんぱん|逆バニー|"
     r"anal|hand ?job|cowgirl|doggy|blowjob|creampie|fuck",
     re.I,
 )
+R18_TITLE_RE = re.compile(r"r-?18|hmv|コイカツ|恋活|" + R18_CONTENT_TITLE_RE.pattern, re.I)
+# 工具和剪辑格式只是间接迹象，作者明确声明健全时可以排除；具体性内容标签不能被声明盖过。
+INDIRECT_R18_HINTS = frozenset({"hmv", "koikatsu", "blender", "honey_select", "hs2"})
 NOT_R18_RE = re.compile(
-    r"no\s*r-?18|non[- ]?r-?18|非\s*r-?18|健全|全年齢|全年龄|sfw", re.I
+    r"\b(?:no\s*r-?18|non[- ]?r-?18|sfw)\b|非\s*r-?18|健全|全年齢|全年龄", re.I
 )
 # 插件的分级 → 站内的分级
 SITE_RATINGS = {SENSITIVE: "general", EXPLICIT: "ecchi"}
@@ -224,11 +227,16 @@ class IwaraSource(Source):
 
     @staticmethod
     def r18_signal(video: dict) -> bool:
-        """标签或标题里有 R18 的迹象（标题写明不是 R18 的除外）。"""
+        """具体性内容证据优先；健全声明只排除工具、格式等间接迹象。"""
         title = str(video.get("title") or "")
+        tags = [tag.lower() for tag in tag_ids(video)]
         if NOT_R18_RE.search(title):
-            return False
-        tags = tag_ids(video)
+            return bool(R18_CONTENT_TITLE_RE.search(title)) or any(
+                hint in tag
+                for tag in tags
+                for hint in R18_TAG_HINTS
+                if hint not in INDIRECT_R18_HINTS
+            )
         return bool(R18_TITLE_RE.search(title)) or any(
             hint in tag for tag in tags for hint in R18_TAG_HINTS
         )

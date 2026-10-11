@@ -7,6 +7,7 @@ import astrbot.api.message_components as Comp
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
+from ..utils import run_thread
 from .stage import Stage
 from .types import ONEBOT, SendFailed
 
@@ -62,7 +63,7 @@ async def send_onebot(
         staged = stage is not None and Stage.supports(chain)
         if len(chain) == 1 and isinstance(chain[0], Comp.Nodes):
             if staged:
-                nodes = await asyncio.to_thread(stage.forward, chain[0], copies)
+                nodes = await run_thread(stage.forward, chain[0], copies)
                 payload = {"messages": nodes}
             else:
                 payload = await chain[0].to_dict()
@@ -71,19 +72,29 @@ async def send_onebot(
             )
         else:
             if staged:
-                message = await asyncio.to_thread(stage.segments, chain, copies)
+                message = await run_thread(stage.segments, chain, copies)
             else:
                 message = await AiocqhttpMessageEvent._parse_onebot_json(
                     MessageChain(chain)
                 )
             payload = {"message": message}
             action = "send_group_msg" if group_id else "send_private_msg"
+        Stage.protect(copies)
+    except asyncio.CancelledError:
+        # 线程已经退出，暂存路径此时才能完整、可靠地清理。
+        Stage.remove(copies)
+        raise
     except Exception as e:
         Stage.remove(copies)
         logger.warning(f"[random_pic] 组装消息失败，改由 AstrBot 发送: {e!r}")
         return False, None
     try:
         ret = await bot.call_action(action, **payload, **target)
+    except asyncio.CancelledError:
+        # 接口已提交，取消等待无法确认机器人是否还在上传，与超时同样延迟删除。
+        Stage.remove_later(copies)
+        copies = []
+        raise
     except Exception as e:
         logger.warning(f"[random_pic] 发送失败（{action}）: {e!r}")
         failed = SendFailed.of(e)

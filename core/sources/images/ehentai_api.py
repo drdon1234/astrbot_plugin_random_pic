@@ -14,7 +14,7 @@ from html import unescape
 from astrbot.api import logger
 
 from ...download.http import HttpClient, HttpError, RateLimiter
-from ...utils import TTLCache
+from ...utils import TTLCache, close_caches
 from ..base import SourceError
 
 # 站点 → (首页, API, cookie 域名)
@@ -214,6 +214,9 @@ class EHentai:
         self._ranges = TTLCache(RANGE_TTL, RANGE_CACHE_SIZE)
         # (gid, 缩略图页) → 画廊页 HTML
         self._thumbs = TTLCache(RANGE_TTL, THUMB_CACHE_SIZE)
+
+    async def close(self):
+        await close_caches(self)
 
     def gallery_url(self, gid: int, token: str) -> str:
         return f"{self.base}/g/{gid}/{token}/"

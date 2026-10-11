@@ -15,6 +15,7 @@ from pathlib import Path
 from astrbot.api import logger
 
 from ..download.http import HttpClient
+from ..utils import run_thread
 
 # 中文名冲突时按这个顺序取第一个
 INDEX_NAMESPACES = (
@@ -131,7 +132,7 @@ class TagDB:
                 await self._download()
             if self.path.exists() and self.path.stat().st_mtime != self._loaded_mtime:
                 try:
-                    self.index = await asyncio.to_thread(self._load)
+                    self.index = await run_thread(self._load)
                     self._loaded_mtime = self.path.stat().st_mtime
                 except Exception as e:
                     logger.warning(f"[random_pic] 标签库解析失败: {e!r}")

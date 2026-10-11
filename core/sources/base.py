@@ -21,7 +21,7 @@ from ..download.http import NETWORK_ERRORS
 from ..download.images import ImageCache, download_all
 from ..models import EXPLICIT, SENSITIVE, Album, DrawContext, DrawOptions, Work, WorkRef
 from ..policy.content import ContentFilter, rating_reason
-from ..utils import fetch_pages, fill
+from ..utils import close_caches, fetch_pages, fill
 
 ALL_RATINGS = frozenset({SENSITIVE, EXPLICIT})
 # E-Hentai 搜索语法里的字符：带这些字符的关键词是标签写法
@@ -108,7 +108,7 @@ class Source:
         raise NotImplementedError
 
     async def close(self):
-        pass
+        await close_caches(self)
 
     def links(self, text: str) -> list[tuple[int, WorkRef]]:
         """文字里本图源的作品链接：[(出现位置, 作品)]。"""

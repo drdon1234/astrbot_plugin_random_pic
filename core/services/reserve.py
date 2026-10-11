@@ -28,6 +28,7 @@ from ..models import (
     DrawRequest,
     WorkRef,
 )
+from ..utils import run_thread
 from .drawing import DrawResult
 
 # 抽图函数：(请求, 能否出 R18) → 结果
@@ -118,6 +119,7 @@ class Pool:
         label: str = "",
         min_pages_exempt: set[str] | None = None,
         allow_short: set[str] | None = None,
+        policy_key: str = "",
     ):
         self.draw_fn = draw
         self.move = move
@@ -125,6 +127,7 @@ class Pool:
         self.spec = spec
         self.batches = batches
         self.allowed = allowed
+        self.policy_key = policy_key
         # 当前源能力决定重载策略，不把策略写进旧桶，避免配置变化后沿用过期规则。
         self.min_pages_exempt = set(min_pages_exempt or ()) & allowed
         self.allow_short = set(allow_short or ()) & allowed
@@ -137,15 +140,31 @@ class Pool:
         self._backoff = False  # 没补满或出错后正在隔一会儿再补，这期间取不到就不等
         self._filling: Bucket | None = None  # 正在补、还没放进 ready / _pending 的桶
         self._task: asyncio.Task | None = None
+        self._lifecycle = asyncio.Lock()
+        self._stopped = False
 
     def start(self, load: bool = True):
+        if self._task is not None and not self._task.done():
+            return
+        self._stopped = False
+        self._busy = True
         self._task = asyncio.create_task(self._run(load))
 
     async def stop(self):
-        if self._task is not None:
-            if not self._task.done():
-                self._task.cancel()
-            await asyncio.gather(self._task, return_exceptions=True)
+        async with self._lifecycle:
+            await self._stop()
+
+    async def _stop(self):
+        self._stopped = True
+        try:
+            if self._task is not None:
+                if not self._task.done():
+                    self._task.cancel()
+                await asyncio.gather(self._task, return_exceptions=True)
+        finally:
+            async with self._cond:
+                self._busy = False
+                self._cond.notify_all()
 
     # ---- 取用 ----
 
@@ -154,8 +173,10 @@ class Pool:
         if not self.spec.serves(req):
             return None
         async with self._cond:
+            if self._stopped:
+                return None
             while not self.ready:
-                if not self._busy or self._task is None or self._task.done():
+                if self._stopped or not self._busy or self._task is None or self._task.done():
                     return None
                 await self._cond.wait()
             bucket = self.ready.pop(0)
@@ -171,9 +192,25 @@ class Pool:
 
         正在发送的桶（已经取走的）不动，发完照常删掉。
         """
-        if self._task is not None and not self._task.done():
-            self._task.cancel()
-            await asyncio.gather(self._task, return_exceptions=True)
+        async with self._lifecycle:
+            task = asyncio.create_task(self._refresh())
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # 接受刷新后完成清理与重新启动，取消等待者不能永久停掉维护。
+                while not task.done():
+                    try:
+                        await asyncio.shield(task)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                if not task.cancelled():
+                    task.exception()
+                raise
+
+    async def _refresh(self) -> int:
+        await self._stop()
         async with self._cond:
             buckets = [*self.ready, *self._pending]
             if self._filling is not None:
@@ -184,12 +221,15 @@ class Pool:
             self._filling = None
             self._busy = True
             self._wake.clear()
-        for bucket in buckets:
-            await asyncio.to_thread(shutil.rmtree, bucket.dir, True)
+        await self._remove_buckets(buckets)
         logger.info(f"[random_pic] 预备池（{self.name}）刷新：丢弃 {dropped} 批")
         # 不再读目录：目录里剩下的是正在发送的桶
         self.start(load=False)
         return dropped
+
+    async def _remove_buckets(self, buckets: list[Bucket]):
+        for bucket in buckets:
+            await run_thread(shutil.rmtree, bucket.dir, True)
 
     async def settled(self) -> int:
         """等这一轮补完（补满，或没补满、出错后隔一会儿再补时），返回现成的批数。"""
@@ -204,7 +244,22 @@ class Pool:
     async def _run(self, load: bool = True):
         if load:
             try:
-                await asyncio.to_thread(self._load)
+                # 独立任务拥有磁盘线程；取消维护时也取得加载结果，供刷新清理。
+                loading = asyncio.create_task(run_thread(self._load))
+                try:
+                    loaded = await asyncio.shield(loading)
+                except asyncio.CancelledError:
+                    while not loading.done():
+                        try:
+                            await asyncio.shield(loading)
+                        except asyncio.CancelledError:
+                            continue
+                        except Exception:
+                            break
+                    if not loading.cancelled() and loading.exception() is None:
+                        self.ready, self._pending = loading.result()
+                    raise
+                self.ready, self._pending = loaded
             except Exception as e:
                 logger.error(f"[random_pic] 预备池（{self.name}）读取旧桶出错: {e!r}")
             logger.info(
@@ -295,7 +350,7 @@ class Pool:
                     f"[random_pic] 预备池（{self.name}）补了 {len(result.albums)}/{short} "
                     f"个图集：{result.reason()}"
                 )
-            await asyncio.to_thread(self._store, bucket, result.albums)
+            bucket.albums = await run_thread(self._store, bucket, result.albums)
         if not bucket.albums:
             shutil.rmtree(bucket.dir, ignore_errors=True)
             return False
@@ -303,6 +358,7 @@ class Pool:
 
     def _store(self, bucket: Bucket, albums: list[Album]):
         """把抽到的图复制进桶（缓存会被清理），并写入清单。"""
+        bucket = replace(bucket, albums=list(bucket.albums))
         bucket.dir.mkdir(parents=True, exist_ok=True)
         for album in albums:
             prefix = uuid.uuid4().hex[:8]
@@ -321,16 +377,20 @@ class Pool:
             if pictures:
                 bucket.albums.append(replace(album, pictures=pictures))
         self._save(bucket)
+        return bucket.albums
 
-    @staticmethod
-    def _save(bucket: Bucket):
-        data = {"albums": [_album_to_json(a) for a in bucket.albums]}
+    def _save(self, bucket: Bucket):
+        data = {
+            "policy_key": self.policy_key,
+            "albums": [_album_to_json(a) for a in bucket.albums],
+        }
         (bucket.dir / MANIFEST).write_text(
             json.dumps(data, ensure_ascii=False), encoding="utf-8"
         )
 
     def _load(self):
         """读出上次留下的桶并按当前规格同步：删掉多余的桶、图集和图片，缺图集的桶放进待补。"""
+        ready, pending = [], []
         self.root.mkdir(parents=True, exist_ok=True)
         folders = sorted(
             (p for p in self.root.iterdir() if p.is_dir()),
@@ -338,19 +398,22 @@ class Pool:
         )
         for folder in folders:
             bucket = self._sync(folder)
-            if bucket is None or len(self.ready) + len(self._pending) >= self.batches:
+            if bucket is None or len(ready) + len(pending) >= self.batches:
                 shutil.rmtree(folder, ignore_errors=True)
             elif len(bucket.albums) < self.spec.albums:
-                self._pending.append(bucket)
+                pending.append(bucket)
             else:
-                self.ready.append(bucket)
+                ready.append(bucket)
         for path in self.root.iterdir():
             if not path.is_dir():
                 path.unlink(missing_ok=True)
+        return ready, pending
 
     def _sync(self, folder: Path) -> Bucket | None:
         try:
             data = json.loads((folder / MANIFEST).read_text(encoding="utf-8"))
+            if data.get("policy_key") != self.policy_key:
+                return None
             albums = [_album_from_json(a, folder) for a in data["albums"]]
         except (OSError, ValueError, KeyError, TypeError) as e:
             logger.info(f"[random_pic] 预备池丢弃无法读取的桶 {folder.name}: {e!r}")
@@ -397,6 +460,7 @@ class Reserve:
         label: str = "",
         min_pages_exempt: set[str] | None = None,
         allow_short: set[str] | None = None,
+        policy_key: str = "",
     ):
         """specs：要维护的池的规格 → 批数（批数为 0 或不在其中的不维护）；allowed：规格 → 可用图源键。
 
@@ -405,13 +469,6 @@ class Reserve:
         """
         self.draw_fn = draw
         self.root = root
-        # 5.5.x 的池只有三次元，目录是 root/分级
-        for rating in (SENSITIVE, EXPLICIT):
-            legacy, dest = root / rating, root / REAL / rating
-            if legacy.is_dir() and not dest.exists():
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                legacy.rename(dest)
-            shutil.rmtree(legacy, ignore_errors=True)
         self.pools: dict[tuple[str, str], Pool] = {}
         for spec, batches in specs.items():
             if batches > 0:
@@ -425,6 +482,7 @@ class Reserve:
                     label,
                     min_pages_exempt,
                     allow_short,
+                    policy_key,
                 )
         # 不维护的池删掉旧桶
         for style in (REAL, ANIME):

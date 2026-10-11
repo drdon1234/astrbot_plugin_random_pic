@@ -9,13 +9,15 @@ import io
 import re
 import shutil
 import time
+import uuid
 from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image
 
 from ..models import Work
-from ..utils import shared
+from ..utils import run_thread, shared
 
 COLOR_SPACES = {"RGB": "DeviceRGB", "L": "DeviceGray"}
 # 不压缩时，不是 JPEG 的页面仍要转成 JPEG，用这个质量
@@ -130,6 +132,32 @@ class PdfError(Exception):
     pass
 
 
+@dataclass(frozen=True)
+class PdfFile:
+    path: Path
+    name: str
+    pages: int
+
+
+def page_count(path: Path) -> int:
+    """读取本插件固定格式的页树，避免把来源的估计页数当成 PDF 实际页数。"""
+    with path.open('rb') as stream:
+        header = stream.read(65536)
+        stream.seek(0, 2)
+        stream.seek(max(0, stream.tell() - 16))
+        end = stream.read()
+    tree = re.search(
+        rb'2 0 obj\n<< /Type /Pages /Kids \[(.*?)\] /Count (\d+) >>\nendobj',
+        header,
+    )
+    if not header.startswith(b'%PDF-1.4\n') or tree is None or not end.rstrip().endswith(b'%%EOF'):
+        raise ValueError('PDF 缓存不完整或格式无效')
+    count = int(tree[2])
+    if count <= 0 or len(re.findall(rb'\d+ 0 R', tree[1])) != count:
+        raise ValueError('PDF 缓存页树无效')
+    return count
+
+
 # 下载整个作品：(作品, 目标目录) → (按页码排序、以页码命名的图片, 失败页数)
 Download = Callable[[Work, Path], Awaitable[tuple[list[Path], int]]]
 
@@ -185,23 +213,48 @@ class PdfStore:
         self._users: dict[str, tuple[asyncio.Lock, int]] = {}
         # 作品键 → 正在进行的打包
         self._builds: dict[str, asyncio.Future] = {}
+        self._closed = False
+        self._closing: asyncio.Task | None = None
 
     def building(self, work: Work) -> bool:
         return work.ref.key in self._builds
 
     async def get(
         self, work: Work, user_id: str, download: Download
-    ) -> tuple[list[tuple[Path, str]], int]:
+    ) -> tuple[list[PdfFile], int]:
         """返回作品的 PDF：(文件列表, 失败页数)。没有完整的缓存时排队打包。"""
+        if self._closed:
+            raise PdfError("PDF 服务已关闭")
         return await shared(
             self._builds,
             work.ref.key,
             lambda: self._queued(work, user_id, download),
         )
 
+    async def close(self):
+        """拒绝新请求，取消并等待所有共享构建及其实际磁盘工作结束。"""
+        self._closed = True
+        if self._closing is None:
+            async def stop():
+                tasks = list(self._builds.values())
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+            self._closing = asyncio.create_task(stop())
+        try:
+            await asyncio.shield(self._closing)
+        except asyncio.CancelledError:
+            while not self._closing.done():
+                try:
+                    await asyncio.shield(self._closing)
+                except asyncio.CancelledError:
+                    continue
+            raise
+
     async def _queued(
         self, work: Work, user_id: str, download: Download
-    ) -> tuple[list[tuple[Path, str]], int]:
+    ) -> tuple[list[PdfFile], int]:
         lock, users = self._users.get(user_id, (asyncio.Lock(), 0))
         self._users[user_id] = (lock, users + 1)
         try:
@@ -221,35 +274,44 @@ class PdfStore:
     def parts(self, pages: int) -> int:
         return -(-pages // self.pages_per_file)
 
-    def cached(self, work: Work) -> list[tuple[Path, str]] | None:
-        """完整打包过的作品直接复用；缺任何一个分卷都视为没有缓存。"""
+    def cached(self, work: Work) -> list[PdfFile] | None:
+        """仅复用分卷齐全且实际页数与当前作品一致的缓存。"""
         key = work.ref.key
         parts = self.parts(work.pages)
         files = []
         for part in range(1, parts + 1):
             path = self.dir / stored_name(key, part, parts)
-            if not path.exists():
+            try:
+                count = page_count(path)
+            except (OSError, ValueError):
                 return None
             start = (part - 1) * self.pages_per_file + 1
             end = min(start + self.pages_per_file - 1, work.pages)
-            files.append((path, display_name(work.title, key, (start, end), parts)))
+            if count != end - start + 1:
+                return None
+            files.append(
+                PdfFile(path, display_name(work.title, key, (start, end), parts), count)
+            )
         return files or None
 
     async def build(
         self, work: Work, download: Download
-    ) -> tuple[list[tuple[Path, str]], int]:
+    ) -> tuple[list[PdfFile], int]:
         """下载整个作品，每 pages_per_file 页写成一个 PDF。
 
-        返回 ([(PDF 路径, 发送文件名)], 失败页数)。有缺页时存储名带 -incomplete，不会被当成缓存复用。
+        返回 (带实际页数的文件列表, 失败页数)。有缺页时存储名带 -incomplete，不会被当成缓存复用。
         """
         key = work.ref.key
         tmp = self.tmp / key
-        shutil.rmtree(tmp, ignore_errors=True)
+        packed = self.dir / f".{key}-{uuid.uuid4().hex}"
+        published: list[Path] = []
         try:
+            await run_thread(shutil.rmtree, tmp, ignore_errors=True)
             paths, missing = await download(work, tmp)
             if not paths:
                 raise PdfError("没有下载到任何图片")
             self.dir.mkdir(parents=True, exist_ok=True)
+            packed.mkdir()
             chunks = [
                 paths[i : i + self.pages_per_file]
                 for i in range(0, len(paths), self.pages_per_file)
@@ -257,12 +319,31 @@ class PdfStore:
             files = []
             for part, chunk in enumerate(chunks, 1):
                 out = self.dir / stored_name(key, part, len(chunks), bool(missing))
-                await asyncio.to_thread(write_pdf, chunk, out, self.quality)
+                await run_thread(write_pdf, chunk, packed / out.name, self.quality)
                 # 下载的图片以页码命名，分卷文件名标出实际页码范围
                 pages = (int(chunk[0].stem), int(chunk[-1].stem))
-                files.append((out, display_name(work.title, key, pages, len(chunks))))
+                files.append(
+                    PdfFile(out, display_name(work.title, key, pages, len(chunks)), len(chunk))
+                )
+            # 全部分卷成功后再发布；临时 PDF 与输出同目录，支持跨文件系统的图片目录。
+            # 先移除同作品旧卷；发布途中进程退出也只会留下不完整的新卷，不混入旧卷。
+            for path in self.dir.glob('*.pdf'):
+                match = self.own.fullmatch(path.name)
+                if match and match.group(1) == key:
+                    path.unlink(missing_ok=True)
+            for file in files:
+                (packed / file.path.name).replace(file.path)
+                published.append(file.path)
+        except BaseException:
+            for path in published:
+                path.unlink(missing_ok=True)
+            raise
         finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+            def cleanup():
+                for directory in (tmp, packed):
+                    shutil.rmtree(directory, ignore_errors=True)
+
+            await run_thread(cleanup)
         self._prune(keep=key)
         return files, missing
 

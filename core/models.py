@@ -31,6 +31,7 @@ class DrawRequest:
     per_album: int = 1  # 每个图集几张
     random_character: bool = False  # 每个图集先随机抽一个角色
     whole: str | None = None  # 随机抽一个完整作品时的发送方式（合并转发 / PDF）
+    notices: list[str] = field(default_factory=list)  # 实际请求因上限等调整时告知用户
 
 
 @dataclass

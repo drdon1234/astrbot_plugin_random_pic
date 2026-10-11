@@ -8,7 +8,7 @@ fxtwitter（api.fxtwitter.com，开源的推文嵌入服务）的接口匿名可
   擦边订阅据此排除标了的）。条目里有 author、reposted_by、likes、created_timestamp、possibly_sensitive、
   media.photos（pbs.twimg.com 原图 name=orig）、media.videos（formats 里有各清晰度的 mp4 和码率，
   type 为 gif 的是循环动图）；
-- GET /2/status/<id>：单条推文，/pdf 用。
+- GET /2/status/<id>：按链接取整帖，抽取历史候选时复核元数据。
 媒体页只能从新往旧一页页翻，所以每个博主维护一份推文索引（存到插件数据目录，重启后沿用）：
 第一次用时先取第一页，其余的在后台每隔一会儿往前翻，最多保留 MAX_POSTS 条；每 REFRESH 秒从第一页起更新。
 """
@@ -24,6 +24,7 @@ from astrbot.api import logger
 
 from ...config.settings import Feed as FeedConf
 from ...download.http import NETWORK_ERRORS, HttpError, RateLimiter
+from ...utils import TTLCache
 from ..base import SourceError
 from .base import Feed
 from .models import Clip, Post
@@ -34,6 +35,9 @@ MAX_POSTS = 1000
 REFRESH = 6 * 3600
 # 更新时最多翻这么多页（遇到已有的推文就停）
 REFRESH_PAGES = 5
+# 每次抽取只复核有限候选；刚通过接口读取的元数据可共用五分钟。
+CANDIDATE_POSTS = 50
+POST_TTL = 300
 # 后台往前翻失败后隔这么久再试
 RETRY_AFTER = 600
 SIZE_RE = re.compile(r"/(\d+)x(\d+)/")
@@ -86,6 +90,7 @@ class XFeed(Feed):
     platform_name = "X"
     intro = "订阅的 X 博主"
     whole = True
+    per_batch = CANDIDATE_POSTS
 
     def __init__(
         self, conf: FeedConf, http, limiter: RateLimiter, store: Path | None = None
@@ -107,6 +112,8 @@ class XFeed(Feed):
         self._retry_at = 0.0
         self._lock = asyncio.Lock()
         self._backfill: asyncio.Task | None = None
+        self._verified = TTLCache(POST_TTL, MAX_POSTS)
+        self._closed = False
 
     def link(self, post: Post) -> str:
         return f"https://x.com/{self.account}/status/{post.id}"
@@ -146,7 +153,8 @@ class XFeed(Feed):
             return
         try:
             data = json.loads(self.store.read_text(encoding="utf-8"))
-            self._posts = [Post.from_dict(p) for p in data.get("posts") or []]
+            loaded = [Post.from_dict(p) for p in data.get("posts") or []]
+            self._posts = self._unique(loaded)[:MAX_POSTS]
             self._cursor = data.get("cursor")
             self._done = bool(data.get("done"))
             self._refreshed = float(data.get("refreshed") or 0)
@@ -172,25 +180,45 @@ class XFeed(Feed):
         except OSError as e:
             logger.warning(f"[random_pic] 保存 {self.name} 的推文索引失败: {e!r}")
 
+    @staticmethod
+    def _unique(posts: list[Post]) -> list[Post]:
+        """保留 ID 首次出现的顺序，同 ID 使用最后一次出现的元数据。"""
+        return list({post.id: post for post in posts}.values())
+
+    def _merge(self, incoming: list[Post], *, prepend: bool) -> int:
+        """按 ID 合并最新元数据并统一数量边界，返回本次遇到的新增 ID 数。"""
+        known = {post.id for post in self._posts}
+        updates = {post.id: post for post in incoming}
+        for post in updates.values():
+            self._verified.put(post.id, post)
+        fresh = [post for post in updates.values() if post.id not in known]
+        updated = [updates.get(post.id, post) for post in self._posts]
+        if prepend:
+            self._posts = fresh + updated
+        else:
+            self._posts = updated + fresh
+        self._posts = self._unique(self._posts)[:MAX_POSTS]
+        return len(fresh)
+
     async def _refresh(self):
         """从第一页起取新的推文，遇到已有的就停；索引是空的时只取第一页，其余交给后台往前翻。"""
-        known = {p.id for p in self._posts}
+        known = {post.id for post in self._posts}
         fresh: list[Post] = []
         cursor = None
         for _ in range(REFRESH_PAGES if known else 1):
             posts, bottom, count = await self._page(cursor)
-            new = [p for p in posts if p.id not in known]
-            fresh.extend(new)
+            fresh.extend(posts)
             if not known:
                 self._cursor, self._done = bottom, not (bottom and count)
-            if len(new) < len(posts) or not bottom or not count:
+                break
+            if not bottom or not count or any(post.id in known for post in posts):
                 break
             cursor = bottom
-        self._posts = fresh + self._posts
+        added = self._merge(fresh, prepend=True)
         self._refreshed = time.time()
         self._save()
-        if fresh:
-            logger.info(f"[random_pic] {self.name} 新增 {len(fresh)} 条推文")
+        if added:
+            logger.info(f"[random_pic] {self.name} 新增 {added} 条推文")
 
     async def _fill(self):
         """后台往前翻，直到翻到头或攒够 MAX_POSTS 条。"""
@@ -198,12 +226,10 @@ class XFeed(Feed):
             while not self._done and self._cursor and len(self._posts) < MAX_POSTS:
                 posts, bottom, count = await self._page(self._cursor)
                 async with self._lock:
-                    known = {p.id for p in self._posts}
-                    new = [p for p in posts if p.id not in known]
-                    self._posts.extend(new)
+                    added = self._merge(posts, prepend=False)
                     self._cursor = bottom
                     # 翻到头：没有下一页、空页，或整页都是已有的（cursor 绕回来了）
-                    self._done = not (bottom and count) or (bool(posts) and not new)
+                    self._done = not (bottom and count) or (bool(posts) and added == 0)
                     self._save()
             logger.info(f"[random_pic] {self.name} 推文索引共 {len(self._posts)} 条")
         except asyncio.CancelledError:
@@ -226,6 +252,8 @@ class XFeed(Feed):
 
     async def posts(self) -> list[Post]:
         """推文索引（从新到旧），过期时先更新；更新失败时沿用已有的。"""
+        if self._closed:
+            raise SourceError("X 订阅已关闭")
         async with self._lock:
             if not self._loaded:
                 self._load()
@@ -246,21 +274,32 @@ class XFeed(Feed):
         return random.sample(posts, len(posts))
 
     async def post(self, post_id: str) -> Post | None:
-        for post in self._posts:
-            if post.id == post_id:
-                return post
+        return await self._verified.load(post_id, lambda: self._fetch_post(post_id))
+
+    async def resolve(self, post: Post) -> Post | None:
+        return await self.post(post.id)
+
+    async def _fetch_post(self, post_id: str) -> Post | None:
         try:
             data = await self._api(f"/status/{post_id}")
         except SourceError:
-            return None
+            data = {}
         status = data.get("status")
-        return parse_status(status, self.account) if isinstance(status, dict) else None
+        post = parse_status(status, self.account) if isinstance(status, dict) else None
+        if post:
+            self._merge([post], prepend=False)
+        else:
+            self._posts = [item for item in self._posts if item.id != post_id]
+        self._save()
+        return post
 
     async def warm_up(self):
         await self.posts()
 
     async def close(self):
+        self._closed = True
         if self._backfill is not None:
             if not self._backfill.done():
                 self._backfill.cancel()
             await asyncio.gather(self._backfill, return_exceptions=True)
+        await super().close()

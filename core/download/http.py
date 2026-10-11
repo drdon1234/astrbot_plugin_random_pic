@@ -57,9 +57,12 @@ class HttpClient:
         self.proxy = proxy or None
         self.cookies = cookies or {}
         self._session: aiohttp.ClientSession | None = None
+        self._closed = False
 
     @property
     def session(self) -> aiohttp.ClientSession:
+        if self._closed:
+            raise HttpError("HTTP 客户端已关闭")
         if self._session is None or self._session.closed:
             jar = aiohttp.CookieJar()
             for domain, values in self.cookies.items():
@@ -104,6 +107,7 @@ class HttpClient:
             return await resp.json(content_type=None)
 
     async def close(self):
+        self._closed = True
         if self._session and not self._session.closed:
             await self._session.close()
 

@@ -14,7 +14,7 @@ from astrbot.api.event import MessageChain
 from ..config.settings import PDF_FORMAT, PushTask
 from ..message.dispatcher import SEND_INTERVAL, Dispatcher
 from ..message.transport import send_onebot
-from ..message.types import FORWARD_MAX_NODES, ONEBOT, Send, SendFailed
+from ..message.types import FORWARD_MAX_NODES, ONEBOT, Send, SendFailed, media_count
 from ..models import RATING_NAMES, STYLE_NAMES, DrawRequest
 from ..policy.access import AccessControl
 from ..storage.pdf import PdfStore
@@ -219,8 +219,10 @@ class Pusher:
             return
         bot = getattr(platform, "bot", None)
         group_id = target.chat_id if target.is_group else ""
+        sent_media = 0
 
         async def send(chain: list) -> str | None:
+            nonlocal sent_media
             if bot is not None:
                 delivered, message_id = await send_onebot(
                     bot,
@@ -230,12 +232,15 @@ class Pusher:
                     stage=self.dispatcher.stage,
                 )
                 if delivered:
+                    sent_media += media_count(chain)
                     return message_id
             try:
-                await self.context.send_message(umo, MessageChain(chain))
+                if not await self.context.send_message(umo, MessageChain(chain)):
+                    raise RuntimeError("未找到匹配的平台，消息未发送")
             except Exception as e:
                 logger.warning(f"[random_pic] 定时推送到{target}发送失败: {e!r}")
                 raise SendFailed.of(e) from e
+            sent_media += media_count(chain)
             return None
 
         if req.whole:
@@ -244,6 +249,7 @@ class Pusher:
             allow = self.access.explicit_allowed(is_private)
             # 一张都没发出去（多半是 QQ 拒发）时换一批重发，确定发出去后才发提醒文字
             for attempt in range(1 + PUSH_RETRIES):
+                sent_media = 0
                 async with self._draw(req, allow) as result:
                     if not result.albums:
                         logger.warning(
@@ -253,12 +259,16 @@ class Pusher:
                     failed, total = await self.dispatcher.deliver(
                         result.albums, umo, ONEBOT, await self._self_id(bot), send
                     )
-                if len(failed) < total:
+                if sent_media:
+                    summary = (
+                        f"{len(result.albums)} 个图集共 {sent_media} 张。"
+                        if sent_media == result.images
+                        else f"实际发送 {sent_media}/{result.images} 张，部分内容未确认发送。"
+                    )
                     await self._announce(
                         send,
                         f"{push_title(when)}：{STYLE_NAMES[req.style]}·"
-                        f"{RATING_NAMES[req.rating]}，"
-                        f"{len(result.albums)} 个图集共 {result.images} 张。",
+                        f"{RATING_NAMES[req.rating]}，{summary}",
                     )
                     break
                 if attempt < PUSH_RETRIES:
@@ -311,13 +321,17 @@ class Pusher:
             files, missing = await self.pdf.get(
                 work, f"push:{umo}", source.download_work
             )
+            why = self.works.page_limit(sum(file.pages for file in files) + missing)
+            if why:
+                logger.warning(f"[random_pic] 定时推送《{work.title}》：{why}")
+                return [], 0
             if missing:
                 logger.warning(
                     f"[random_pic] 定时推送《{work.title}》有 {missing} 页下载失败"
                 )
             messages = [
-                ([Comp.File(name=name, file=str(path.resolve()))], [])
-                for path, name in files
+                ([Comp.File(name=file.name, file=str(file.path.resolve()))], [])
+                for file in files
             ]
             return await self.dispatcher.send_all(messages, sent, send), len(messages)
 

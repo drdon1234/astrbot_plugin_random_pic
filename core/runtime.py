@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+from dataclasses import asdict
 from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.star import Context, StarTools
 
+from .commands.catalog import CommandCatalog
 from .commands.parser import RequestParser
 from .config.settings import Settings
 from .download.http import HttpClient
@@ -46,6 +50,7 @@ class Runtime:
 
     def __init__(self, context: Context, config: AstrBotConfig):
         self.settings = s = Settings.load(config)
+        self.commands = CommandCatalog(s.commands)
         data_dir = Path(StarTools.get_data_dir(PLUGIN_NAME))
         stage = self._stage(s.env.share_dir)
         # 要发送的图片、视频直接存在共享目录（有的话），发送时不用再复制
@@ -104,7 +109,12 @@ class Runtime:
         self.history = History(data_dir / "sent_albums.json")
         self.dispatcher = Dispatcher(
             self.history,
-            Composer(s.send.header, s.send.caption, None if stage else INLINE_BUDGET),
+            Composer(
+                s.send.header,
+                s.send.caption,
+                None if stage else INLINE_BUDGET,
+                self.commands if s.whole.enabled else None,
+            ),
             s.send.mode,
             stage,
         )
@@ -171,21 +181,27 @@ class Runtime:
             if not task.done():
                 task.cancel()
         # 同时停止各后台所有者，等待取消后的子任务和文件清理全部结束。
-        await asyncio.gather(
+        results = await asyncio.gather(
             self.pusher.stop(),
             self.reserve.stop(),
             self.video_reserve.stop(),
             *tasks,
             return_exceptions=True,
         )
-        # 按既定顺序释放服务；一处关闭失败也要尝试其余服务。
-        try:
-            await self.feeds.close()
-        finally:
+        errors = [result for result in results[:3] if isinstance(result, Exception)]
+        for result in results[3:]:
+            if isinstance(result, Exception):
+                logger.warning(f"[random_pic] 预热任务已失败，继续关闭: {result!r}")
+        # 先关闭下载任务的所有者，再关网络；一处失败也继续回收其余服务。
+        for service in (
+            self.feeds, self.pdf, self.videos, self.sources, self.history, self.http
+        ):
             try:
-                await self.http.close()
-            finally:
-                await self.sources.close()
+                await service.close()
+            except Exception as e:
+                errors.append(e)
+        if errors:
+            raise errors[0]
         self._closed = True
 
     @staticmethod
@@ -232,6 +248,7 @@ class Runtime:
             allowed,
             min_pages_exempt=feed_keys,
             allow_short=feed_keys | {self.sources.danbooru.key},
+            policy_key=self._reserve_policy(video=False),
         )
 
     def _video_reserve(self, root: Path) -> Reserve:
@@ -258,5 +275,42 @@ class Runtime:
             specs[spec] = n if on else 0
             allowed[spec] = keys
         return Reserve(
-            self.video_drawer.draw, root, specs, allowed, move=True, label="视频·"
+            self.video_drawer.draw, root, specs, allowed, move=True, label="视频·",
+            policy_key=self._reserve_policy(video=True),
         )
+
+    def _reserve_policy(self, *, video: bool) -> str:
+        """摘要只包含内容筛选配置；凭证、发送样式和面板展开不使桶失效。"""
+        s = self.settings
+        sources = asdict(s.sources)
+        feeds = sources.pop('feeds')
+        video_sources = sources.pop('video')
+        if video:
+            sites = video_sources
+        else:
+            sites = sources
+        for value in sites.values():
+            if isinstance(value, dict):
+                for key in (
+                    'weight', 'ipb_member_id', 'ipb_pass_hash', 'igneous',
+                    'manual_account', 'email', 'password',
+                ):
+                    value.pop(key, None)
+        policy = {
+            'filter': asdict(s.filter),
+            'sites': sites,
+            'feeds': feeds,
+            'draw': {
+                'page_pick': s.draw.page_pick,
+                'explicit_skip': s.draw.explicit_skip,
+                'min_pages': s.draw.min_pages,
+            },
+        }
+        if video:
+            policy['video'] = {
+                'max_mb': s.video.max_mb,
+                'max_seconds': s.video.max_seconds,
+                'mmd': s.video.mmd,
+            }
+        data = json.dumps(policy, sort_keys=True, ensure_ascii=False, separators=(',', ':'))
+        return hashlib.sha256(data.encode('utf-8')).hexdigest()

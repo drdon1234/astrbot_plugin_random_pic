@@ -104,17 +104,40 @@ class CosplayTeleVideoSource(WordPressSource):
                 logger.warning(f"[random_pic] {self.name} 播放列表出错 {embed}: {e}")
                 return None
             total = media.duration
-            if total <= CLIP_SECONDS * WHOLE_FACTOR:
+            limit = self.files.max_seconds
+            seconds = min(CLIP_SECONDS, limit) if limit is not None else CLIP_SECONDS
+            if total <= CLIP_SECONDS * WHOLE_FACTOR and (
+                limit is None or total <= limit
+            ):
                 start, segments = 0.0, media.segments
             else:
                 start = random.uniform(
-                    total * 0.1, max(total * 0.1, total * 0.9 - CLIP_SECONDS)
+                    total * 0.1, max(total * 0.1, total * 0.9 - seconds)
                 )
-                segments = clip(media, start, CLIP_SECONDS)
+                segments = clip(media, start, seconds)
+                # clip 按完整分片凑时长，可能超过上限；去掉末端超出的分片。
+                while (
+                    segments
+                    and limit is not None
+                    and sum(s.duration for s in segments) > limit
+                ):
+                    segments.pop()
+                if not segments:
+                    logger.info(
+                        f"[random_pic] {self.name} 分片无法满足时长上限: {embed}"
+                    )
+                    return None
                 start = sum(
                     s.duration
                     for s in media.segments[: media.segments.index(segments[0])]
                 )
+            duration = sum(s.duration for s in segments)
+            reason = self.files.reason(duration)
+            if not segments or duration <= 0 or reason:
+                logger.info(
+                    f"[random_pic] {self.name} 片段不可用 {embed}: {reason or '时长无效'}"
+                )
+                return None
             path = await self.hls.download(
                 media, variant, segments, self.files.new_path(), STREAM_HEADERS
             )
@@ -137,5 +160,5 @@ class CosplayTeleVideoSource(WordPressSource):
             pictures=[(1, path)],
             details=details,
             work=WorkRef(self.key, str(post.get("id"))),
-            duration=sum(s.duration for s in segments),
+            duration=duration,
         )

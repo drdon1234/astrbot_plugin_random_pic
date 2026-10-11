@@ -15,6 +15,7 @@ from astrbot.api import logger
 from ..download.http import NETWORK_ERRORS
 from ..models import EXPLICIT, RATING_NAMES, Album, DrawRequest, Work, WorkRef
 from ..policy.access import AccessControl
+from ..policy.content import rating_reason
 from ..sources.base import Source, SourceError
 from ..sources.images.registry import SourceSet
 from .drawing import Drawer
@@ -70,13 +71,15 @@ class WorkService:
         denied = self.access.work_gate(work, is_private, user_id)
         if denied:
             return None, None, denied
-        if work.pages > self.max_pages:
-            return (
-                None,
-                None,
-                f"作品有 {work.pages} 页，超过上限 {self.max_pages} 页，不予获取。",
-            )
+        why = self.page_limit(work.pages)
+        if why:
+            return None, None, why
         return source, work, ""
+
+    def page_limit(self, pages: int) -> str | None:
+        if pages > self.max_pages:
+            return f"作品有 {pages} 页，超过上限 {self.max_pages} 页，不予获取。"
+        return None
 
     async def random(
         self, req: DrawRequest, is_private: bool, user_id: str | None = None
@@ -97,7 +100,9 @@ class WorkService:
                 continue
             source, work, why = await self.lookup(album.work, is_private, user_id)
             if source is not None:
-                return album, source, work
+                why = rating_reason(work.rating, req.rating, allow_explicit)
+                if why is None:
+                    return album, source, work
             logger.info(f"[random_pic] 随机完整作品《{album.title}》不能发送：{why}")
         return f"连续 {WORK_ATTEMPTS} 次抽到的作品都不能发送（{why.rstrip('。')}）"
 
@@ -109,7 +114,11 @@ class WorkService:
         tmp = self.tmp / f"{work.ref.key}-{uuid.uuid4().hex[:8]}"
         try:
             async with self._downloads:
-                yield await source.download_work(work, tmp)
+                paths, missing = await source.download_work(work, tmp)
+                why = self.page_limit(len(paths) + missing)
+                if why:
+                    raise SourceError(why)
+                yield paths, missing
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -118,11 +127,12 @@ class WorkService:
         source: Source, work: Work, paths: list[Path], album: Album | None = None
     ) -> Album:
         """整个作品作为一个图集；抽到的图集有说明文字时沿用。"""
+        pictures = [(int(path.stem), path) for path in paths]
         return Album(
             source=album.source if album else source.name,
             title=work.title or (album.title if album else ""),
-            total=work.pages,
-            pictures=[(int(path.stem), path) for path in paths],
+            total=max(work.pages, max((page for page, _ in pictures), default=0)),
+            pictures=pictures,
             details=list(album.details) if album else [],
             work=work.ref,
         )

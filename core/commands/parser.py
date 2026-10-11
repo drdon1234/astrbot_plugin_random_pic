@@ -19,9 +19,9 @@ from ..models import (
 if TYPE_CHECKING:
     from ..sources.feeds.registry import FeedSet
 
-HELP_WORDS = {"help", "帮助"}
 # 数量写成「图集数x每集张数」
-COUNT_RE = re.compile(r"(\d+)\s*[x*×]\s*(\d+)")
+COUNT_RE = re.compile(r"(\d+)[x*×](\d+)")
+INVALID_COUNT_RE = re.compile(r"[+-]?\d+(?:\.\d+)?(?:[x*×].*)?$")
 # 抽图指令 → 预设参数；除 /抽图、/随机角色 外都是别名
 DRAW_COMMANDS = {
     "抽图": {},
@@ -56,7 +56,7 @@ def parse_args(
         per_album=defaults.per_album,
         random_character=defaults.random_character,
     )
-    for token in tokens:
+    for index, token in enumerate(tokens):
         low = token.lower()
         if token in STYLE_WORDS:
             req.style = STYLE_WORDS[token]
@@ -64,16 +64,32 @@ def parse_args(
             req.rating = RATING_WORDS[low]
         elif low in WHOLE_WORDS:
             req.whole = WHOLE_WORDS[low] or whole_format
-        elif token.isdigit():
+        elif token.isdecimal():
             req.albums = int(token)
+            if req.albums < 1:
+                raise ValueError("数量必须是正整数，例如 3 或 3x4。")
         elif match := COUNT_RE.fullmatch(low):
             req.albums, req.per_album = int(match.group(1)), int(match.group(2))
+            if req.albums < 1 or req.per_album < 1:
+                raise ValueError("数量必须是正整数，例如 3 或 3x4。")
+        elif (
+            token.isnumeric()
+            or INVALID_COUNT_RE.fullmatch(low)
+            or (low in {"x", "*", "×"} and index > 0 and tokens[index - 1].isdecimal())
+        ):
+            raise ValueError(f"数量「{token}」写法不对，请使用正整数或不带空格的 3x4。")
         else:
             req.keywords.append(token)
     if req.whole:
         req.albums = req.per_album = 1
-    req.per_album = max(1, min(req.per_album, max_images))
+    requested = (req.albums, req.per_album)
+    req.per_album = max(1, min(req.per_album, max_images // req.albums))
     req.albums = max(1, min(req.albums, max_images // req.per_album))
+    if requested != (req.albums, req.per_album):
+        req.notices.append(
+            f"单次最多 {max_images} 张，已从 {requested[0]} 集×{requested[1]} 张"
+            f"调整为 {req.albums} 集×{req.per_album} 张。"
+        )
     return req
 
 
@@ -110,10 +126,16 @@ class RequestParser:
     def video(self, tokens: list[str]) -> DrawRequest:
         """视频请求：风格、分级默认和抽图一样，每个「图集」就是一个视频。"""
         video = self.settings.video
+        if any(COUNT_RE.fullmatch(token.lower()) for token in tokens):
+            raise ValueError("视频数量请使用一个正整数，例如 2；视频没有每集张数。")
         style, rating = self._defaults(tokens)
         defaults = DrawRequest(style, rating, albums=video.default_count)
         req = parse_args(
             tokens, video.max_count, defaults, self.settings.whole.default_format
         )
         req.per_album = 1
+        if req.notices:
+            req.notices[:] = [
+                f"单次最多 {video.max_count} 个视频，已调整为 {req.albums} 个。"
+            ]
         return req

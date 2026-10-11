@@ -50,7 +50,7 @@ from ...models import (
     WorkRef,
 )
 from ...policy.content import ContentFilter
-from ...utils import TTLCache, shared
+from ...utils import TTLCache, run_thread, shared
 from ..base import Source, SourceError, has_tag_syntax, keyword_and_excludes
 
 CATEGORY_PATH = "/albums/another/sub/cosplay"
@@ -231,6 +231,7 @@ class JMComicSource(Source):
         # 后者是分类末尾的老图，随机翻页时跳过，总页数变了就重新记
         self._pages = TTLCache(LISTING_TTL, PAGES_CACHE_SIZE)
         self._inflight: dict = {}
+        self._closed = False
 
     @property
     def base(self) -> str:
@@ -252,6 +253,8 @@ class JMComicSource(Source):
 
     async def _fetch(self, url: str, fingerprint: str) -> tuple[int, str, str]:
         """用指定的浏览器指纹请求，返回 (状态码, 最终地址, 文本)。"""
+        if self._closed:
+            raise JMError("禁漫图源已关闭")
         session = self._sessions.get(fingerprint)
         if session is None:
             proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
@@ -283,6 +286,14 @@ class JMComicSource(Source):
         raise JMError(f"禁漫请求失败（{last}），检查域名 {self.domain} 和代理")
 
     async def close(self):
+        self._closed = True
+        tasks = list(self._inflight.values())
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._inflight.clear()
+        await super().close()
         for session in self._sessions.values():
             try:
                 await session.close()
@@ -312,6 +323,8 @@ class JMComicSource(Source):
     async def _random_listing(self, keyword: str) -> tuple[int, list[Item]]:
         """随机翻一页，返回 (页码, 本子)。总页数不知道时先取第一页；页码超出时以实际返回的
         页码修正总页数。"""
+        if self._closed:
+            raise JMError("禁漫图源已关闭")
         cached = self._pages.get(keyword)
         first = None
         if cached:
@@ -397,7 +410,7 @@ class JMComicSource(Source):
         if path is None:
             return None
         try:
-            return await asyncio.to_thread(restore, path, page.segments)
+            return await run_thread(restore, path, page.segments)
         except OSError as e:
             logger.warning(f"[random_pic] 还原禁漫图片失败 {page.url}: {e!r}")
             path.unlink(missing_ok=True)

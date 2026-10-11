@@ -48,7 +48,7 @@ class FeedImageSource(FeedSource):
         # 同次抽取可以并发下载同帖的不同页，最后一页下载结束才释放该帖。
         pending: dict[str, int] = {}
         # 每项保存一个帖子的剩余候选页；选取时再检查其他请求的占用与近期记录。
-        queue: list[tuple[Post, list[int]]] = []
+        queue: list[tuple[Post, list[int] | None]] = []
         lock = asyncio.Lock()
         errors: list[str] = []
 
@@ -62,14 +62,7 @@ class FeedImageSource(FeedSource):
                 if post.id in seen_posts:
                     continue
                 seen_posts.add(post.id)
-                if not self._usable(post):
-                    continue
-                reason = self.reject(post, words, excludes)
-                if reason:
-                    logger.debug(f"[random_pic] 跳过 {self.name} {post.id}: {reason}")
-                    continue
-                pages = page_order(len(post.photos), from_start=self.opts.from_start)
-                queue.append((post, pages))
+                queue.append((post, None))
 
         async def pick() -> tuple[Post, int] | None:
             async with lock:
@@ -93,6 +86,18 @@ class FeedImageSource(FeedSource):
                     if index is None:
                         return None
                     post, pages = queue[index]
+                    if pages is None:
+                        # 只在实际考虑该候选时复核，不遍历整份持久化索引发请求。
+                        queue.pop(index)
+                        post = await self.feed.resolve(post)
+                        if post is None or not self._usable(post):
+                            continue
+                        reason = self.reject(post, words, excludes)
+                        if reason:
+                            logger.debug(f"[random_pic] 跳过 {self.name} {post.id}: {reason}")
+                            continue
+                        pages = page_order(len(post.photos), from_start=self.opts.from_start)
+                        queue.insert(index, (post, pages))
                     while pages:
                         page = pages.pop(0)
                         url = post.photos[page]

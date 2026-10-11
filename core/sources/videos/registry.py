@@ -5,6 +5,7 @@
 VideoSet 和图片的 SourceSet 一样提供 drawing（参与抽取的源和比例），交给同一个 Drawer 按比例抽取。
 """
 
+import asyncio
 from pathlib import Path
 
 from astrbot.api import logger
@@ -128,6 +129,14 @@ class VideoSet:
 
     def prepare(self):
         self.files.prepare()
+
+    async def close(self):
+        results = await asyncio.gather(
+            *(source.close() for source in self.all), return_exceptions=True
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
 
     async def warm_up(self):
         """后台先试出 Iwara、RedGifs、SOOP 不带关键词时能抽的页数，第一次抽视频时不用等。"""

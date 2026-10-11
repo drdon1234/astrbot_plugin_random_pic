@@ -3,6 +3,7 @@
 FeedSet 按配置装配各订阅，给出要加进抽图（SourceSet）和抽视频（VideoSet）的图源和比例。
 """
 
+import asyncio
 from pathlib import Path
 
 from astrbot.api import logger
@@ -79,5 +80,9 @@ class FeedSet:
                 logger.warning(f"[random_pic] 订阅 {feed.name} 预热失败: {e!r}")
 
     async def close(self):
-        for feed in self.feeds:
-            await feed.close()
+        results = await asyncio.gather(
+            *(feed.close() for feed in self.feeds), return_exceptions=True
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result

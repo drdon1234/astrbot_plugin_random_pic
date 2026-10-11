@@ -10,6 +10,7 @@ from pathlib import Path
 import aiohttp
 from astrbot.api import logger
 
+from ..utils import run_thread
 from .http import USER_AGENT, HttpClient, HttpError
 
 # 图片缓存总大小、单张图片的上限（MB）：超出缓存时删除最旧的图片，超过单张上限的图片丢弃换一张
@@ -80,7 +81,7 @@ class ImageCache:
                 # 部分 H@H 节点经代理时会不发 TLS close_notify 就断开，asyncio 的 SSL
                 # 层会丢掉最后几 KB，同一地址重试也一样；阻塞式 ssl 能读全，所以退回 urllib
                 logger.info(f"[random_pic] 响应不完整，改用 urllib 重新下载: {e!r}")
-                fetched = await asyncio.to_thread(self._fetch_blocking, url, headers)
+                fetched = await run_thread(self._fetch_blocking, url, headers)
             if fetched is None:
                 logger.info(f"[random_pic] 图片过大，已跳过: {url}")
                 return None

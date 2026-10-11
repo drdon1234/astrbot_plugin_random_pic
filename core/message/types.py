@@ -2,6 +2,22 @@
 
 from collections.abc import Awaitable, Callable
 
+import astrbot.api.message_components as Comp
+
+
+def media_count(chain: list) -> int:
+    """统计实际提交的媒体数；标题、错误说明和文件不作为图片或视频计数。"""
+    total = 0
+    for part in chain:
+        if isinstance(part, (Comp.Image, Comp.Video)):
+            total += 1
+        elif isinstance(part, Comp.Nodes):
+            total += sum(media_count(node.content) for node in part.nodes)
+        elif isinstance(part, Comp.Node):
+            total += media_count(part.content)
+    return total
+
+
 FORWARD = "合并转发"
 
 
