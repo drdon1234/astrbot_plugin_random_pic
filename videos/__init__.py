@@ -12,7 +12,7 @@ from astrbot.api import logger
 from ..filters import ContentFilter
 from ..models import ANIME, RATING_NAMES, REAL, STYLE_NAMES, DrawOptions
 from ..net import HttpClient, ImageCache
-from ..settings import Video
+from ..settings import Video, VideoSources
 from ..sources.base import Source
 from ..sources.danbooru import DanbooruSource
 from .base import Recent, VideoFiles
@@ -32,6 +32,7 @@ class VideoSet:
     def __init__(
         self,
         conf: Video,
+        sites: VideoSources,
         http: HttpClient,
         cache: ImageCache,
         content: ContentFilter,
@@ -50,19 +51,19 @@ class VideoSet:
         sources: list[tuple[Source, object]] = [
             (
                 DanbooruVideoSource(
-                    *args, min_score=conf.danbooru.min_score, allow_mmd=conf.mmd
+                    *args, min_score=sites.danbooru.min_score, allow_mmd=conf.mmd
                 ),
-                conf.danbooru,
+                sites.danbooru,
             ),
             (
                 IwaraSource(
                     *args,
                     danbooru,
-                    min_likes=conf.iwara.min_likes,
-                    min_likes_sensitive=conf.iwara.min_likes_sensitive,
+                    min_likes=sites.iwara.min_likes,
+                    min_likes_sensitive=sites.iwara.min_likes_sensitive,
                     allow_mmd=conf.mmd,
                 ),
-                conf.iwara,
+                sites.iwara,
             ),
             (
                 RedGifsSource(
@@ -73,11 +74,11 @@ class VideoSet:
                     tag="Hentai",
                     intro="高赞动画片段",
                     verified_only=False,
-                    min_likes=conf.redgifs_hentai.min_likes,
+                    min_likes=sites.redgifs_hentai.min_likes,
                     require=ANIMATION_TAGS,
                     allow_mmd=conf.mmd,
                 ),
-                conf.redgifs_hentai,
+                sites.redgifs_hentai,
             ),
             (
                 RedGifsSource(
@@ -88,14 +89,14 @@ class VideoSet:
                     tag="Cosplay",
                     intro="实名认证 coser 的高赞短片",
                     verified_only=True,
-                    min_likes=conf.redgifs_cosplay.min_likes,
+                    min_likes=sites.redgifs_cosplay.min_likes,
                     reject=ANIMATION_TAGS,
                     allow_mmd=conf.mmd,
                 ),
-                conf.redgifs_cosplay,
+                sites.redgifs_cosplay,
             ),
-            (SoopSource(*args, min_views=conf.soop.min_views), conf.soop),
-            (CosplayTeleVideoSource(http, cache, content, opts, self.files), conf.cosplaytele),
+            (SoopSource(*args, min_views=sites.soop.min_views), sites.soop),
+            (CosplayTeleVideoSource(http, cache, content, opts, self.files), sites.cosplaytele),
         ]
         self.all = [source for source, _ in sources]
         for source, site in sources:
@@ -117,11 +118,6 @@ class VideoSet:
         for source, weight in drawing:
             self.all.append(source)
             self.drawing.append((source, weight))
-
-    def use_only(self, drawing: list[tuple[Source, int]]):
-        """只从这些视频源（订阅）抽，配置里的视频源不再参与。"""
-        self.drawing = []
-        self.add(drawing)
 
     def prepare(self):
         self.files.prepare()

@@ -10,6 +10,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools
 
 from .access import AccessControl
+from .config_migration import migrate_config
 from .drawer import Drawer, DrawResult
 from .feeds import FeedSet
 from .filters import HEAVY_TAGS, ContentFilter
@@ -53,6 +54,9 @@ from .tags import TagDB
 from .videos import VideoSet
 from .works import WorkService, describe
 
+# 官方加载器在模块导入完成后才按 schema 清理配置，先迁移以保全旧字段。
+migrate_config()
+
 PLUGIN_NAME = "astrbot_plugin_random_pic"
 HELP_WORDS = {"help", "帮助"}
 # 数量写成「图集数x每集张数」
@@ -87,7 +91,7 @@ def parse_args(
     """宽松解析：风格词、分级词、数量、全集 / pdf 可任意顺序，其余当作关键词。
 
     数量写一个数字是图集数，写成「图集数x每集张数」（如 3x4）同时指定每集张数。
-    二次元来自单图站，每集固定 1 张。
+    每集张数也适用于二次元订阅；单图站由图源自身保证一集一张。
     总张数不超过 max_images：超出时先减少每集张数，再减少图集数。
     带「全集」「pdf」时随机抽一个完整作品，「全集」用 whole_format 发送，「pdf」发 PDF。
     """
@@ -114,8 +118,6 @@ def parse_args(
             req.keywords.append(token)
     if req.whole:
         req.albums = req.per_album = 1
-    if req.style == ANIME:
-        req.per_album = 1
     req.per_album = max(1, min(req.per_album, max_images))
     req.albums = max(1, min(req.albums, max_images // req.per_album))
     return req
@@ -156,6 +158,7 @@ class RandomPicPlugin(Star):
         self.drawer = Drawer(self.sources, self.content, self.tagdb)
         self.videos = VideoSet(
             s.video,
+            s.sources.video,
             self.http,
             cache,
             self.content,
@@ -165,7 +168,7 @@ class RandomPicPlugin(Star):
             data_dir / "video_recent.json",
         )
         self.feeds = FeedSet(
-            s.feeds,
+            s.sources.feeds,
             self.http,
             cache,
             self.content,
@@ -174,13 +177,9 @@ class RandomPicPlugin(Star):
             self.videos.files,
             self.videos.recent,
         )
-        # 抽图来源选订阅时只从订阅抽；选网站时订阅只登记，/全集 还能获取以前抽到的订阅作品
-        if s.feeds.active:
-            self.sources.use_only(self.feeds.images)
-            if s.video.enabled:
-                self.videos.use_only(self.feeds.videos)
-        else:
-            self.sources.add(self.feeds.images, draw=False)
+        self.sources.add(self.feeds.images, draw=s.sources.feeds.enabled)
+        if s.sources.feeds.enabled and s.video.enabled:
+            self.videos.add(self.feeds.videos)
         self.video_drawer = Drawer(self.videos, self.content, self.tagdb)
         self.video_reserve = self._video_reserve(media_dir / "reserve_video")
         self.reserve = self._reserve(media_dir / "reserve")
@@ -225,7 +224,7 @@ class RandomPicPlugin(Star):
         if self.settings.video.enabled:
             self.videos.prepare()
             self._warm_up = asyncio.create_task(self.videos.warm_up())
-        if self.settings.feeds.active and self.feeds.feeds:
+        if self.settings.sources.feeds.enabled and self.feeds.feeds:
             self._feeds_warm_up = asyncio.create_task(self.feeds.warm_up())
         self.reserve.start()
         self.video_reserve.start()
@@ -262,10 +261,10 @@ class RandomPicPlugin(Star):
         s = self.settings
         explicit = s.access.group_r18 or s.access.private_r18
         batches = {
-            (REAL, SENSITIVE): s.draw.reserve_real_sensitive,
-            (REAL, EXPLICIT): s.draw.reserve_real_explicit if explicit else 0,
-            (ANIME, SENSITIVE): s.draw.reserve_anime_sensitive,
-            (ANIME, EXPLICIT): s.draw.reserve_anime_explicit if explicit else 0,
+            (REAL, SENSITIVE): s.reserve.images.real_sensitive,
+            (REAL, EXPLICIT): s.reserve.images.real_explicit if explicit else 0,
+            (ANIME, SENSITIVE): s.reserve.images.anime_sensitive,
+            (ANIME, EXPLICIT): s.reserve.images.anime_explicit if explicit else 0,
         }
         specs, allowed = {}, {}
         for (style, rating), n in batches.items():
@@ -277,10 +276,14 @@ class RandomPicPlugin(Star):
                 for source, _ in self.sources.drawing
                 if source.style == style and rating in source.usable_ratings
             }
-            # 没有图源的风格·分级（如只从订阅抽时）不维护
+            # 没有启用源的风格·分级不维护
             specs[spec] = n if allowed[spec] else 0
+        feed_keys = {source.key for source, _ in self.feeds.images}
+        # 订阅帖子不套用网站作品页数门槛；实际图片不足时仍可保留。
         return Reserve(
-            lambda req, allow: self.drawer.draw(req, allow), root, specs, allowed
+            lambda req, allow: self.drawer.draw(req, allow), root, specs, allowed,
+            min_pages_exempt=feed_keys,
+            allow_short=feed_keys | {self.sources.danbooru.key},
         )
 
     def _video_reserve(self, root: Path) -> Reserve:
@@ -288,20 +291,24 @@ class RandomPicPlugin(Star):
         R18 群聊私聊都不允许时不维护 R18 的，没有视频源的风格和分级也不维护）。"""
         s = self.settings
         explicit = s.access.group_r18 or s.access.private_r18
-        batches = {ANIME: s.video.reserve_anime, REAL: s.video.reserve_real}
+        batches = {
+            (REAL, SENSITIVE): s.reserve.videos.real_sensitive,
+            (REAL, EXPLICIT): s.reserve.videos.real_explicit,
+            (ANIME, SENSITIVE): s.reserve.videos.anime_sensitive,
+            (ANIME, EXPLICIT): s.reserve.videos.anime_explicit,
+        }
         count = self._video_request([]).albums
         specs, allowed = {}, {}
-        for style, n in batches.items():
-            for rating in (SENSITIVE, EXPLICIT):
-                keys = {
-                    source.key
-                    for source, _ in self.videos.drawing
-                    if source.style == style and rating in source.usable_ratings
-                }
-                on = s.video.enabled and keys and (rating != EXPLICIT or explicit)
-                spec = Spec(style, rating, count, 1)
-                specs[spec] = n if on else 0
-                allowed[spec] = keys
+        for (style, rating), n in batches.items():
+            keys = {
+                source.key
+                for source, _ in self.videos.drawing
+                if source.style == style and rating in source.usable_ratings
+            }
+            on = s.video.enabled and keys and (rating != EXPLICIT or explicit)
+            spec = Spec(style, rating, count, 1)
+            specs[spec] = n if on else 0
+            allowed[spec] = keys
         return Reserve(
             self.video_drawer.draw, root, specs, allowed, move=True, label="视频·"
         )
@@ -394,7 +401,7 @@ class RandomPicPlugin(Star):
 
     def _defaults(self, tokens: list[str]) -> tuple[str, str]:
         """不写风格、分级时的默认值：参数指名了订阅时是这个订阅的，否则是配置的。"""
-        feed = self.feeds.named(tokens) if self.settings.feeds.active else None
+        feed = self.feeds.named(tokens) if self.settings.sources.feeds.enabled else None
         if feed:
             return feed.conf.style, feed.conf.rating
         return self.settings.draw.style, self.settings.draw.rating
@@ -810,7 +817,7 @@ class RandomPicPlugin(Star):
             f"· 参数顺序随意；不写时默认 {STYLE_NAMES[draw.style]}·"
             f"{RATING_NAMES[draw.rating]}、{draw.album_count} 个图集、每集 "
             f"{draw.images_per_album} 张，每次最多 {draw.max_images} 张",
-            "· 一个图集是同一作品里的几张图；例如 /抽图 3x4 抽 3 个图集、每集 4 张",
+            "· 网站图集来自同一作品；订阅可跨帖抽齐。例如 /抽图 3x4 抽 3 集、每集 4 张",
             "· 关键词可写中文角色、作品名（如 芙莉莲、原神）或标签，前缀 - 表示排除",
             "/随机角色 [同上]：每个图集先随机抽一个角色",
         ]
@@ -825,7 +832,7 @@ class RandomPicPlugin(Star):
             lines.append("别名：/二次元 /三次元 /擦边 /色图")
         lines.append(f"R18：群聊{on[access.group_r18]}，私聊{on[access.private_r18]}")
         lines += self.sources.help_lines()
-        if s.feeds.active and self.feeds.feeds:
+        if s.sources.feeds.enabled and self.feeds.feeds:
             example = self.feeds.feeds[0].conf.name or self.feeds.feeds[0].conf.account
             lines.append(
                 f"· 关键词写订阅的账号或名称时只抽这个订阅，例如 /抽图 {example}"

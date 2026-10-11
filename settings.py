@@ -1,6 +1,6 @@
 """插件配置：分段与 _conf_schema.json 一一对应，键名、类型、默认值和可选值都只在 schema 里定义。
 
-只有用户需要选择的项才放进配置：各站点的开关、适用分级、比例和质量门槛（评分、点赞数）在图源管理里，
+各站点的开关、适用分级、权重和质量门槛（评分、点赞数）集中在源配置区，
 超时、缓存大小等调优参数是各模块里的常量。
 schema 里 show_ 开头的开关只用来在配置面板上收起、展开一组设置（其他项的 condition 引用它），不进入设置。
 """
@@ -13,6 +13,7 @@ from pathlib import Path
 
 from astrbot.api import logger
 
+from .config_migration import migrate_layout
 from .models import EXPLICIT, RATING_WORDS, SENSITIVE, STYLE_WORDS
 
 SCHEMA = json.loads(
@@ -94,10 +95,6 @@ class Draw:
     page_pick: str
     explicit_skip: float
     min_pages: int
-    reserve_real_sensitive: int
-    reserve_real_explicit: int
-    reserve_anime_sensitive: int
-    reserve_anime_explicit: int
 
     def __post_init__(self):
         self.album_count = _clamp(self.album_count, 1)
@@ -105,10 +102,6 @@ class Draw:
         self.max_images = _clamp(self.max_images, 1)
         self.min_pages = _clamp(self.min_pages, 0)
         self.explicit_skip = min(max(float(self.explicit_skip), 0.0), 0.9)
-        self.reserve_real_sensitive = _clamp(self.reserve_real_sensitive, 0)
-        self.reserve_real_explicit = _clamp(self.reserve_real_explicit, 0)
-        self.reserve_anime_sensitive = _clamp(self.reserve_anime_sensitive, 0)
-        self.reserve_anime_explicit = _clamp(self.reserve_anime_explicit, 0)
 
     @property
     def style(self) -> str:
@@ -168,7 +161,7 @@ class Whole:
 
 @dataclass(kw_only=True)
 class Site:
-    """一个图源站点的设置。只有一种分级的站点没有「适用分级」，唯一的二次元图源没有「比例」，用这里的默认值。"""
+    """一个图源站点的设置。只有一种分级的站点不显示「适用分级」，沿用默认范围。"""
 
     enabled: bool
     scope: str = "通用"
@@ -242,30 +235,6 @@ class JMSite(Site):
         )
 
 
-@dataclass
-class Sources:
-    """补位图源和各图源站点的设置，站点的键是图源键。"""
-
-    fallback: str  # 补位图源的键，"off" 为不补位
-    danbooru: DanbooruSite
-    ehentai: EHentaiSite
-    pica: PicaSite
-    cosplaytele: Site
-    xiuren: Site
-    nudecosplay: Site
-    pixibb: Site
-    jmcomic: JMSite
-
-    def __post_init__(self):
-        for f in fields(self):
-            value = getattr(self, f.name)
-            if isinstance(value, dict):
-                setattr(self, f.name, f.type(**value))
-
-    def site(self, key: str) -> Site:
-        return getattr(self, key)
-
-
 @dataclass(kw_only=True)
 class LikesSite(Site):
     """带最低点赞数的视频站（Iwara、RedGifs）。"""
@@ -301,7 +270,7 @@ class ViewsSite(Site):
 
 @dataclass
 class Video:
-    """/抽视频（实验性）：个数、大小和时长上限与各视频源。"""
+    """/抽视频：默认个数、大小和时长上限。"""
 
     enabled: bool
     default_count: int
@@ -309,29 +278,15 @@ class Video:
     max_mb: int
     max_seconds: int
     mmd: bool
-    reserve_anime: int
-    reserve_real: int
-    danbooru: DanbooruSite
-    iwara: IwaraSite
-    redgifs_hentai: LikesSite
-    redgifs_cosplay: LikesSite
-    soop: ViewsSite
-    cosplaytele: Site
 
     def __post_init__(self):
         self.max_count = _clamp(self.max_count, 1)
         self.default_count = _clamp(self.default_count, 1, self.max_count)
         self.max_mb = _clamp(self.max_mb, 0)
         self.max_seconds = _clamp(self.max_seconds, 0)
-        self.reserve_anime = _clamp(self.reserve_anime, 0)
-        self.reserve_real = _clamp(self.reserve_real, 0)
-        for f in fields(self):
-            value = getattr(self, f.name)
-            if isinstance(value, dict):
-                setattr(self, f.name, f.type(**value))
 
 
-FEED_TEMPLATES = SCHEMA["feeds"]["items"]["subscriptions"]["templates"]
+FEED_TEMPLATES = SCHEMA["sources"]["items"]["feeds"]["items"]["subscriptions"]["templates"]
 X = "x"
 TELEGRAM = "telegram"
 # 账号的写法：X 用户名 1~15 位，Telegram 频道名 4~32 位、字母开头
@@ -346,9 +301,6 @@ ACCOUNT_URL_RE = {
     ),
     TELEGRAM: re.compile(r"^(?:https?://)?(?:www\.)?t\.me/(?:s/)?([^/?#]+)", re.I),
 }
-# 抽图来源：网站（图源管理、视频里的网站）或订阅，只能选一种
-FROM_SITES = "网站"
-FROM_FEEDS = "订阅"
 MEDIA_IMAGES = {"图片和视频": True, "仅图片": True, "仅视频": False}
 MEDIA_VIDEOS = {"图片和视频": True, "仅图片": False, "仅视频": True}
 
@@ -374,6 +326,8 @@ class Feed:
     videos: bool  # 视频参与 /抽视频
     weight: int
     min_likes: int = 0
+    fill_album: bool = True
+    prefer_same_post: bool = False
 
     @classmethod
     def parse(cls, entry) -> "Feed | None":
@@ -405,6 +359,8 @@ class Feed:
             videos=MEDIA_VIDEOS[values["media"]],
             weight=_clamp(values["weight"], 1),
             min_likes=_clamp(values.get("min_likes", 0), 0),
+            fill_album=values["fill_album"],
+            prefer_same_post=values["prefer_same_post"],
         )
 
     @property
@@ -416,13 +372,8 @@ class Feed:
 
 @dataclass
 class Feeds:
-    mode: str  # FROM_SITES / FROM_FEEDS
+    enabled: bool
     subscriptions: list[Feed]
-
-    @property
-    def active(self) -> bool:
-        """订阅参与抽图（抽图来源选了订阅）。"""
-        return self.mode == FROM_FEEDS
 
     def __post_init__(self):
         feeds: dict[str, Feed] = {}
@@ -431,6 +382,70 @@ class Feeds:
             if feed and feed.key not in feeds:
                 feeds[feed.key] = feed
         self.subscriptions = list(feeds.values())
+
+
+@dataclass
+class VideoSources:
+    danbooru: DanbooruSite
+    iwara: IwaraSite
+    redgifs_hentai: LikesSite
+    redgifs_cosplay: LikesSite
+    soop: ViewsSite
+    cosplaytele: Site
+
+    def __post_init__(self):
+        for f in fields(self):
+            value = getattr(self, f.name)
+            if isinstance(value, dict):
+                setattr(self, f.name, f.type(**value))
+
+
+@dataclass
+class Sources:
+    """图片站点、视频站点、订阅与补位设置。"""
+
+    fallback: str  # 补位图源的键，"off" 为不补位
+    danbooru: DanbooruSite
+    ehentai: EHentaiSite
+    pica: PicaSite
+    cosplaytele: Site
+    xiuren: Site
+    nudecosplay: Site
+    pixibb: Site
+    jmcomic: JMSite
+    video: VideoSources
+    feeds: Feeds
+
+    def __post_init__(self):
+        for f in fields(self):
+            value = getattr(self, f.name)
+            if isinstance(value, dict):
+                setattr(self, f.name, f.type(**value))
+
+    def site(self, key: str) -> Site:
+        return getattr(self, key)
+
+
+@dataclass
+class ReserveCounts:
+    real_sensitive: int
+    real_explicit: int
+    anime_sensitive: int
+    anime_explicit: int
+
+    def __post_init__(self):
+        for f in fields(self):
+            setattr(self, f.name, _clamp(getattr(self, f.name), 0))
+
+
+@dataclass
+class Reserves:
+    images: ReserveCounts
+    videos: ReserveCounts
+
+    def __post_init__(self):
+        self.images = ReserveCounts(**self.images)
+        self.videos = ReserveCounts(**self.videos)
 
 
 @dataclass
@@ -493,19 +508,20 @@ class Push:
 
 @dataclass
 class Settings:
+    sources: Sources
     draw: Draw
+    video: Video
+    send: Send
     access: Access
     filter: Filter
-    send: Send
+    reserve: Reserves
     whole: Whole
     push: Push
-    video: Video
-    sources: Sources
-    feeds: Feeds
     env: Env
 
     @classmethod
     def load(cls, config) -> "Settings":
+        config = migrate_layout(config)
         sections = {
             f.name: f.type(**_values(SCHEMA[f.name]["items"], config.get(f.name) or {}))
             for f in fields(cls)

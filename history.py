@@ -76,7 +76,8 @@ def albums_from_text(text: str, links: Links) -> list[SentAlbum]:
                 int(match.group(1)),
                 match.group(2).strip(),
                 match.group(3).strip(),
-                works[0] if works else None,
+                # 跨帖图集包含多个作品链接，不能把首帖当作整个图集。
+                works[0] if len(works) == 1 else None,
             )
         )
     return albums

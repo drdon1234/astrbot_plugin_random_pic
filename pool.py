@@ -72,6 +72,7 @@ def _album_to_json(album: Album) -> dict:
     work = album.work
     return {
         "source": album.source,
+        "source_key": album.source_key,
         "title": album.title,
         "total": album.total,
         "pictures": [[page, path.name] for page, path in album.pictures],
@@ -91,6 +92,7 @@ def _album_from_json(data: dict, folder: Path) -> Album:
         details=list(data.get("details") or []),
         work=WorkRef(*work) if work else None,
         duration=data.get("duration"),
+        source_key=str(data.get("source_key") or ""),
     )
 
 
@@ -114,6 +116,8 @@ class Pool:
         allowed: set[str],
         move: bool = False,
         label: str = "",
+        min_pages_exempt: set[str] | None = None,
+        allow_short: set[str] | None = None,
     ):
         self.draw_fn = draw
         self.move = move
@@ -121,6 +125,9 @@ class Pool:
         self.spec = spec
         self.batches = batches
         self.allowed = allowed
+        # 当前源能力决定重载策略，不把策略写进旧桶，避免配置变化后沿用过期规则。
+        self.min_pages_exempt = set(min_pages_exempt or ()) & allowed
+        self.allow_short = set(allow_short or ()) & allowed
         self.name = f"{label}{STYLE_NAMES[spec.style]}·{RATING_NAMES[spec.rating]}"
         self.ready: list[Bucket] = []
         self._pending: list[Bucket] = []  # 重载后要补图集的旧桶
@@ -349,11 +356,14 @@ class Pool:
         keep: list[Album] = []
         for album in albums:
             album.pictures = [(p, f) for p, f in album.pictures if f.is_file()]
-            source_ok = album.work is None or album.work.source in self.allowed
+            source_key = album.source_key or (album.work.source if album.work else "")
+            source_ok = not source_key or source_key in self.allowed
+            min_pages = 0 if source_key in self.min_pages_exempt else self.spec.min_pages
+            min_pictures = 1 if source_key in self.allow_short else self.spec.per_album
             if (
                 not source_ok
-                or album.total < self.spec.min_pages
-                or len(album.pictures) < self.spec.per_album
+                or album.total < min_pages
+                or len(album.pictures) < min_pictures
                 or len(keep) >= self.spec.albums
             ):
                 _remove(f for _, f in album.pictures)
@@ -361,6 +371,8 @@ class Pool:
             _remove(f for _, f in album.pictures[self.spec.per_album :])
             album.pictures = album.pictures[: self.spec.per_album]
             keep.append(album)
+        if not keep:
+            return None
         used = {f.name for album in keep for _, f in album.pictures} | {MANIFEST}
         _remove(p for p in folder.iterdir() if p.name not in used)
         bucket = Bucket(folder, keep)
@@ -379,10 +391,13 @@ class Reserve:
         allowed: dict[Spec, set[str]],
         move: bool = False,
         label: str = "",
+        min_pages_exempt: set[str] | None = None,
+        allow_short: set[str] | None = None,
     ):
         """specs：要维护的池的规格 → 批数（批数为 0 或不在其中的不维护）；allowed：规格 → 可用图源键。
 
         move：抽到的文件移进桶而不是复制（视频）；label：日志里池名的前缀。
+        min_pages_exempt：不受最少页数限制的当前源；allow_short：允许不足每集张数的当前源。
         """
         self.draw_fn = draw
         self.root = root
@@ -404,6 +419,8 @@ class Reserve:
                     allowed.get(spec, set()),
                     move,
                     label,
+                    min_pages_exempt,
+                    allow_short,
                 )
         # 不维护的池删掉旧桶
         for style in (REAL, ANIME):

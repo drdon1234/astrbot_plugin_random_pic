@@ -107,12 +107,6 @@ class SourceSet:
             if draw:
                 self.drawing.append((source, weight))
 
-    def use_only(self, drawing: list[tuple[Source, int]]):
-        """只从这些图源（订阅）抽：配置里的图源不再参与抽图，也不补位。"""
-        self.drawing = []
-        self.fallback = None
-        self.add(drawing)
-
     @property
     def keys(self) -> list[str]:
         """所有图源键，包括没装上的。"""
@@ -122,7 +116,7 @@ class SourceSet:
         """按图源键找能用的图源，返回 (图源, 不能用的原因)。"""
         source = self._by_key.get(key)
         if key in self.disabled:
-            return None, f"{source.name if source else JM_NAME}已在图源管理里停用"
+            return None, f"{source.name if source else JM_NAME}已在源开关与详情里停用"
         if source is None:
             return None, self.missing.get(key, f"未知的图源 {key}")
         if source.unavailable:

@@ -1,8 +1,1124 @@
 {
-  "draw": {
-    "description": "抽图",
+  "sources": {
+    "description": "源开关与详情",
     "type": "object",
-    "hint": "一次抽若干个图集，每个图集是同一作品里的几张图。",
+    "hint": "网站与订阅可以同时启用，同类内容按权重混合抽取。开关直接可见，站点详情默认收起；展开或收起不改变抽取设置。",
+    "items": {
+      "danbooru": {
+        "description": "Danbooru（二次元）",
+        "type": "object",
+        "items": {
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true
+          },
+          "show_details": {
+            "description": "展开站点详情",
+            "type": "bool",
+            "default": false,
+            "hint": "仅控制显示，不影响已保存的设置。"
+          },
+          "scope": {
+            "description": "适用分级",
+            "type": "string",
+            "default": "通用",
+            "options": [
+              "通用",
+              "仅擦边",
+              "仅R18"
+            ],
+            "condition": {
+              "show_details": true
+            }
+          },
+          "min_score": {
+            "description": "最低评分",
+            "type": "int",
+            "default": 150,
+            "condition": {
+              "show_details": true
+            },
+            "hint": "Danbooru 的用户投票分，低于此分的图不抽。低于 100 时质量明显下降。"
+          },
+          "weight": {
+            "description": "抽取权重",
+            "type": "int",
+            "default": 1,
+            "slider": {
+              "min": 1,
+              "max": 10,
+              "step": 1
+            },
+            "condition": {
+              "show_details": true
+            },
+            "hint": "二次元图片源与二次元订阅按权重混合抽取。"
+          }
+        }
+      },
+      "ehentai": {
+        "description": "E-Hentai",
+        "type": "object",
+        "items": {
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true
+          },
+          "show_details": {
+            "description": "展开站点详情",
+            "type": "bool",
+            "default": false,
+            "hint": "仅控制显示，不影响已保存的设置。"
+          },
+          "scope": {
+            "description": "适用分级",
+            "type": "string",
+            "default": "通用",
+            "options": [
+              "通用",
+              "仅擦边",
+              "仅R18"
+            ],
+            "condition": {
+              "show_details": true
+            }
+          },
+          "weight": {
+            "description": "抽取权重",
+            "type": "int",
+            "default": 5,
+            "slider": {
+              "min": 1,
+              "max": 10,
+              "step": 1
+            },
+            "condition": {
+              "show_details": true
+            },
+            "hint": "同风格、同分级的所有已启用源按权重随机抽取；数值越大越常抽到。"
+          },
+          "min_stars": {
+            "description": "最低画廊评分（星）",
+            "type": "int",
+            "default": 4,
+            "slider": {
+              "min": 1,
+              "max": 5,
+              "step": 1
+            },
+            "condition": {
+              "show_details": true
+            },
+            "hint": "低于此星级的画廊不抽，1 为不限。"
+          },
+          "site": {
+            "description": "站点",
+            "type": "string",
+            "default": "e-hentai",
+            "options": [
+              "e-hentai",
+              "exhentai"
+            ],
+            "condition": {
+              "show_details": true
+            },
+            "hint": "exhentai 需要填齐下面三个 cookie；表站填前两个可以提高图片额度。"
+          },
+          "ipb_member_id": {
+            "description": "cookie：ipb_member_id",
+            "type": "string",
+            "default": "",
+            "secret": true,
+            "condition": {
+              "show_details": true
+            }
+          },
+          "ipb_pass_hash": {
+            "description": "cookie：ipb_pass_hash",
+            "type": "string",
+            "default": "",
+            "secret": true,
+            "condition": {
+              "show_details": true
+            }
+          },
+          "igneous": {
+            "description": "cookie：igneous",
+            "type": "string",
+            "default": "",
+            "secret": true,
+            "condition": {
+              "show_details": true,
+              "site": "exhentai"
+            }
+          }
+        }
+      },
+      "pica": {
+        "description": "哔咔",
+        "type": "object",
+        "items": {
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true
+          },
+          "show_details": {
+            "description": "展开站点详情",
+            "type": "bool",
+            "default": false,
+            "hint": "仅控制显示，不影响已保存的设置。"
+          },
+          "scope": {
+            "description": "适用分级",
+            "type": "string",
+            "default": "通用",
+            "options": [
+              "通用",
+              "仅擦边",
+              "仅R18"
+            ],
+            "condition": {
+              "show_details": true
+            }
+          },
+          "weight": {
+            "description": "抽取权重",
+            "type": "int",
+            "default": 5,
+            "slider": {
+              "min": 1,
+              "max": 10,
+              "step": 1
+            },
+            "condition": {
+              "show_details": true
+            },
+            "hint": "同风格、同分级的所有已启用源按权重随机抽取；数值越大越常抽到。"
+          },
+          "manual_account": {
+            "description": "手动配置账号",
+            "type": "bool",
+            "default": false,
+            "condition": {
+              "show_details": true
+            },
+            "hint": "关闭时插件自动注册并维护一个专用账号。"
+          },
+          "email": {
+            "description": "账号",
+            "type": "string",
+            "default": "",
+            "condition": {
+              "show_details": true,
+              "manual_account": true
+            }
+          },
+          "password": {
+            "description": "密码",
+            "type": "string",
+            "default": "",
+            "secret": true,
+            "condition": {
+              "show_details": true,
+              "manual_account": true
+            }
+          }
+        }
+      },
+      "cosplaytele": {
+        "description": "CosplayTele",
+        "type": "object",
+        "items": {
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true
+          },
+          "show_details": {
+            "description": "展开站点详情",
+            "type": "bool",
+            "default": false,
+            "hint": "仅控制显示，不影响已保存的设置。"
+          },
+          "scope": {
+            "description": "适用分级",
+            "type": "string",
+            "default": "通用",
+            "options": [
+              "通用",
+              "仅擦边",
+              "仅R18"
+            ],
+            "condition": {
+              "show_details": true
+            }
+          },
+          "weight": {
+            "description": "抽取权重",
+            "type": "int",
+            "default": 5,
+            "slider": {
+              "min": 1,
+              "max": 10,
+              "step": 1
+            },
+            "condition": {
+              "show_details": true
+            },
+            "hint": "同风格、同分级的所有已启用源按权重随机抽取；数值越大越常抽到。"
+          }
+        }
+      },
+      "xiuren": {
+        "description": "XiuRen",
+        "type": "object",
+        "hint": "工作室棚拍写真，只有擦边内容。",
+        "items": {
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true
+          },
+          "show_details": {
+            "description": "展开站点详情",
+            "type": "bool",
+            "default": false,
+            "hint": "仅控制显示，不影响已保存的设置。"
+          },
+          "weight": {
+            "description": "抽取权重",
+            "type": "int",
+            "default": 5,
+            "slider": {
+              "min": 1,
+              "max": 10,
+              "step": 1
+            },
+            "condition": {
+              "show_details": true
+            },
+            "hint": "同风格、同分级的所有已启用源按权重随机抽取；数值越大越常抽到。"
+          }
+        }
+      },
+      "nudecosplay": {
+        "description": "NudeCosplay",
+        "type": "object",
+        "items": {
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true
+          },
+          "show_details": {
+            "description": "展开站点详情",
+            "type": "bool",
+            "default": false,
+            "hint": "仅控制显示，不影响已保存的设置。"
+          },
+          "scope": {
+            "description": "适用分级",
+            "type": "string",
+            "default": "通用",
+            "options": [
+              "通用",
+              "仅擦边",
+              "仅R18"
+            ],
+            "condition": {
+              "show_details": true
+            }
+          },
+          "weight": {
+            "description": "抽取权重",
+            "type": "int",
+            "default": 5,
+            "slider": {
+              "min": 1,
+              "max": 10,
+              "step": 1
+            },
+            "condition": {
+              "show_details": true
+            },
+            "hint": "同风格、同分级的所有已启用源按权重随机抽取；数值越大越常抽到。"
+          }
+        }
+      },
+      "pixibb": {
+        "description": "PixiBB",
+        "type": "object",
+        "hint": "站点不区分裸露程度，只用于 R18。",
+        "items": {
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true
+          },
+          "show_details": {
+            "description": "展开站点详情",
+            "type": "bool",
+            "default": false,
+            "hint": "仅控制显示，不影响已保存的设置。"
+          },
+          "weight": {
+            "description": "抽取权重",
+            "type": "int",
+            "default": 5,
+            "slider": {
+              "min": 1,
+              "max": 10,
+              "step": 1
+            },
+            "condition": {
+              "show_details": true
+            },
+            "hint": "同风格、同分级的所有已启用源按权重随机抽取；数值越大越常抽到。"
+          }
+        }
+      },
+      "jmcomic": {
+        "description": "禁漫天堂",
+        "type": "object",
+        "hint": "站点不区分裸露程度，只用于 R18。",
+        "items": {
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "default": true
+          },
+          "show_details": {
+            "description": "展开站点详情",
+            "type": "bool",
+            "default": false,
+            "hint": "仅控制显示，不影响已保存的设置。"
+          },
+          "weight": {
+            "description": "抽取权重",
+            "type": "int",
+            "default": 5,
+            "slider": {
+              "min": 1,
+              "max": 10,
+              "step": 1
+            },
+            "condition": {
+              "show_details": true
+            },
+            "hint": "同风格、同分级的所有已启用源按权重随机抽取；数值越大越常抽到。"
+          },
+          "min_likes": {
+            "description": "最低点赞数",
+            "type": "int",
+            "default": 500,
+            "condition": {
+              "show_details": true
+            },
+            "hint": "点赞数低于此值的本子不抽，分类末尾多是老旧的业余写真。"
+          },
+          "domain": {
+            "description": "域名",
+            "type": "string",
+            "default": "18comic.vip",
+            "condition": {
+              "show_details": true
+            },
+            "hint": "域名经常更换，失效时换成能打开的。"
+          }
+        }
+      },
+      "video": {
+        "description": "视频站点开关",
+        "type": "object",
+        "hint": "与下方订阅视频共同参与抽取；抽视频功能总开关在「视频常用设置」。",
+        "items": {
+          "danbooru": {
+            "description": "Danbooru 视频（二次元）",
+            "type": "object",
+            "hint": "高分动画短片，按 Danbooru 图片源同样的规则过滤儿童角色。",
+            "items": {
+              "enabled": {
+                "description": "启用",
+                "type": "bool",
+                "default": true
+              },
+              "show_details": {
+                "description": "展开站点详情",
+                "type": "bool",
+                "default": false,
+                "hint": "仅控制显示，不影响已保存的设置。"
+              },
+              "weight": {
+                "description": "抽取权重",
+                "type": "int",
+                "default": 5,
+                "slider": {
+                  "min": 1,
+                  "max": 10,
+                  "step": 1
+                },
+                "condition": {
+                  "show_details": true
+                },
+                "hint": "同风格、同分级的所有已启用源按权重随机抽取；数值越大越常抽到。"
+              },
+              "min_score": {
+                "description": "最低评分",
+                "type": "int",
+                "default": 150,
+                "condition": {
+                  "show_details": true
+                }
+              }
+            }
+          },
+          "iwara": {
+            "description": "Iwara（二次元）",
+            "type": "object",
+            "hint": "MMD、Koikatsu 等 3D 视频，多为 2~7 分钟。R18 取站内 ecchi 里有性内容迹象的；擦边取全年龄（general）里没有 R18 迹象的性感舞蹈，几乎都是 MMD，关闭「抽取 MMD 视频」时不提供。",
+            "items": {
+              "enabled": {
+                "description": "启用",
+                "type": "bool",
+                "default": true
+              },
+              "show_details": {
+                "description": "展开站点详情",
+                "type": "bool",
+                "default": false,
+                "hint": "仅控制显示，不影响已保存的设置。"
+              },
+              "scope": {
+                "description": "适用分级",
+                "type": "string",
+                "default": "通用",
+                "options": [
+                  "通用",
+                  "仅擦边",
+                  "仅R18"
+                ],
+                "condition": {
+                  "show_details": true
+                }
+              },
+              "weight": {
+                "description": "抽取权重",
+                "type": "int",
+                "default": 5,
+                "slider": {
+                  "min": 1,
+                  "max": 10,
+                  "step": 1
+                },
+                "condition": {
+                  "show_details": true
+                },
+                "hint": "同风格、同分级的所有已启用源按权重随机抽取；数值越大越常抽到。"
+              },
+              "min_likes": {
+                "description": "R18 最低点赞数",
+                "type": "int",
+                "default": 1000,
+                "condition": {
+                  "show_details": true
+                },
+                "hint": "按点赞排序，约 600 赞以上的有 5 万个。"
+              },
+              "min_likes_sensitive": {
+                "description": "擦边最低点赞数",
+                "type": "int",
+                "default": 150,
+                "condition": {
+                  "show_details": true
+                },
+                "hint": "全年龄视频的点赞少得多：150 时约 1500 个可抽。"
+              }
+            }
+          },
+          "redgifs_hentai": {
+            "description": "RedGifs 动画（二次元）",
+            "type": "object",
+            "hint": "RedGifs 全站带 Hentai 标签的动画片段，按点赞排序。",
+            "items": {
+              "enabled": {
+                "description": "启用",
+                "type": "bool",
+                "default": true
+              },
+              "show_details": {
+                "description": "展开站点详情",
+                "type": "bool",
+                "default": false,
+                "hint": "仅控制显示，不影响已保存的设置。"
+              },
+              "weight": {
+                "description": "抽取权重",
+                "type": "int",
+                "default": 5,
+                "slider": {
+                  "min": 1,
+                  "max": 10,
+                  "step": 1
+                },
+                "condition": {
+                  "show_details": true
+                },
+                "hint": "同风格、同分级的所有已启用源按权重随机抽取；数值越大越常抽到。"
+              },
+              "min_likes": {
+                "description": "最低点赞数",
+                "type": "int",
+                "default": 200,
+                "condition": {
+                  "show_details": true
+                },
+                "hint": "只抽不低于此数的（200 时约 2000~3000 个）。"
+              }
+            }
+          },
+          "redgifs_cosplay": {
+            "description": "RedGifs Cosplay（三次元）",
+            "type": "object",
+            "hint": "RedGifs 全站带 Cosplay 标签的真人片段，只取实名认证创作者的，多为欧美 coser。",
+            "items": {
+              "enabled": {
+                "description": "启用",
+                "type": "bool",
+                "default": true
+              },
+              "show_details": {
+                "description": "展开站点详情",
+                "type": "bool",
+                "default": false,
+                "hint": "仅控制显示，不影响已保存的设置。"
+              },
+              "weight": {
+                "description": "抽取权重",
+                "type": "int",
+                "default": 5,
+                "slider": {
+                  "min": 1,
+                  "max": 10,
+                  "step": 1
+                },
+                "condition": {
+                  "show_details": true
+                },
+                "hint": "同风格、同分级的所有已启用源按权重随机抽取；数值越大越常抽到。"
+              },
+              "min_likes": {
+                "description": "最低点赞数",
+                "type": "int",
+                "default": 200,
+                "condition": {
+                  "show_details": true
+                },
+                "hint": "只抽不低于此数的（200 时约 2000~3000 个）。"
+              }
+            }
+          },
+          "soop": {
+            "description": "SOOP（三次元·擦边）",
+            "type": "object",
+            "hint": "韩国直播站 SOOP（原 AfreecaTV）的官方短视频：女主播的舞蹈片段，多为 10~60 秒竖屏。需要 ffmpeg。",
+            "items": {
+              "enabled": {
+                "description": "启用",
+                "type": "bool",
+                "default": true
+              },
+              "show_details": {
+                "description": "展开站点详情",
+                "type": "bool",
+                "default": false,
+                "hint": "仅控制显示，不影响已保存的设置。"
+              },
+              "weight": {
+                "description": "抽取权重",
+                "type": "int",
+                "default": 5,
+                "slider": {
+                  "min": 1,
+                  "max": 10,
+                  "step": 1
+                },
+                "condition": {
+                  "show_details": true
+                },
+                "hint": "同风格、同分级的所有已启用源按权重随机抽取；数值越大越常抽到。"
+              },
+              "min_views": {
+                "description": "最低播放量",
+                "type": "int",
+                "default": 1000,
+                "condition": {
+                  "show_details": true
+                },
+                "hint": "从近一个月和近一年播放最多的片段里抽。"
+              }
+            }
+          },
+          "cosplaytele": {
+            "description": "CosplayTele 视频（三次元·R18）",
+            "type": "object",
+            "hint": "CosplayTele「Cosplay Nude」帖子里的视频（亚洲 coser），全片多为几分钟到几十分钟，随机截取 30 秒。可搜角色、作品名。需要 ffmpeg。",
+            "items": {
+              "enabled": {
+                "description": "启用",
+                "type": "bool",
+                "default": true
+              },
+              "show_details": {
+                "description": "展开站点详情",
+                "type": "bool",
+                "default": false,
+                "hint": "仅控制显示，不影响已保存的设置。"
+              },
+              "weight": {
+                "description": "抽取权重",
+                "type": "int",
+                "default": 5,
+                "slider": {
+                  "min": 1,
+                  "max": 10,
+                  "step": 1
+                },
+                "condition": {
+                  "show_details": true
+                },
+                "hint": "同风格、同分级的所有已启用源按权重随机抽取；数值越大越常抽到。"
+              }
+            }
+          }
+        }
+      },
+      "feeds": {
+        "description": "X / Telegram 订阅",
+        "type": "object",
+        "hint": "启用后与网站源共同抽取。展开订阅列表后可逐条开关、编辑账号和详情；关键词写账号或显示名称时只抽该订阅。",
+        "items": {
+          "enabled": {
+            "description": "启用订阅源",
+            "type": "bool",
+            "default": false,
+            "hint": "关闭只停止订阅抽取，保留订阅信息；网站源按各自开关运行。"
+          },
+          "show_subscriptions": {
+            "description": "展开订阅列表",
+            "type": "bool",
+            "default": false,
+            "hint": "仅控制显示，不影响已保存的设置。"
+          },
+          "subscriptions": {
+            "description": "订阅列表",
+            "type": "template_list",
+            "default": [
+              {
+                "__template_key": "x",
+                "enabled": true,
+                "account": "re0nnn",
+                "name": "",
+                "style": "二次元",
+                "rating": "擦边",
+                "media": "仅图片",
+                "weight": 2,
+                "min_likes": 0,
+                "fill_album": true,
+                "prefer_same_post": false
+              },
+              {
+                "__template_key": "x",
+                "enabled": true,
+                "account": "amik1_",
+                "name": "",
+                "style": "二次元",
+                "rating": "擦边",
+                "media": "仅图片",
+                "weight": 2,
+                "min_likes": 0,
+                "fill_album": true,
+                "prefer_same_post": false
+              },
+              {
+                "__template_key": "x",
+                "enabled": true,
+                "account": "vitaminechan",
+                "name": "",
+                "style": "二次元",
+                "rating": "擦边",
+                "media": "仅图片",
+                "weight": 2,
+                "min_likes": 0,
+                "fill_album": true,
+                "prefer_same_post": false
+              },
+              {
+                "__template_key": "x",
+                "enabled": true,
+                "account": "greem_bang",
+                "name": "",
+                "style": "二次元",
+                "rating": "R18",
+                "media": "仅图片",
+                "weight": 2,
+                "min_likes": 0,
+                "fill_album": true,
+                "prefer_same_post": false
+              },
+              {
+                "__template_key": "x",
+                "enabled": true,
+                "account": "kurotsuki_machi",
+                "name": "",
+                "style": "二次元",
+                "rating": "R18",
+                "media": "仅图片",
+                "weight": 2,
+                "min_likes": 0,
+                "fill_album": true,
+                "prefer_same_post": false
+              },
+              {
+                "__template_key": "x",
+                "enabled": true,
+                "account": "aphy3d",
+                "name": "",
+                "style": "二次元",
+                "rating": "R18",
+                "media": "仅视频",
+                "weight": 3,
+                "min_likes": 0,
+                "fill_album": true,
+                "prefer_same_post": false
+              },
+              {
+                "__template_key": "x",
+                "enabled": true,
+                "account": "z1g3d",
+                "name": "",
+                "style": "二次元",
+                "rating": "R18",
+                "media": "仅视频",
+                "weight": 3,
+                "min_likes": 0,
+                "fill_album": true,
+                "prefer_same_post": false
+              },
+              {
+                "__template_key": "x",
+                "enabled": true,
+                "account": "EnjiNight",
+                "name": "",
+                "style": "三次元",
+                "rating": "擦边",
+                "media": "图片和视频",
+                "weight": 3,
+                "min_likes": 0,
+                "fill_album": true,
+                "prefer_same_post": false
+              },
+              {
+                "__template_key": "x",
+                "enabled": true,
+                "account": "Hidori_Rose",
+                "name": "",
+                "style": "三次元",
+                "rating": "R18",
+                "media": "仅视频",
+                "weight": 3,
+                "min_likes": 0,
+                "fill_album": true,
+                "prefer_same_post": false
+              },
+              {
+                "__template_key": "telegram",
+                "enabled": true,
+                "account": "astasiangeli",
+                "name": "",
+                "style": "三次元",
+                "media": "图片和视频",
+                "weight": 3,
+                "fill_album": true,
+                "prefer_same_post": false
+              },
+              {
+                "__template_key": "telegram",
+                "enabled": true,
+                "account": "GQMNST",
+                "name": "",
+                "style": "三次元",
+                "media": "仅图片",
+                "weight": 3,
+                "fill_album": true,
+                "prefer_same_post": false
+              },
+              {
+                "__template_key": "telegram",
+                "enabled": true,
+                "account": "vixenp",
+                "name": "",
+                "style": "三次元",
+                "media": "图片和视频",
+                "weight": 3,
+                "fill_album": true,
+                "prefer_same_post": false
+              }
+            ],
+            "templates": {
+              "x": {
+                "name": "X 博主",
+                "hint": "经 fxtwitter 的公开接口读取博主的媒体页，不用登录；不含转推，保留最近约 1000 条带图或视频的推文，每 6 小时更新。",
+                "display_item": "account",
+                "items": {
+                  "enabled": {
+                    "description": "启用",
+                    "type": "bool",
+                    "default": true
+                  },
+                  "account": {
+                    "description": "账号",
+                    "type": "string",
+                    "default": "",
+                    "hint": "博主的用户名（@ 后面的部分），也可以粘贴主页链接。"
+                  },
+                  "name": {
+                    "description": "显示名称",
+                    "type": "string",
+                    "default": "",
+                    "hint": "抽到时显示的来源名，关键词写它也能只抽这个订阅；留空为账号。"
+                  },
+                  "show_details": {
+                    "description": "展开订阅详情",
+                    "type": "bool",
+                    "default": false,
+                    "hint": "仅控制显示，不影响已保存的设置。"
+                  },
+                  "style": {
+                    "description": "风格",
+                    "type": "string",
+                    "default": "三次元",
+                    "options": [
+                      "三次元",
+                      "二次元"
+                    ],
+                    "condition": {
+                      "show_details": true
+                    }
+                  },
+                  "rating": {
+                    "description": "分级",
+                    "type": "string",
+                    "default": "R18",
+                    "options": [
+                      "R18",
+                      "擦边"
+                    ],
+                    "hint": "推文没有分级，全部按这里的分级抽取（R18 受群聊、私聊的 R18 开关限制）。擦边订阅不抽博主标了敏感内容的推文；内容混杂或拿不准时选 R18。",
+                    "condition": {
+                      "show_details": true
+                    }
+                  },
+                  "media": {
+                    "description": "抽取内容",
+                    "type": "string",
+                    "default": "图片和视频",
+                    "options": [
+                      "图片和视频",
+                      "仅图片",
+                      "仅视频"
+                    ],
+                    "hint": "图片进入 /抽图，视频进入 /抽视频（需开启视频功能）。",
+                    "condition": {
+                      "show_details": true
+                    }
+                  },
+                  "weight": {
+                    "description": "抽取权重",
+                    "type": "int",
+                    "default": 5,
+                    "slider": {
+                      "min": 1,
+                      "max": 10,
+                      "step": 1
+                    },
+                    "hint": "与同风格、同分级的网站和其他订阅一起按权重抽取。",
+                    "condition": {
+                      "show_details": true
+                    }
+                  },
+                  "min_likes": {
+                    "description": "最低点赞数",
+                    "type": "int",
+                    "default": 0,
+                    "hint": "只抽点赞不少于这个数的推文，0 为不限。",
+                    "condition": {
+                      "show_details": true
+                    }
+                  },
+                  "fill_album": {
+                    "description": "跨帖子抽齐每集张数",
+                    "type": "bool",
+                    "default": true,
+                    "condition": {
+                      "show_details": true
+                    },
+                    "hint": "跟随「每个图集的张数」和指令中的每集张数。单条帖子图片不足时，从此订阅的其他帖子补齐；图片耗尽时发送实际张数。关闭后每集只从一条帖子抽取。X 每个帖子最多四张图片。"
+                  },
+                  "prefer_same_post": {
+                    "description": "优先从同一帖子抽取",
+                    "type": "bool",
+                    "default": false,
+                    "condition": {
+                      "show_details": true,
+                      "fill_album": true
+                    },
+                    "hint": "开启后先取同一帖子的图片，不足再跨帖子补齐；关闭时混合不同帖子的图片。"
+                  }
+                },
+                "hide_hint_in_list": true
+              },
+              "telegram": {
+                "name": "Telegram 频道",
+                "hint": "读取频道的网页预览（t.me/s/频道名），不用登录，从整个频道历史里随机抽。频道没有分级，一律按 R18 抽取（受群聊、私聊的 R18 开关限制）。图片是预览尺寸（长边约 800~1280），网页预览不提供的大视频抽不到；没有开放网页预览的频道不能订阅。",
+                "display_item": "account",
+                "items": {
+                  "enabled": {
+                    "description": "启用",
+                    "type": "bool",
+                    "default": true
+                  },
+                  "account": {
+                    "description": "账号",
+                    "type": "string",
+                    "default": "",
+                    "hint": "填写公开频道用户名、@用户名或 t.me 链接。频道必须开放 t.me/s 网页预览；私有频道不支持。Telegram 订阅固定按 R18，需开启对应会话权限。"
+                  },
+                  "name": {
+                    "description": "显示名称",
+                    "type": "string",
+                    "default": "",
+                    "hint": "抽到时显示的来源名，关键词写它也能只抽这个订阅；留空为账号。"
+                  },
+                  "show_details": {
+                    "description": "展开订阅详情",
+                    "type": "bool",
+                    "default": false,
+                    "hint": "仅控制显示，不影响已保存的设置。"
+                  },
+                  "style": {
+                    "description": "风格",
+                    "type": "string",
+                    "default": "三次元",
+                    "options": [
+                      "三次元",
+                      "二次元"
+                    ],
+                    "condition": {
+                      "show_details": true
+                    }
+                  },
+                  "media": {
+                    "description": "抽取内容",
+                    "type": "string",
+                    "default": "图片和视频",
+                    "options": [
+                      "图片和视频",
+                      "仅图片",
+                      "仅视频"
+                    ],
+                    "hint": "按所选类型参与抽图或抽视频；网页预览不提供的大视频无法抽取。",
+                    "condition": {
+                      "show_details": true
+                    }
+                  },
+                  "weight": {
+                    "description": "抽取权重",
+                    "type": "int",
+                    "default": 5,
+                    "slider": {
+                      "min": 1,
+                      "max": 10,
+                      "step": 1
+                    },
+                    "hint": "与同风格、同分级的网站和其他订阅一起按权重抽取。",
+                    "condition": {
+                      "show_details": true
+                    }
+                  },
+                  "fill_album": {
+                    "description": "跨消息抽齐每集张数",
+                    "type": "bool",
+                    "default": true,
+                    "condition": {
+                      "show_details": true
+                    },
+                    "hint": "跟随「每个图集的张数」和指令中的每集张数。单条消息图片不足时，从此订阅的其他消息补齐；图片耗尽时发送实际张数。关闭后每集只从一条消息抽取。Telegram 相册按一条消息处理。"
+                  },
+                  "prefer_same_post": {
+                    "description": "优先从同一消息抽取",
+                    "type": "bool",
+                    "default": false,
+                    "condition": {
+                      "show_details": true,
+                      "fill_album": true
+                    },
+                    "hint": "开启后先取同一消息的图片，不足再跨消息补齐；关闭时混合不同消息的图片。"
+                  }
+                },
+                "hide_hint_in_list": true
+              }
+            },
+            "hint": "从预设模板添加 X 博主或 Telegram 公开频道。每条先配置开关、账号和显示名称，再按需展开详细配置。",
+            "condition": {
+              "show_subscriptions": true
+            }
+          }
+        }
+      },
+      "show_fallback": {
+        "description": "展开补位设置",
+        "type": "bool",
+        "default": false,
+        "hint": "仅控制显示，不影响已保存的设置。"
+      },
+      "fallback": {
+        "description": "补位图源",
+        "type": "string",
+        "default": "ehentai",
+        "options": [
+          "off",
+          "ehentai",
+          "pica",
+          "cosplaytele",
+          "nudecosplay",
+          "xiuren",
+          "pixibb",
+          "jmcomic"
+        ],
+        "labels": [
+          "不补位",
+          "E-Hentai",
+          "哔咔",
+          "CosplayTele",
+          "NudeCosplay",
+          "XiuRen",
+          "PixiBB",
+          "禁漫天堂"
+        ],
+        "hint": "其他三次元图源没抽够时由它补上；它停用或不适用这次的分级时不补。E-Hentai 请求限速，补位多时较慢。",
+        "condition": {
+          "show_fallback": true
+        }
+      }
+    }
+  },
+  "draw": {
+    "description": "抽图常用设置",
+    "type": "object",
+    "hint": "设置默认风格、分级与数量。网站图集和订阅遵循每集张数；Danbooru 单图源每集仍为一张。",
     "items": {
       "default_style": {
         "description": "默认风格",
@@ -31,7 +1147,7 @@
         "description": "每个图集的张数",
         "type": "int",
         "default": 1,
-        "hint": "二次元一张图就是一个图集。"
+        "hint": "订阅可按详情中的抽齐策略跨帖子/消息凑齐；单图站每集只有一张。"
       },
       "max_images": {
         "description": "单次最多张数",
@@ -39,10 +1155,10 @@
         "default": 5
       },
       "show_advanced": {
-        "description": "显示高级设置",
+        "description": "展开取图细节",
         "type": "bool",
         "default": false,
-        "hint": "只控制面板上显示哪些项，不影响抽图：取图位置、作品页数门槛和预备池。"
+        "hint": "配置取图位置、R18 跳过比例和网站作品页数门槛。预选池有独立配置区。"
       },
       "page_pick": {
         "description": "取图位置",
@@ -78,140 +1194,62 @@
         "condition": {
           "show_advanced": true
         },
-        "hint": "三次元只从至少这么多页的作品里抽，0 为不限。二次元单图不受影响。"
-      },
-      "reserve_real_sensitive": {
-        "description": "三次元擦边预备批数",
-        "type": "int",
-        "default": 5,
-        "condition": {
-          "show_advanced": true
-        },
-        "hint": "按默认图集数和每集张数预先抽好几批，不带关键词的抽图和定时推送直接发，发完自动补；4 个池各自维护，重载后保留。0 为不预备，群聊和私聊都不允许 R18 时 R18 池不预备。"
-      },
-      "reserve_real_explicit": {
-        "description": "三次元 R18 预备批数",
-        "type": "int",
-        "default": 5,
-        "condition": {
-          "show_advanced": true
-        }
-      },
-      "reserve_anime_sensitive": {
-        "description": "二次元擦边预备批数",
-        "type": "int",
-        "default": 5,
-        "condition": {
-          "show_advanced": true
-        }
-      },
-      "reserve_anime_explicit": {
-        "description": "二次元 R18 预备批数",
-        "type": "int",
-        "default": 5,
-        "condition": {
-          "show_advanced": true
-        }
+        "hint": "仅限制三次元网站作品，0 为不限。订阅帖子/消息与二次元单图不受此门槛影响。"
       }
     }
   },
-  "access": {
-    "description": "使用与权限",
+  "video": {
+    "description": "视频常用设置",
     "type": "object",
+    "hint": "控制抽视频功能和发送上限。视频站点与订阅开关在页首「源开关与详情」。",
     "items": {
-      "group_enabled": {
-        "description": "允许在群聊使用",
+      "enabled": {
+        "description": "启用",
         "type": "bool",
-        "default": true,
-        "obvious_hint": true,
-        "hint": "关闭后不处理任何群聊消息（管理员也不例外），推送任务也不再推送到群。"
+        "default": true
       },
-      "group_r18": {
-        "description": "群聊允许 R18",
-        "type": "bool",
-        "default": false,
+      "default_count": {
+        "description": "默认个数",
+        "type": "int",
+        "default": 1,
         "condition": {
-          "group_enabled": true
+          "enabled": true
         }
       },
-      "private_r18": {
-        "description": "私聊允许 R18",
-        "type": "bool",
-        "default": false
-      },
-      "admins": {
-        "description": "管理员",
-        "type": "list",
-        "default": [],
-        "hint": "QQ 号。管理员不受白名单、黑名单、R18、冷却和每日上限限制。"
-      },
-      "group_whitelist": {
-        "description": "群白名单",
-        "type": "list",
-        "default": [],
+      "max_count": {
+        "description": "每次最多个数",
+        "type": "int",
+        "default": 3,
         "condition": {
-          "group_enabled": true
+          "enabled": true
+        }
+      },
+      "max_mb": {
+        "description": "单个视频大小上限（MB）",
+        "type": "int",
+        "default": 50,
+        "condition": {
+          "enabled": true
         },
-        "hint": "留空表示所有群可用。"
+        "hint": "超过的换一个，0 为不限。QQ 发送大视频较慢。"
       },
-      "user_blacklist": {
-        "description": "用户黑名单",
-        "type": "list",
-        "default": []
-      },
-      "cooldown_seconds": {
-        "description": "每人冷却（秒）",
+      "max_seconds": {
+        "description": "单个视频时长上限（秒）",
         "type": "int",
-        "default": 10
+        "default": 300,
+        "condition": {
+          "enabled": true
+        },
+        "hint": "站点给出时长时按它筛选，0 为不限。"
       },
-      "daily_limit": {
-        "description": "每人每日张数上限",
-        "type": "int",
-        "default": 0,
-        "hint": "完整作品按页数计，一个视频算一张。0 表示不限，重启后清零。"
-      },
-      "no_prefix": {
-        "description": "群聊不带 / 也能触发",
+      "mmd": {
+        "description": "抽取 MMD 视频",
         "type": "bool",
         "default": true,
         "condition": {
-          "group_enabled": true
+          "enabled": true
         },
-        "hint": "例如直接发「抽图 3」「全集」「抽视频」。"
-      },
-      "aliases": {
-        "description": "启用别名 /二次元 /三次元 /擦边 /色图",
-        "type": "bool",
-        "default": true
-      }
-    }
-  },
-  "filter": {
-    "description": "内容过滤",
-    "type": "object",
-    "hint": "对所有图源和视频源生效；未成年内容始终过滤。",
-    "items": {
-      "block_heavy": {
-        "description": "屏蔽重口作品",
-        "type": "bool",
-        "default": true
-      },
-      "block_trans": {
-        "description": "屏蔽扶她、伪娘等跨性别作品",
-        "type": "bool",
-        "default": true,
-        "hint": "扶她、扶他、人妖、伪娘、男娘等，按标签和标题匹配。性转（gender change）不在其中，需要时加到额外屏蔽的标签。"
-      },
-      "block_ai": {
-        "description": "屏蔽 AI 作品",
-        "type": "bool",
-        "default": true
-      },
-      "extra_blacklist": {
-        "description": "额外屏蔽的标签",
-        "type": "list",
-        "default": [],
-        "hint": "匹配作品的标签和标题，忽略大小写。"
+        "hint": "关闭后不抽带 MMD（MikuMikuDance）标签或标题写着 MMD 的视频，主要影响 Iwara（R18 约三成是 MMD，擦边几乎全是，关闭时 Iwara 不提供擦边）；没标出来的认不出。"
       }
     }
   },
@@ -243,6 +1281,211 @@
       }
     }
   },
+  "access": {
+    "description": "使用与权限",
+    "type": "object",
+    "items": {
+      "group_enabled": {
+        "description": "允许在群聊使用",
+        "type": "bool",
+        "default": true,
+        "obvious_hint": true,
+        "hint": "关闭后不处理任何群聊消息（管理员也不例外），推送任务也不再推送到群。"
+      },
+      "group_r18": {
+        "description": "群聊允许 R18",
+        "type": "bool",
+        "default": false,
+        "condition": {
+          "group_enabled": true
+        }
+      },
+      "private_r18": {
+        "description": "私聊允许 R18",
+        "type": "bool",
+        "default": false
+      },
+      "cooldown_seconds": {
+        "description": "每人冷却（秒）",
+        "type": "int",
+        "default": 10
+      },
+      "daily_limit": {
+        "description": "每人每日张数上限",
+        "type": "int",
+        "default": 0,
+        "hint": "完整作品按页数计，一个视频算一张。0 表示不限，重启后清零。"
+      },
+      "show_limits": {
+        "description": "展开名单与指令设置",
+        "type": "bool",
+        "default": false,
+        "hint": "仅控制显示，不影响已保存的设置。"
+      },
+      "admins": {
+        "description": "管理员",
+        "type": "list",
+        "default": [],
+        "hint": "QQ 号。管理员不受白名单、黑名单、R18、冷却和每日上限限制。",
+        "condition": {
+          "show_limits": true
+        }
+      },
+      "group_whitelist": {
+        "description": "群白名单",
+        "type": "list",
+        "default": [],
+        "condition": {
+          "show_limits": true,
+          "group_enabled": true
+        },
+        "hint": "留空表示所有群可用。"
+      },
+      "user_blacklist": {
+        "description": "用户黑名单",
+        "type": "list",
+        "default": [],
+        "condition": {
+          "show_limits": true
+        }
+      },
+      "no_prefix": {
+        "description": "群聊不带 / 也能触发",
+        "type": "bool",
+        "default": true,
+        "condition": {
+          "show_limits": true,
+          "group_enabled": true
+        },
+        "hint": "例如直接发「抽图 3」「全集」「抽视频」。"
+      },
+      "aliases": {
+        "description": "启用别名 /二次元 /三次元 /擦边 /色图",
+        "type": "bool",
+        "default": true,
+        "condition": {
+          "show_limits": true
+        }
+      }
+    }
+  },
+  "filter": {
+    "description": "内容过滤",
+    "type": "object",
+    "hint": "对所有图源和视频源生效；未成年内容始终过滤。",
+    "items": {
+      "block_heavy": {
+        "description": "屏蔽重口作品",
+        "type": "bool",
+        "default": true
+      },
+      "block_trans": {
+        "description": "屏蔽扶她、伪娘等跨性别作品",
+        "type": "bool",
+        "default": true,
+        "hint": "扶她、扶他、人妖、伪娘、男娘等，按标签和标题匹配。性转（gender change）不在其中，需要时加到额外屏蔽的标签。"
+      },
+      "block_ai": {
+        "description": "屏蔽 AI 作品",
+        "type": "bool",
+        "default": true
+      },
+      "show_details": {
+        "description": "展开额外屏蔽标签",
+        "type": "bool",
+        "default": false,
+        "hint": "仅控制显示，不影响已保存的设置。"
+      },
+      "extra_blacklist": {
+        "description": "额外屏蔽的标签",
+        "type": "list",
+        "default": [],
+        "hint": "匹配作品的标签和标题，忽略大小写。",
+        "condition": {
+          "show_details": true
+        }
+      }
+    }
+  },
+  "reserve": {
+    "description": "图片与视频预选池",
+    "type": "object",
+    "hint": "为无关键词抽取和定时推送预先准备内容。各类桶数独立；R18 权限关闭或没有启用源时不预备。",
+    "items": {
+      "show_details": {
+        "description": "展开预选池配置",
+        "type": "bool",
+        "default": false,
+        "hint": "仅控制显示，不影响已保存的设置。"
+      },
+      "images": {
+        "description": "图片预选池",
+        "type": "object",
+        "condition": {
+          "show_details": true
+        },
+        "items": {
+          "real_sensitive": {
+            "description": "三次元擦边图片预备桶数",
+            "type": "int",
+            "default": 5,
+            "hint": "0 为关闭此类预选池。每桶按默认图集数和每集张数预先抽好，使用后自动补充。"
+          },
+          "real_explicit": {
+            "description": "三次元 R18 图片预备桶数",
+            "type": "int",
+            "default": 5,
+            "hint": "0 为关闭此类预选池。每桶按默认图集数和每集张数预先抽好，使用后自动补充。"
+          },
+          "anime_sensitive": {
+            "description": "二次元擦边图片预备桶数",
+            "type": "int",
+            "default": 5,
+            "hint": "0 为关闭此类预选池。每桶按默认图集数和每集张数预先抽好，使用后自动补充。"
+          },
+          "anime_explicit": {
+            "description": "二次元 R18 图片预备桶数",
+            "type": "int",
+            "default": 5,
+            "hint": "0 为关闭此类预选池。每桶按默认图集数和每集张数预先抽好，使用后自动补充。"
+          }
+        }
+      },
+      "videos": {
+        "description": "视频预选池",
+        "type": "object",
+        "condition": {
+          "show_details": true
+        },
+        "items": {
+          "real_sensitive": {
+            "description": "三次元 擦边 视频预备桶数",
+            "type": "int",
+            "default": 3,
+            "hint": "0 为关闭此类预选池。每桶按默认视频个数预先下载，使用后自动补充。"
+          },
+          "real_explicit": {
+            "description": "三次元 R18 视频预备桶数",
+            "type": "int",
+            "default": 3,
+            "hint": "0 为关闭此类预选池。每桶按默认视频个数预先下载，使用后自动补充。"
+          },
+          "anime_sensitive": {
+            "description": "二次元 擦边 视频预备桶数",
+            "type": "int",
+            "default": 3,
+            "hint": "0 为关闭此类预选池。每桶按默认视频个数预先下载，使用后自动补充。"
+          },
+          "anime_explicit": {
+            "description": "二次元 R18 视频预备桶数",
+            "type": "int",
+            "default": 3,
+            "hint": "0 为关闭此类预选池。每桶按默认视频个数预先下载，使用后自动补充。"
+          }
+        }
+      }
+    }
+  },
   "whole": {
     "description": "完整作品",
     "type": "object",
@@ -253,6 +1496,12 @@
         "type": "bool",
         "default": true
       },
+      "show_details": {
+        "description": "展开完整作品设置",
+        "type": "bool",
+        "default": false,
+        "hint": "仅控制显示，不影响已保存的设置。"
+      },
       "default_format": {
         "description": "/全集 的发送方式",
         "type": "string",
@@ -262,7 +1511,7 @@
           "PDF"
         ],
         "condition": {
-          "enabled": true
+          "show_details": true
         },
         "hint": "/pdf 始终发 PDF。非 QQ 平台改为 PDF。"
       },
@@ -271,7 +1520,7 @@
         "type": "int",
         "default": 500,
         "condition": {
-          "enabled": true
+          "show_details": true
         },
         "hint": "超过这个页数的作品不获取（有的 AI 作品上万页），随机抽到时换一个。"
       }
@@ -282,6 +1531,12 @@
     "type": "object",
     "hint": "仅 QQ。每个群、每个用户单独抽一次；不受白名单、冷却和每日上限限制，但仍受分级限制。",
     "items": {
+      "show_tasks": {
+        "description": "展开推送任务",
+        "type": "bool",
+        "default": false,
+        "hint": "仅控制显示，不影响已保存的设置。"
+      },
       "tasks": {
         "description": "推送任务",
         "type": "template_list",
@@ -364,1024 +1619,10 @@
               }
             }
           }
+        },
+        "condition": {
+          "show_tasks": true
         }
-      }
-    }
-  },
-  "video": {
-    "description": "视频（实验性）",
-    "type": "object",
-    "hint": "/抽视频 [二次元|三次元] [擦边|r18] [关键词...] [个数]：随机抽短视频，分级默认跟随「抽图」的默认分级，按「发送」里的方式发送。群聊抽 R18 需开启群聊 R18。",
-    "items": {
-      "enabled": {
-        "description": "启用",
-        "type": "bool",
-        "default": true
-      },
-      "default_count": {
-        "description": "默认个数",
-        "type": "int",
-        "default": 1,
-        "condition": {
-          "enabled": true
-        }
-      },
-      "max_count": {
-        "description": "每次最多个数",
-        "type": "int",
-        "default": 3,
-        "condition": {
-          "enabled": true
-        }
-      },
-      "max_mb": {
-        "description": "单个视频大小上限（MB）",
-        "type": "int",
-        "default": 50,
-        "condition": {
-          "enabled": true
-        },
-        "hint": "超过的换一个，0 为不限。QQ 发送大视频较慢。"
-      },
-      "max_seconds": {
-        "description": "单个视频时长上限（秒）",
-        "type": "int",
-        "default": 300,
-        "condition": {
-          "enabled": true
-        },
-        "hint": "站点给出时长时按它筛选，0 为不限。"
-      },
-      "mmd": {
-        "description": "抽取 MMD 视频",
-        "type": "bool",
-        "default": true,
-        "condition": {
-          "enabled": true
-        },
-        "hint": "关闭后不抽带 MMD（MikuMikuDance）标签或标题写着 MMD 的视频，主要影响 Iwara（R18 约三成是 MMD，擦边几乎全是，关闭时 Iwara 不提供擦边）；没标出来的认不出。"
-      },
-      "reserve_anime": {
-        "description": "二次元视频预备批数",
-        "type": "int",
-        "default": 3,
-        "condition": {
-          "enabled": true
-        },
-        "hint": "擦边、R18 各按默认个数预先抽好几批，不带关键词的 /抽视频 直接发，发完自动补；0 为不预备。视频较大（Iwara 一个 20~50 MB），群聊和私聊都不允许 R18 时不预备 R18。"
-      },
-      "reserve_real": {
-        "description": "三次元视频预备批数",
-        "type": "int",
-        "default": 3,
-        "condition": {
-          "enabled": true
-        },
-        "hint": "同上，三次元的擦边、R18 各预备这么多批。"
-      },
-      "show_sources": {
-        "description": "显示各视频源设置",
-        "type": "bool",
-        "default": false,
-        "condition": {
-          "enabled": true
-        },
-        "hint": "只控制面板上是否展开下面的视频源，不影响抽取。同一风格的视频源按比例混合。"
-      },
-      "danbooru": {
-        "description": "Danbooru 视频（二次元）",
-        "type": "object",
-        "hint": "高分动画短片，按「图源管理」里 Danbooru 同样的规则过滤儿童角色。",
-        "condition": {
-          "enabled": true,
-          "show_sources": true
-        },
-        "items": {
-          "enabled": {
-            "description": "启用",
-            "type": "bool",
-            "default": true
-          },
-          "weight": {
-            "description": "比例",
-            "type": "int",
-            "default": 5,
-            "slider": {
-              "min": 1,
-              "max": 10,
-              "step": 1
-            },
-            "condition": {
-              "enabled": true
-            }
-          },
-          "min_score": {
-            "description": "最低评分",
-            "type": "int",
-            "default": 150,
-            "condition": {
-              "enabled": true
-            }
-          }
-        }
-      },
-      "iwara": {
-        "description": "Iwara（二次元）",
-        "type": "object",
-        "hint": "MMD、Koikatsu 等 3D 视频，多为 2~7 分钟。R18 取站内 ecchi 里有性内容迹象的；擦边取全年龄（general）里没有 R18 迹象的性感舞蹈，几乎都是 MMD，关闭「抽取 MMD 视频」时不提供。",
-        "condition": {
-          "enabled": true,
-          "show_sources": true
-        },
-        "items": {
-          "enabled": {
-            "description": "启用",
-            "type": "bool",
-            "default": true
-          },
-          "scope": {
-            "description": "适用分级",
-            "type": "string",
-            "default": "通用",
-            "options": [
-              "通用",
-              "仅擦边",
-              "仅R18"
-            ],
-            "condition": {
-              "enabled": true
-            }
-          },
-          "weight": {
-            "description": "比例",
-            "type": "int",
-            "default": 5,
-            "slider": {
-              "min": 1,
-              "max": 10,
-              "step": 1
-            },
-            "condition": {
-              "enabled": true
-            }
-          },
-          "min_likes": {
-            "description": "R18 最低点赞数",
-            "type": "int",
-            "default": 1000,
-            "condition": {
-              "enabled": true
-            },
-            "hint": "按点赞排序，约 600 赞以上的有 5 万个。"
-          },
-          "min_likes_sensitive": {
-            "description": "擦边最低点赞数",
-            "type": "int",
-            "default": 150,
-            "condition": {
-              "enabled": true
-            },
-            "hint": "全年龄视频的点赞少得多：150 时约 1500 个可抽。"
-          }
-        }
-      },
-      "redgifs_hentai": {
-        "description": "RedGifs 动画（二次元）",
-        "type": "object",
-        "hint": "RedGifs 全站带 Hentai 标签的动画片段，按点赞排序。",
-        "condition": {
-          "enabled": true,
-          "show_sources": true
-        },
-        "items": {
-          "enabled": {
-            "description": "启用",
-            "type": "bool",
-            "default": true
-          },
-          "weight": {
-            "description": "比例",
-            "type": "int",
-            "default": 5,
-            "slider": {
-              "min": 1,
-              "max": 10,
-              "step": 1
-            },
-            "condition": {
-              "enabled": true
-            }
-          },
-          "min_likes": {
-            "description": "最低点赞数",
-            "type": "int",
-            "default": 200,
-            "condition": {
-              "enabled": true
-            },
-            "hint": "只抽不低于此数的（200 时约 2000~3000 个）。"
-          }
-        }
-      },
-      "redgifs_cosplay": {
-        "description": "RedGifs Cosplay（三次元）",
-        "type": "object",
-        "hint": "RedGifs 全站带 Cosplay 标签的真人片段，只取实名认证创作者的，多为欧美 coser。",
-        "condition": {
-          "enabled": true,
-          "show_sources": true
-        },
-        "items": {
-          "enabled": {
-            "description": "启用",
-            "type": "bool",
-            "default": true
-          },
-          "weight": {
-            "description": "比例",
-            "type": "int",
-            "default": 5,
-            "slider": {
-              "min": 1,
-              "max": 10,
-              "step": 1
-            },
-            "condition": {
-              "enabled": true
-            }
-          },
-          "min_likes": {
-            "description": "最低点赞数",
-            "type": "int",
-            "default": 200,
-            "condition": {
-              "enabled": true
-            },
-            "hint": "只抽不低于此数的（200 时约 2000~3000 个）。"
-          }
-        }
-      },
-      "soop": {
-        "description": "SOOP（三次元·擦边）",
-        "type": "object",
-        "hint": "韩国直播站 SOOP（原 AfreecaTV）的官方短视频：女主播的舞蹈片段，多为 10~60 秒竖屏。需要 ffmpeg。",
-        "condition": {
-          "enabled": true,
-          "show_sources": true
-        },
-        "items": {
-          "enabled": {
-            "description": "启用",
-            "type": "bool",
-            "default": true
-          },
-          "weight": {
-            "description": "比例",
-            "type": "int",
-            "default": 5,
-            "slider": {
-              "min": 1,
-              "max": 10,
-              "step": 1
-            },
-            "condition": {
-              "enabled": true
-            }
-          },
-          "min_views": {
-            "description": "最低播放量",
-            "type": "int",
-            "default": 1000,
-            "condition": {
-              "enabled": true
-            },
-            "hint": "从近一个月和近一年播放最多的片段里抽。"
-          }
-        }
-      },
-      "cosplaytele": {
-        "description": "CosplayTele 视频（三次元·R18）",
-        "type": "object",
-        "hint": "CosplayTele「Cosplay Nude」帖子里的视频（亚洲 coser），全片多为几分钟到几十分钟，随机截取 30 秒。可搜角色、作品名。需要 ffmpeg。",
-        "condition": {
-          "enabled": true,
-          "show_sources": true
-        },
-        "items": {
-          "enabled": {
-            "description": "启用",
-            "type": "bool",
-            "default": true
-          },
-          "weight": {
-            "description": "比例",
-            "type": "int",
-            "default": 5,
-            "slider": {
-              "min": 1,
-              "max": 10,
-              "step": 1
-            },
-            "condition": {
-              "enabled": true
-            }
-          }
-        }
-      }
-    }
-  },
-  "sources": {
-    "description": "图源管理",
-    "type": "object",
-    "hint": "每个站点可以单独开关、限定用于擦边还是 R18，同一分级的三次元图源按比例混合。二次元只有 Danbooru。",
-    "items": {
-      "fallback": {
-        "description": "补位图源",
-        "type": "string",
-        "default": "ehentai",
-        "options": [
-          "off",
-          "ehentai",
-          "pica",
-          "cosplaytele",
-          "nudecosplay",
-          "xiuren",
-          "pixibb",
-          "jmcomic"
-        ],
-        "labels": [
-          "不补位",
-          "E-Hentai",
-          "哔咔",
-          "CosplayTele",
-          "NudeCosplay",
-          "XiuRen",
-          "PixiBB",
-          "禁漫天堂"
-        ],
-        "hint": "其他三次元图源没抽够时由它补上；它停用或不适用这次的分级时不补。E-Hentai 请求限速，补位多时较慢。"
-      },
-      "show_sites": {
-        "description": "显示各站点设置",
-        "type": "bool",
-        "default": false,
-        "hint": "只控制面板上是否展开下面的站点，不影响抽图：启用、适用分级、比例、质量门槛和账号。"
-      },
-      "danbooru": {
-        "description": "Danbooru（二次元）",
-        "type": "object",
-        "condition": {
-          "show_sites": true
-        },
-        "items": {
-          "enabled": {
-            "description": "启用",
-            "type": "bool",
-            "default": true
-          },
-          "scope": {
-            "description": "适用分级",
-            "type": "string",
-            "default": "通用",
-            "options": [
-              "通用",
-              "仅擦边",
-              "仅R18"
-            ],
-            "condition": {
-              "enabled": true
-            }
-          },
-          "min_score": {
-            "description": "最低评分",
-            "type": "int",
-            "default": 150,
-            "condition": {
-              "enabled": true
-            },
-            "hint": "Danbooru 的用户投票分，低于此分的图不抽。低于 100 时质量明显下降。"
-          }
-        }
-      },
-      "ehentai": {
-        "description": "E-Hentai",
-        "type": "object",
-        "condition": {
-          "show_sites": true
-        },
-        "items": {
-          "enabled": {
-            "description": "启用",
-            "type": "bool",
-            "default": true
-          },
-          "scope": {
-            "description": "适用分级",
-            "type": "string",
-            "default": "通用",
-            "options": [
-              "通用",
-              "仅擦边",
-              "仅R18"
-            ],
-            "condition": {
-              "enabled": true
-            }
-          },
-          "weight": {
-            "description": "比例",
-            "type": "int",
-            "default": 5,
-            "slider": {
-              "min": 1,
-              "max": 10,
-              "step": 1
-            },
-            "condition": {
-              "enabled": true
-            }
-          },
-          "min_stars": {
-            "description": "最低画廊评分（星）",
-            "type": "int",
-            "default": 4,
-            "slider": {
-              "min": 1,
-              "max": 5,
-              "step": 1
-            },
-            "condition": {
-              "enabled": true
-            },
-            "hint": "低于此星级的画廊不抽，1 为不限。"
-          },
-          "site": {
-            "description": "站点",
-            "type": "string",
-            "default": "e-hentai",
-            "options": [
-              "e-hentai",
-              "exhentai"
-            ],
-            "condition": {
-              "enabled": true
-            },
-            "hint": "exhentai 需要填齐下面三个 cookie；表站填前两个可以提高图片额度。"
-          },
-          "ipb_member_id": {
-            "description": "cookie：ipb_member_id",
-            "type": "string",
-            "default": "",
-            "secret": true,
-            "condition": {
-              "enabled": true
-            }
-          },
-          "ipb_pass_hash": {
-            "description": "cookie：ipb_pass_hash",
-            "type": "string",
-            "default": "",
-            "secret": true,
-            "condition": {
-              "enabled": true
-            }
-          },
-          "igneous": {
-            "description": "cookie：igneous",
-            "type": "string",
-            "default": "",
-            "secret": true,
-            "condition": {
-              "enabled": true,
-              "site": "exhentai"
-            }
-          }
-        }
-      },
-      "pica": {
-        "description": "哔咔",
-        "type": "object",
-        "condition": {
-          "show_sites": true
-        },
-        "items": {
-          "enabled": {
-            "description": "启用",
-            "type": "bool",
-            "default": true
-          },
-          "scope": {
-            "description": "适用分级",
-            "type": "string",
-            "default": "通用",
-            "options": [
-              "通用",
-              "仅擦边",
-              "仅R18"
-            ],
-            "condition": {
-              "enabled": true
-            }
-          },
-          "weight": {
-            "description": "比例",
-            "type": "int",
-            "default": 5,
-            "slider": {
-              "min": 1,
-              "max": 10,
-              "step": 1
-            },
-            "condition": {
-              "enabled": true
-            }
-          },
-          "manual_account": {
-            "description": "手动配置账号",
-            "type": "bool",
-            "default": false,
-            "condition": {
-              "enabled": true
-            },
-            "hint": "关闭时插件自动注册并维护一个专用账号。"
-          },
-          "email": {
-            "description": "账号",
-            "type": "string",
-            "default": "",
-            "condition": {
-              "enabled": true,
-              "manual_account": true
-            }
-          },
-          "password": {
-            "description": "密码",
-            "type": "string",
-            "default": "",
-            "secret": true,
-            "condition": {
-              "enabled": true,
-              "manual_account": true
-            }
-          }
-        }
-      },
-      "cosplaytele": {
-        "description": "CosplayTele",
-        "type": "object",
-        "condition": {
-          "show_sites": true
-        },
-        "items": {
-          "enabled": {
-            "description": "启用",
-            "type": "bool",
-            "default": true
-          },
-          "scope": {
-            "description": "适用分级",
-            "type": "string",
-            "default": "通用",
-            "options": [
-              "通用",
-              "仅擦边",
-              "仅R18"
-            ],
-            "condition": {
-              "enabled": true
-            }
-          },
-          "weight": {
-            "description": "比例",
-            "type": "int",
-            "default": 5,
-            "slider": {
-              "min": 1,
-              "max": 10,
-              "step": 1
-            },
-            "condition": {
-              "enabled": true
-            }
-          }
-        }
-      },
-      "xiuren": {
-        "description": "XiuRen",
-        "type": "object",
-        "hint": "工作室棚拍写真，只有擦边内容。",
-        "condition": {
-          "show_sites": true
-        },
-        "items": {
-          "enabled": {
-            "description": "启用",
-            "type": "bool",
-            "default": true
-          },
-          "weight": {
-            "description": "比例",
-            "type": "int",
-            "default": 5,
-            "slider": {
-              "min": 1,
-              "max": 10,
-              "step": 1
-            },
-            "condition": {
-              "enabled": true
-            }
-          }
-        }
-      },
-      "nudecosplay": {
-        "description": "NudeCosplay",
-        "type": "object",
-        "condition": {
-          "show_sites": true
-        },
-        "items": {
-          "enabled": {
-            "description": "启用",
-            "type": "bool",
-            "default": true
-          },
-          "scope": {
-            "description": "适用分级",
-            "type": "string",
-            "default": "通用",
-            "options": [
-              "通用",
-              "仅擦边",
-              "仅R18"
-            ],
-            "condition": {
-              "enabled": true
-            }
-          },
-          "weight": {
-            "description": "比例",
-            "type": "int",
-            "default": 5,
-            "slider": {
-              "min": 1,
-              "max": 10,
-              "step": 1
-            },
-            "condition": {
-              "enabled": true
-            }
-          }
-        }
-      },
-      "pixibb": {
-        "description": "PixiBB",
-        "type": "object",
-        "hint": "站点不区分裸露程度，只用于 R18。",
-        "condition": {
-          "show_sites": true
-        },
-        "items": {
-          "enabled": {
-            "description": "启用",
-            "type": "bool",
-            "default": true
-          },
-          "weight": {
-            "description": "比例",
-            "type": "int",
-            "default": 5,
-            "slider": {
-              "min": 1,
-              "max": 10,
-              "step": 1
-            },
-            "condition": {
-              "enabled": true
-            }
-          }
-        }
-      },
-      "jmcomic": {
-        "description": "禁漫天堂",
-        "type": "object",
-        "hint": "站点不区分裸露程度，只用于 R18。",
-        "condition": {
-          "show_sites": true
-        },
-        "items": {
-          "enabled": {
-            "description": "启用",
-            "type": "bool",
-            "default": true
-          },
-          "weight": {
-            "description": "比例",
-            "type": "int",
-            "default": 5,
-            "slider": {
-              "min": 1,
-              "max": 10,
-              "step": 1
-            },
-            "condition": {
-              "enabled": true
-            }
-          },
-          "min_likes": {
-            "description": "最低点赞数",
-            "type": "int",
-            "default": 500,
-            "condition": {
-              "enabled": true
-            },
-            "hint": "点赞数低于此值的本子不抽，分类末尾多是老旧的业余写真。"
-          },
-          "domain": {
-            "description": "域名",
-            "type": "string",
-            "default": "18comic.vip",
-            "condition": {
-              "enabled": true
-            },
-            "hint": "域名经常更换，失效时换成能打开的。"
-          }
-        }
-      }
-    }
-  },
-  "feeds": {
-    "description": "订阅（X / Telegram）",
-    "type": "object",
-    "hint": "抽图来源选「订阅」时，从指定的 X（推特）博主、Telegram 公开频道抽图片和视频（/抽图、/抽视频），同风格、同分级的订阅按比例混合；关键词写订阅的账号或显示名称时只抽这个订阅，例如 /抽图 enako_cos。需要能访问 X、Telegram 的网络（见「网络与目录」的代理）。",
-    "items": {
-      "mode": {
-        "description": "抽图来源",
-        "type": "string",
-        "options": ["网站", "订阅"],
-        "default": "网站",
-        "hint": "网站：从「图源管理」「视频」里的网站抽，订阅不参与；订阅：/抽图、/抽视频 和推送只从下面的订阅抽，网站不参与（也不补位）。两者只能选一种。"
-      },
-      "subscriptions": {
-        "description": "订阅列表",
-        "type": "template_list",
-        "default": [
-          {
-            "__template_key": "x",
-            "enabled": true,
-            "account": "re0nnn",
-            "name": "",
-            "style": "二次元",
-            "rating": "擦边",
-            "media": "仅图片",
-            "weight": 2,
-            "min_likes": 0
-          },
-          {
-            "__template_key": "x",
-            "enabled": true,
-            "account": "amik1_",
-            "name": "",
-            "style": "二次元",
-            "rating": "擦边",
-            "media": "仅图片",
-            "weight": 2,
-            "min_likes": 0
-          },
-          {
-            "__template_key": "x",
-            "enabled": true,
-            "account": "vitaminechan",
-            "name": "",
-            "style": "二次元",
-            "rating": "擦边",
-            "media": "仅图片",
-            "weight": 2,
-            "min_likes": 0
-          },
-          {
-            "__template_key": "x",
-            "enabled": true,
-            "account": "greem_bang",
-            "name": "",
-            "style": "二次元",
-            "rating": "R18",
-            "media": "仅图片",
-            "weight": 2,
-            "min_likes": 0
-          },
-          {
-            "__template_key": "x",
-            "enabled": true,
-            "account": "kurotsuki_machi",
-            "name": "",
-            "style": "二次元",
-            "rating": "R18",
-            "media": "仅图片",
-            "weight": 2,
-            "min_likes": 0
-          },
-          {
-            "__template_key": "x",
-            "enabled": true,
-            "account": "aphy3d",
-            "name": "",
-            "style": "二次元",
-            "rating": "R18",
-            "media": "仅视频",
-            "weight": 3,
-            "min_likes": 0
-          },
-          {
-            "__template_key": "x",
-            "enabled": true,
-            "account": "z1g3d",
-            "name": "",
-            "style": "二次元",
-            "rating": "R18",
-            "media": "仅视频",
-            "weight": 3,
-            "min_likes": 0
-          },
-          {
-            "__template_key": "x",
-            "enabled": true,
-            "account": "EnjiNight",
-            "name": "",
-            "style": "三次元",
-            "rating": "擦边",
-            "media": "图片和视频",
-            "weight": 3,
-            "min_likes": 0
-          },
-          {
-            "__template_key": "x",
-            "enabled": true,
-            "account": "Hidori_Rose",
-            "name": "",
-            "style": "三次元",
-            "rating": "R18",
-            "media": "仅视频",
-            "weight": 3,
-            "min_likes": 0
-          },
-          {
-            "__template_key": "telegram",
-            "enabled": true,
-            "account": "astasiangeli",
-            "name": "",
-            "style": "三次元",
-            "media": "图片和视频",
-            "weight": 3
-          },
-          {
-            "__template_key": "telegram",
-            "enabled": true,
-            "account": "GQMNST",
-            "name": "",
-            "style": "三次元",
-            "media": "仅图片",
-            "weight": 3
-          },
-          {
-            "__template_key": "telegram",
-            "enabled": true,
-            "account": "vixenp",
-            "name": "",
-            "style": "三次元",
-            "media": "图片和视频",
-            "weight": 3
-          }
-        ],
-        "templates": {
-          "x": {
-            "name": "X 博主",
-            "hint": "经 fxtwitter 的公开接口读取博主的媒体页，不用登录；不含转推，保留最近约 1000 条带图或视频的推文，每 6 小时更新。",
-            "display_item": "account",
-            "items": {
-              "enabled": {
-                "description": "启用",
-                "type": "bool",
-                "default": true
-              },
-              "account": {
-                "description": "账号",
-                "type": "string",
-                "default": "",
-                "hint": "博主的用户名（@ 后面的部分），也可以粘贴主页链接。"
-              },
-              "name": {
-                "description": "显示名称",
-                "type": "string",
-                "default": "",
-                "hint": "抽到时显示的来源名，关键词写它也能只抽这个订阅；留空为账号。"
-              },
-              "style": {
-                "description": "风格",
-                "type": "string",
-                "default": "三次元",
-                "options": [
-                  "三次元",
-                  "二次元"
-                ]
-              },
-              "rating": {
-                "description": "分级",
-                "type": "string",
-                "default": "R18",
-                "options": [
-                  "R18",
-                  "擦边"
-                ],
-                "hint": "推文没有分级，全部按这里的分级抽取（R18 受群聊、私聊的 R18 开关限制）。擦边订阅不抽博主标了敏感内容的推文；内容混杂或拿不准时选 R18。"
-              },
-              "media": {
-                "description": "抽取内容",
-                "type": "string",
-                "default": "图片和视频",
-                "options": [
-                  "图片和视频",
-                  "仅图片",
-                  "仅视频"
-                ],
-                "hint": "图片进入 /抽图，视频进入 /抽视频（需开启视频功能）。"
-              },
-              "weight": {
-                "description": "比例",
-                "type": "int",
-                "default": 5,
-                "slider": {
-                  "min": 1,
-                  "max": 10,
-                  "step": 1
-                },
-                "hint": "和同风格、同分级的其他图源、视频源一起抽时的比例。"
-              },
-              "min_likes": {
-                "description": "最低点赞数",
-                "type": "int",
-                "default": 0,
-                "hint": "只抽点赞不少于这个数的推文，0 为不限。"
-              }
-            }
-          },
-          "telegram": {
-            "name": "Telegram 频道",
-            "hint": "读取频道的网页预览（t.me/s/频道名），不用登录，从整个频道历史里随机抽。频道没有分级，一律按 R18 抽取（受群聊、私聊的 R18 开关限制）。图片是预览尺寸（长边约 800~1280），网页预览不提供的大视频抽不到；没有开放网页预览的频道不能订阅。",
-            "display_item": "account",
-            "items": {
-              "enabled": {
-                "description": "启用",
-                "type": "bool",
-                "default": true
-              },
-              "account": {
-                "description": "账号",
-                "type": "string",
-                "default": "",
-                "hint": "频道的用户名（t.me/ 后面的部分），也可以粘贴频道链接。"
-              },
-              "name": {
-                "description": "显示名称",
-                "type": "string",
-                "default": "",
-                "hint": "抽到时显示的来源名，关键词写它也能只抽这个订阅；留空为账号。"
-              },
-              "style": {
-                "description": "风格",
-                "type": "string",
-                "default": "三次元",
-                "options": [
-                  "三次元",
-                  "二次元"
-                ]
-              },
-              "media": {
-                "description": "抽取内容",
-                "type": "string",
-                "default": "图片和视频",
-                "options": [
-                  "图片和视频",
-                  "仅图片",
-                  "仅视频"
-                ],
-                "hint": "图片进入 /抽图，视频进入 /抽视频（需开启视频功能）。"
-              },
-              "weight": {
-                "description": "比例",
-                "type": "int",
-                "default": 5,
-                "slider": {
-                  "min": 1,
-                  "max": 10,
-                  "step": 1
-                },
-                "hint": "和同风格、同分级的其他图源、视频源一起抽时的比例。"
-              }
-            }
-          }
-        },
-        "hint": "默认订阅是 2026-10 抽样目检过的博主、频道，可以删改。"
       }
     }
   },
@@ -1390,24 +1631,39 @@
     "type": "object",
     "hint": "按部署环境填一次即可。",
     "items": {
+      "show_details": {
+        "description": "展开网络与目录配置",
+        "type": "bool",
+        "default": false,
+        "hint": "仅控制显示，不影响已保存的设置。"
+      },
       "proxy": {
         "description": "HTTP 代理",
         "type": "string",
         "default": "",
         "obvious_hint": true,
-        "hint": "例如 http://127.0.0.1:7890。国内通常需要，所有图源、视频源和标签库下载都走它。"
+        "hint": "例如 http://127.0.0.1:7890。国内通常需要，所有图源、视频源和标签库下载都走它。",
+        "condition": {
+          "show_details": true
+        }
       },
       "share_dir": {
         "description": "共享目录",
         "type": "string",
         "default": "",
-        "hint": "QQ 机器人（如 NapCat）和 AstrBot 都能以同一路径访问的目录。填写后图片缓存、预备池和下载的视频直接存在这里，以文件路径发送，消息不再携带整个文件，发得更快，也不会因消息过大被断开；留空时存在插件数据目录、编码进消息，过大时自动拆成几条发送。"
+        "hint": "QQ 机器人（如 NapCat）和 AstrBot 都能以同一路径访问的目录。填写后图片缓存、预备池和下载的视频直接存在这里，以文件路径发送，消息不再携带整个文件，发得更快，也不会因消息过大被断开；留空时存在插件数据目录、编码进消息，过大时自动拆成几条发送。",
+        "condition": {
+          "show_details": true
+        }
       },
       "pdf_dir": {
         "description": "PDF 存放目录",
         "type": "string",
         "default": "",
-        "hint": "留空为插件数据目录。QQ 机器人和 AstrBot 在不同容器时，填两边路径相同的共享目录。"
+        "hint": "留空为插件数据目录。QQ 机器人和 AstrBot 在不同容器时，填两边路径相同的共享目录。",
+        "condition": {
+          "show_details": true
+        }
       }
     }
   }

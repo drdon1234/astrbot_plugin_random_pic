@@ -1,6 +1,6 @@
 """订阅源共用的部分：帖子、订阅（Feed），以及把订阅接进抽图、抽视频的图源。
 
-一个订阅同时是一个图源（帖子里的图片，一个帖子是一个图集）和一个视频源（帖子里的视频，一个视频是一个
+一个订阅同时是一个图源（帖子里的图片，可跨帖子抽齐一个图集）和一个视频源（帖子里的视频，一个视频是一个
 只有一页的图集），两者共用订阅抓到的帖子。帖子没有可靠的分级，全部按配置的风格、分级抽取，
 所以每个图源只有一种风格、一种分级；过滤只能看帖子的文字（正文、话题标签）。
 
@@ -13,13 +13,15 @@ import random
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 
 from astrbot.api import logger
 
 from ..models import SENSITIVE, Album, DrawContext, Work, WorkRef
+from ..net import NETWORK_ERRORS
 from ..settings import Feed as FeedConf
-from ..sources.base import Source, split_terms
-from ..util import fetch_pages
+from ..sources.base import Source, SourceError, note, split_terms
+from ..util import MIN_SPARE_PAGES, fetch_pages, fill, page_order
 from ..videos.base import Recent, VideoFiles, young_word
 
 # 帖子文字里标明 AI 生成的话题标签（「屏蔽 AI 作品」开启时排除）
@@ -178,7 +180,9 @@ class FeedSource(Source):
     def _usable(self, post: Post) -> bool:
         raise NotImplementedError
 
-    async def _album(self, post: Post, ctx: DrawContext) -> Album | None:
+    async def _album(
+        self, post: Post, ctx: DrawContext, used_urls: set[str]
+    ) -> Album | None:
         raise NotImplementedError
 
     def _words(self, ctx: DrawContext) -> tuple[list[str], list[str]]:
@@ -234,6 +238,7 @@ class FeedSource(Source):
         words, excludes = self._words(ctx)
         limit = self.max_fetches(n)
         seen: set[str] = set()
+        used_urls: set[str] = set()
         queue: list[Post] = []
         backup: list[Post] = []  # 近期抽过的，没有别的可抽时再用
         fetches = 0
@@ -274,7 +279,7 @@ class FeedSource(Source):
 
         async def attempt() -> Album | None:
             post = await pick()
-            return await self._album(post, ctx) if post else None
+            return await self._album(post, ctx, used_urls) if post else None
 
         albums, errors = await self.collect(n, TRIES, attempt)
         if not albums and not seen:
@@ -285,7 +290,11 @@ class FeedSource(Source):
 
 
 class FeedImageSource(FeedSource):
-    """订阅里的图片：一个帖子是一个图集。"""
+    """订阅里的图片：可保持单帖图集，也可跨帖抽齐所需张数。"""
+
+    def __init__(self, feed: Feed, cache, content, opts, recent: Recent):
+        super().__init__(feed, cache, content, opts, recent)
+        self._inflight_posts: set[str] = set()
 
     def _usable(self, post: Post) -> bool:
         return bool(post.photos)
@@ -297,11 +306,159 @@ class FeedImageSource(FeedSource):
                 return path
         return None
 
-    async def _album(self, post: Post, ctx: DrawContext) -> Album | None:
+    async def draw(self, ctx: DrawContext, n: int) -> tuple[list[Album], list[str]]:
+        if not self.feed.conf.fill_album or ctx.req.whole:
+            return await super().draw(ctx, n)
+        why = self.rating_reason(self.feed.conf.rating, ctx)
+        if why:
+            return [], [f"{self.name}：{why}"]
+        words, excludes = self._words(ctx)
+        per_album = ctx.req.per_album
+        limit = self.max_fetches(n * per_album)
+        fetches = 0
+        seen_posts: set[str] = set()
+        attempted_urls: set[str] = set()
+        used_posts: set[str] = set()
+        # 同次抽取可以并发下载同帖的不同页，最后一页下载结束才释放该帖。
+        pending: dict[str, int] = {}
+        # 每项保存一个帖子的剩余候选页；选取时再检查其他请求的占用与近期记录。
+        queue: list[tuple[Post, list[int]]] = []
+        lock = asyncio.Lock()
+        errors: list[str] = []
+
+        async def load():
+            nonlocal fetches
+            fetches += 1
+            batch = await self.feed.sample()
+            if self.feed.per_batch:
+                batch = batch[: self.feed.per_batch]
+            for post in batch:
+                if post.id in seen_posts:
+                    continue
+                seen_posts.add(post.id)
+                if not self._usable(post):
+                    continue
+                reason = self.reject(post, words, excludes)
+                if reason:
+                    logger.debug(f"[random_pic] 跳过 {self.name} {post.id}: {reason}")
+                    continue
+                pages = page_order(len(post.photos), from_start=self.opts.from_start)
+                queue.append((post, pages))
+
+        async def pick() -> tuple[Post, int] | None:
+            async with lock:
+                while True:
+                    fresh = backup = None
+                    for index, (post, _) in enumerate(queue):
+                        if post.id in self._inflight_posts and post.id not in pending:
+                            continue
+                        if post.id in used_posts or f"{self.key}:{post.id}" not in self.recent:
+                            fresh = index
+                            break
+                        if backup is None:
+                            backup = index
+                    if fresh is None and fetches < limit:
+                        await load()
+                        continue
+                    index = fresh if fresh is not None else backup
+                    if index is None:
+                        return None
+                    post, pages = queue[index]
+                    while pages:
+                        page = pages.pop(0)
+                        url = post.photos[page]
+                        if url in attempted_urls:
+                            continue
+                        attempted_urls.add(url)
+                        if not pages:
+                            queue.pop(index)
+                        elif not self.feed.conf.prefer_same_post:
+                            queue.append(queue.pop(index))
+                        self._inflight_posts.add(post.id)
+                        pending[post.id] = pending.get(post.id, 0) + 1
+                        return post, page
+                    queue.pop(index)
+
+        albums: list[Album] = []
+        for _ in range(n):
+            selected: list[tuple[int, Post, int, Path]] = []
+            order = 0
+
+            async def attempt():
+                nonlocal order
+                post = None
+                try:
+                    item = await pick()
+                    if item is None:
+                        return None
+                    post, page = item
+                    rank = order
+                    order += 1
+                    path = await self._download(post.photos[page])
+                    if path is None:
+                        return None
+                    self.recent.add(f"{self.key}:{post.id}")
+                    used_posts.add(post.id)
+                    return rank, post, page, path
+                except NETWORK_ERRORS as e:
+                    logger.warning(f"[random_pic] {self.name} 请求失败: {e!r}")
+                    note(errors, f"{self.name} 请求失败")
+                    return None
+                finally:
+                    if post is not None:
+                        pending[post.id] -= 1
+                        if not pending[post.id]:
+                            del pending[post.id]
+                            self._inflight_posts.remove(post.id)
+
+            attempts = per_album + max(per_album, MIN_SPARE_PAGES)
+            try:
+                await fill(selected, per_album, attempts, self.opts.concurrency, attempt)
+            except SourceError as e:
+                logger.warning(f"[random_pic] {e}")
+                note(errors, str(e))
+            if not selected:
+                break
+            selected.sort(key=lambda item: item[0])
+            posts = list({post.id: post for _, post, _, _ in selected}.values())
+            if len(posts) == 1:
+                post = posts[0]
+                album = Album(
+                    source=self.name,
+                    title=title_of(self.feed, post),
+                    total=len(post.photos),
+                    pictures=sorted((page + 1, path) for _, _, page, path in selected),
+                    details=self.details(post),
+                    work=WorkRef(self.key, post.id),
+                    source_key=self.key,
+                )
+            else:
+                album = Album(
+                    source=self.name,
+                    title=f"{self.name} · {len(posts)} 个帖子精选",
+                    total=len({url for post in posts for url in post.photos}),
+                    pictures=[(i, item[3]) for i, item in enumerate(selected, 1)],
+                    details=[line for post in posts for line in self.details(post)],
+                    source_key=self.key,
+                )
+            albums.append(album)
+            if len(selected) < per_album:
+                note(errors, f"{self.name} 没有更多符合条件的图片或图片下载失败")
+        if len(albums) < n:
+            note(errors, f"{self.name} 没有更多符合条件的帖子")
+        return albums, errors
+
+    async def _album(
+        self, post: Post, ctx: DrawContext, used_urls: set[str]
+    ) -> Album | None:
         photos = post.photos
 
         async def fetch(index: int):
-            path = await self._download(photos[index])
+            url = photos[index]
+            if url in used_urls:
+                return None
+            used_urls.add(url)
+            path = await self._download(url)
             return (index + 1, path) if path else None
 
         # 帖子只有几张图，不受「图集最少页数」限制，也不跳过开头
@@ -321,6 +478,7 @@ class FeedImageSource(FeedSource):
             pictures=sorted(pictures),
             details=self.details(post),
             work=WorkRef(self.key, post.id),
+            source_key=self.key,
         )
 
     async def work(self, ref: WorkRef) -> Work | None:
@@ -355,7 +513,9 @@ class FeedVideoSource(FeedSource):
     def _usable(self, post: Post) -> bool:
         return bool(self._clips(post))
 
-    async def _album(self, post: Post, ctx: DrawContext) -> Album | None:
+    async def _album(
+        self, post: Post, ctx: DrawContext, used_urls: set[str]
+    ) -> Album | None:
         clip = random.choice(self._clips(post))
         path = None
         for url in clip.order(self.files.max_bytes):
@@ -372,6 +532,7 @@ class FeedVideoSource(FeedSource):
             details=self.details(post),
             work=WorkRef(self.key, post.id),
             duration=clip.duration,
+            source_key=self.key,
         )
 
     async def work(self, ref: WorkRef) -> Work | None:

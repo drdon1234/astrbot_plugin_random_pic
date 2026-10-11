@@ -82,7 +82,7 @@ class Drawer:
                 return DrawResult(errors=[f"{names} 没有{RATING_NAMES[req.rating]}内容"])
             kind = f"{STYLE_NAMES[req.style]}·{RATING_NAMES[req.rating]}"
             return DrawResult(
-                errors=[f"没有能抽{kind}的图源，请在图源管理里启用或调整适用分级"]
+                errors=[f"没有能抽{kind}的图源，请在源开关与详情里启用或调整适用分级"]
             )
         # 指名订阅时不补位（补位图源会把订阅名当关键词去搜）
         fallback = None if self.named(ctx) else self.sources.fallback
