@@ -323,8 +323,8 @@ E-Hentai 只用于三次元（2026-10 起二次元改用 Danbooru：E-Hentai 的
 3. **未成年内容过滤**（始终生效）：命中黑名单就丢弃重抽，没有标签的作品也丢弃（各写真站是真人写真，没有可靠的标签，检查标题、简介和站点的分类 / 标签名称）；每次 E-Hentai 搜索还会排除 `lolicon`、`shotacon` 等标签（里站能搜到这类画廊）；Danbooru 另外排除多为儿童设定的角色（见 [Danbooru](#danbooru)）。内置黑名单不可删除，可以用「额外屏蔽的标签」追加：
    `loli, lolicon, shota, shotacon, toddlercon, child, female_child, male_child, toddler, randoseru, kindergarten uniform, age regression, 萝莉, 蘿莉, 正太, 幼女, 幼児, ロリ, ショタ`
    英文词按整词匹配（`female:lolicon` 命中，`lolita fashion` 不会），中日文词按子串匹配，都忽略大小写。
-4. **屏蔽重口作品**（默认开启）：带猎奇、杀害、截肢、身体改造、吞食、粪便、呕吐、拷打、血液、凌虐、兽交、虫类、尿布等标签（共 35 个，见 `filters.HEAVY_TAGS`；E-Hentai 按标签名匹配 `female` / `male` / `mixed` 命名空间，Danbooru 直接按标签名匹配）的作品不会被抽到，也不能获取完整作品；关键词本身是这类标签时（如 `抽图 猎奇`，中文先翻译成标签）直接拒绝，不带命名空间的英文词是标题搜索（`blood` 可能在找《Blood+》），不拒绝。
-5. **屏蔽跨性别作品**（默认开启）：扶她、扶他、人妖、伪娘、男娘等作品不会被抽到，也不能获取完整作品，关键词是这类词时直接拒绝。词表见 `filters.TRANS_TAGS`，和未成年黑名单一样匹配标签和标题：E-Hentai 的 `futanari`、`shemale`、`dickgirl …`、`otokofutanari`、`cuntboy`、`tomgirl`、`male:crossdressing`（男性女装；`female:crossdressing` 是女性男装，不屏蔽）、`feminization` 等，Danbooru 的 `futa_with_…`、`otoko_no_ko`，以及中文、日文的 `扶她`、`扶他`、`人妖`、`伪娘` / `偽娘`、`男娘`、`药娘`、`跨性别`、`ふたなり`、`男の娘`、`ニューハーフ` 等。性转（`gender change`、`gender morph`）不在其中——Cosplay 里的性转多是女性扮演男角色的女体版；需要时把它加到「额外屏蔽的标签」。
+4. **屏蔽重口作品**（默认开启）：带猎奇、杀害、截肢、身体改造、吞食、粪便、呕吐、拷打、血液、凌虐、兽交、虫类、尿布等标签（共 35 个，见 `core.policy.content.HEAVY_TAGS`；E-Hentai 按标签名匹配 `female` / `male` / `mixed` 命名空间，Danbooru 直接按标签名匹配）的作品不会被抽到，也不能获取完整作品；关键词本身是这类标签时（如 `抽图 猎奇`，中文先翻译成标签）直接拒绝，不带命名空间的英文词是标题搜索（`blood` 可能在找《Blood+》），不拒绝。
+5. **屏蔽跨性别作品**（默认开启）：扶她、扶他、人妖、伪娘、男娘等作品不会被抽到，也不能获取完整作品，关键词是这类词时直接拒绝。词表见 `core.policy.content.TRANS_TAGS`，和未成年黑名单一样匹配标签和标题：E-Hentai 的 `futanari`、`shemale`、`dickgirl …`、`otokofutanari`、`cuntboy`、`tomgirl`、`male:crossdressing`（男性女装；`female:crossdressing` 是女性男装，不屏蔽）、`feminization` 等，Danbooru 的 `futa_with_…`、`otoko_no_ko`，以及中文、日文的 `扶她`、`扶他`、`人妖`、`伪娘` / `偽娘`、`男娘`、`药娘`、`跨性别`、`ふたなり`、`男の娘`、`ニューハーフ` 等。性转（`gender change`、`gender morph`）不在其中——Cosplay 里的性转多是女性扮演男角色的女体版；需要时把它加到「额外屏蔽的标签」。
 6. **屏蔽 AI 作品**（默认开启）：对所有图源生效。E-Hentai 排除 `ai generated` 画廊，Danbooru 排除 `ai-generated`、`ai-assisted`，各写真站排除站点自己的 AI 分类和标签，禁漫排除 `AI` 一类标签。
 
 ## 配置项
@@ -364,3 +364,7 @@ WebUI 面板只放需要选择的项；各图源的质量门槛（Danbooru 最�
 - `ffmpeg`（视频的 SOOP、CosplayTele 视频源用来封装、转码；AstrBot 官方镜像自带），没有时这两个视频源不参与
 - `jmcomic`（禁漫天堂图源，会一并安装 `curl_cffi`）；没装上时只有禁漫天堂不可用，日志里有提示
 - AstrBot ≥ 4.28（配置面板用到推送任务列表和滑块）
+
+## 项目架构
+
+根目录保留 AstrBot 入口和插件声明；代码在 `core/` 下按配置、命令、业务服务、来源、下载、消息发送、存储和权限过滤组织。目录职责、调用关系与扩展约定见 [架构说明](docs/ARCHITECTURE.md)。本地测试统一放在 Git 忽略的 `test/` 目录。
